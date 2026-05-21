@@ -1,0 +1,41 @@
+{
+  "resourceSpans": [{
+    "resource": {
+      "attributes": [
+        {"key": "service.name", "value": {"stringValue": "test-framework"}}
+      ]
+    },
+    "scopeSpans": [{
+      "scope": {"name": "test-e2e"},
+      "spans": [
+        {
+          "name": "tool.execute",
+          "traceId": "00000000000000000000000000000001",
+          "spanId": "0000000000000001",
+          "startTimeUnixNano": "1778640000000000000",
+          "endTimeUnixNano":   "1778640001000000000",
+          "kind": 1,
+          "attributes": [
+            {"key": "agent.name", "value": {"stringValue": "E2EOtlpAgent"}},
+            {"key": "kya.rogue.event_type", "value": {"stringValue": "data_leak"}},
+            {"key": "kya.rogue.data_class", "value": {"stringValue": "phi"}}
+          ],
+          "status": {"code": 1}
+        },
+        {
+          "name": "llm.completion",
+          "traceId": "00000000000000000000000000000002",
+          "spanId": "0000000000000002",
+          "startTimeUnixNano": "1778640000000000000",
+          "endTimeUnixNano":   "1778640002000000000",
+          "kind": 1,
+          "attributes": [
+            {"key": "agent.name", "value": {"stringValue": "PlainLlmCall"}},
+            {"key": "llm.model", "value": {"stringValue": "gpt-4o-mini"}}
+          ],
+          "status": {"code": 1}
+        }
+      ]
+    }]
+  }]
+}

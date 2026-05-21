@@ -1,0 +1,12 @@
+{
+  "framework": "openai_agents",
+  "definition": {
+    "name": "ResearchAgent",
+    "instructions": "Find sources and cite. Hand off to ReporterAgent for the final write-up.",
+    "model": "gpt-4o-mini",
+    "tools": [{"name": "web_search"}, {"name": "calculator"}, {"name": "create_rule"}],
+    "handoffs": [{"name": "ReporterAgent"}, {"name": "CriticAgent"}],
+    "input_guardrails": [{"name": "no_pii_in_query"}],
+    "mcp_servers": [{"name": "filesystem_mcp"}, {"name": "github_mcp"}]
+  }
+}
