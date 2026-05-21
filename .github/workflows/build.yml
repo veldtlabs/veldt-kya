@@ -1,0 +1,107 @@
+# veldt-kya build + verify
+#
+# On every PR or push to main/develop:
+#   1. ruff lint + format (style + safety)
+#   2. wheel build + clean-venv install (packaging integrity, no source-tree leak)
+#   3. pytest matrix on Python 3.10 / 3.11 / 3.12
+#   4. MySQL + PostgreSQL service containers for the dialect-specific tests
+#
+# Adapted from veldt-decisions/.github/workflows/sdk-build.yml when KYA
+# moved to its own repo (open-core split, Apache-2.0).
+
+name: build
+
+on:
+  pull_request:
+    paths:
+      - 'kya/**'
+      - 'kya_hooks/**'
+      - 'kya_otlp_bridge/**'
+      - 'kya_redteam/**'
+      - 'tests/**'
+      - 'examples/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build.yml'
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} · wheel + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: kya_test
+          MYSQL_DATABASE: kya_test
+          MYSQL_ROOT_HOST: '%'
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -ukya_test -pkya_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: kya_test
+          POSTGRES_DB: kya_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      KYA_TEST_PG_URL: postgresql+psycopg2://postgres:kya_test@127.0.0.1:5432/kya_test
+      KYA_TEST_MYSQL_URL: mysql+pymysql://root:kya_test@127.0.0.1:3306/kya_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install build deps + ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install "setuptools>=77" build ruff
+
+      - name: Ruff lint
+        run: ruff check kya/ kya_hooks/ kya_otlp_bridge/ kya_redteam/
+
+      - name: Build wheel
+        run: |
+          python -m build --wheel
+          ls -la dist/
+
+      - name: Create prov_schema on PostgreSQL
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=kya_test psql -h 127.0.0.1 -U postgres -d kya_test \
+              -c "CREATE SCHEMA IF NOT EXISTS prov_schema;"
+
+      - name: Install wheel in clean venv + run pytest
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --upgrade pip
+          /tmp/v/bin/pip install dist/*.whl
+          /tmp/v/bin/pip install pytest psycopg2-binary pymysql duckdb duckdb-engine pytz prometheus_client cryptography
+          /tmp/v/bin/python -m pytest tests/ -v --tb=short
+
+      - name: Smoke from installed wheel
+        run: /tmp/v/bin/python examples/sdk_smoke_test.py

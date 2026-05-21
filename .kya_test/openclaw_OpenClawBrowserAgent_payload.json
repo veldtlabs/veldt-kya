@@ -1,0 +1,11 @@
+{
+  "framework": "agents_md",
+  "definition": {
+    "name": "OpenClawBrowserAgent",
+    "description": "Book rooms and resources. Autonomous.",
+    "model": "clawrouter/auto",
+    "tools": ["navigate","click","extract_text","fill_form"],
+    "body": "# OpenClawBrowserAgent SOUL.md\n\nBook rooms and resources. Autonomous.\n\nRuns autonomously based on local-first triggers.",
+    "provenance": "imported"
+  }
+}
