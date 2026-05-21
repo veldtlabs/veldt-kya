@@ -1,0 +1,561 @@
+"""
+KYA — Know Your Agents.
+
+A framework-agnostic agent governance + observability layer. Risk scoring,
+version control, rogue-behavior detection, and anomaly surfacing for any
+agent — Veldt-native, LangChain, CrewAI, OpenAI Assistants, or a hand-rolled
+agent loop.
+
+Version is single-sourced from the installed package metadata so the
+in-source `__version__` always matches `pip show veldt-kya`. Falls back
+to the editable-install dev string when metadata isn't available (e.g.
+running from a source checkout without `pip install`).
+"""
+
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    try:
+        __version__ = _pkg_version("veldt-kya")
+    except PackageNotFoundError:
+        __version__ = "0.0.0+dev"
+except ImportError:
+    __version__ = "0.0.0+dev"
+
+
+__doc__ = """KYA — Know Your Agents.
+
+Public surface
+--------------
+Risk scoring (`risk.py`):
+    score_agent(definition) -> AgentRiskScore
+    bucket_for(score) -> "low"|"medium"|"high"|"critical"
+    is_write_tool(name) -> bool
+    is_admin_tool(name) -> bool
+
+Versioning (`versioning.py`):
+    snapshot_agent(db, tenant_id, agent_key, definition, ...)
+    list_versions(db, tenant_id, agent_key)
+    get_version(db, tenant_id, agent_key, vno)
+    rollback_to(db, tenant_id, agent_key, vno, ...)
+
+Rogue + governance + anomalies (`rogue.py`):
+    record_oos_tool_attempt(agent, tool, tenant_id)
+    record_cross_tenant_attempt(agent, expected_tid, actual_tid)
+    get_rogue_signals(agent) -> RogueReport
+    rogue_score(report) -> int (0..50)
+    get_governance_summary(db, tenant_id, agent_key=None)
+    get_anomalies(rogue, activity, governance=None) -> list[dict]
+
+Format adapter (`format_adapter.py`):
+    normalize_agent_def(framework, raw_def) -> dict
+    SupportedFramework = "veldt" | "langchain" | "crewai" | "openai" | "generic"
+
+Design rules
+------------
+- Core modules MUST stay free of Veldt-specific imports. They depend only
+  on the standard library, `prometheus_client` (optional), `opentelemetry`
+  (optional), and SQLAlchemy (only versioning + governance read helpers).
+- All record_* helpers are exception-safe — observability never breaks the
+  request path.
+- HTTP ingestion lives in routes/admin_agents.py — KYA itself owns no
+  framework code.
+"""
+
+from .blast_radius import (
+    BlastRadiusBreakdown,
+    blast_radius_breakdown,
+    blast_radius_weight,
+)
+from .compliance import (
+    REGIME_BREACH_NOTIFY,
+    REGIME_RETENTION_DAYS,
+    REGIMES,
+    compliance_summary,
+    elevated_severity,
+    eu_ai_act_tier,
+    max_retention_days,
+    required_controls,
+)
+from .cost import cost_burn_weight
+from .data_classes import (
+    CLASS_WEIGHTS,
+    DATA_CLASSES,
+    DEFAULT_TOOL_CLASSIFICATIONS,
+    classify_tool,
+    infer_data_classes,
+    sensitivity_weight,
+    set_class_weights,
+    set_tool_classifications,
+)
+
+# Register the four weight scopes this module manages. Done at import
+# time so the registry is populated before any score lookup. Each
+# default dict is mutable and module-global — register_scope captures a
+# reference, not a snapshot, so live `set_*_weights()` calls still work
+# for SDK users.
+from .data_classes import CLASS_WEIGHTS as _CLASS_WEIGHTS
+from .delegation import (
+    delegation_chain,
+    delegation_weight,
+    max_delegation_depth,
+)
+from .delegation_trust import delegation_trust_weight
+from .deployment import (
+    DEPLOYMENT_WEIGHTS,
+    deployment_weight,
+    set_deployment_weights,
+)
+from .deployment import DEPLOYMENT_WEIGHTS as _DEPLOYMENT_WEIGHTS
+from .fault_attribution import (
+    DivergenceReport,
+    agent_divergence_score,
+)
+from .feedback import (
+    approve_suggestion,
+    ensure_suggestions_table,
+    list_suggestions,
+    propose_from_incident,
+    reject_suggestion,
+)
+from .input_sources import (
+    INPUT_SOURCES,
+    SOURCE_WEIGHTS,
+    input_source_weight,
+    set_source_weights,
+)
+from .input_sources import SOURCE_WEIGHTS as _SOURCE_WEIGHTS
+from .integrity import (
+    canonical_hash,
+    detect_drift,
+    lineage_chain,
+    lineage_risk_inheritance,
+    verify_signature,
+)
+from .interactions import (
+    INTERACTIONS,
+    MAX_MULTIPLIER,
+    Interaction,
+    detect_interactions,
+    list_interactions,
+    register_interaction,
+)
+from .interactions import (
+    interaction_multiplier as compute_interaction_multiplier,
+)
+from .invocations import (
+    VALID_MODES,
+    VALID_OUTCOMES,
+    active_parallel_invocations,
+    ensure_invocations_table,
+    ingest_lag_stats,
+    list_invocations,
+    mode_distribution,
+    new_correlation_id,
+    record_invocation,
+)
+from .lifecycle import approval_weight, lifecycle_weight, ownership_weight
+from .llm_judge import (
+    VALID_DIVERGENCE_KINDS,
+    JudgeResult,
+    judge_alignment,
+    judged_divergence,
+)
+from .llm_judge import (
+    is_enabled as llm_judge_enabled,
+)
+from .phoenix_poll import (
+    PollResult,
+    poll_phoenix_evals,
+    start_phoenix_poll_thread,
+    stop_phoenix_poll_thread,
+)
+from .phoenix_poll import (
+    is_enabled as phoenix_poll_enabled,
+)
+from .principals import (
+    PRINCIPAL_KINDS,
+    PrincipalTrust,
+    detect_principal_burst_anomalies,
+    ensure_principal_table,
+    get_principal_trust,
+    get_principal_window_counts,
+    list_principals,
+    record_principal_clean,
+    record_principal_signal,
+)
+from .requests import (
+    RequestSummary,
+    list_recent_requests,
+    request_score,
+    summarize_request,
+)
+from .risk import (
+    AgentRiskScore,
+    RiskFactor,
+    bucket_for,
+    is_admin_tool,
+    is_write_tool,
+    score_agent,
+    set_tool_catalog,
+)
+from .security_caps import (
+    CAPABILITY_WEIGHTS,
+    DEFAULT_TOOL_CAPABILITIES,
+    SECURITY_CAPS,
+    capability_weight,
+    classify_tool_capabilities,
+    infer_capabilities,
+    set_capability_weights,
+    set_tool_capabilities,
+)
+from .security_caps import CAPABILITY_WEIGHTS as _CAPABILITY_WEIGHTS
+from .skills import (
+    DEFAULT_SKILL_CLASSIFICATIONS,
+    classify_skill,
+    flatten_to_tools,
+    infer_skill_classifications,
+    normalize_skills,
+    set_skill_classifications,
+)
+from .supply_chain import parse_dependencies, supply_chain_weight
+from .tenant_weights import (
+    OverrideLoosensError,
+    delete_override,
+    get_effective_weights,
+    known_scopes,
+    list_overrides,
+    list_recent_changes,
+    register_scope,
+    set_override,
+)
+from .tenant_weights import (
+    ensure_tables as ensure_weight_tables,
+)
+from .trust_signals import citation_weight, trust_score_weight
+from .users import (
+    SIGNAL_DELTAS,
+    STARTING_TRUST,
+    UserTrust,
+    bucket_for_trust,
+    ensure_user_trust_table,
+    get_user_trust,
+    list_user_trust,
+    record_user_clean,
+    record_user_signal,
+)
+
+register_scope("class_weights", _CLASS_WEIGHTS)
+register_scope("capability_weights", _CAPABILITY_WEIGHTS)
+register_scope("source_weights", _SOURCE_WEIGHTS)
+register_scope("deployment_weights", _DEPLOYMENT_WEIGHTS)
+from .autoinstrument import (
+    autoinstrument,
+    deinstrument,
+    patched_sdks,
+)
+from .evidence import (
+    VALID_EVIDENCE_KINDS,
+    get_evidence,
+    init_evidence_table,
+    list_evidence,
+    prune_expired_evidence,
+    record_evidence,
+    verify_chain,
+)
+from .format_adapter import (
+    SupportedFramework,
+    list_adapters,
+    normalize_agent_def,
+    register_adapter,
+)
+from .quality import (
+    QualityReport,
+    get_quality_signals,
+    quality_score,
+    record_hallucination,
+    record_injection_attempt,
+    record_qa_irrelevance,
+)
+from .realtime import (
+    ALLOWED_SIGNAL_KINDS,
+    WINDOWS,
+    detect_burst_anomalies,
+    get_window_counts,
+    record_signal,
+    subscribe_alerts,
+)
+from .rogue import (
+    Anomaly,
+    RogueReport,
+    get_anomalies,
+    get_governance_summary,
+    get_rogue_signals,
+    record_cross_tenant_attempt,
+    record_data_leak,
+    record_oos_tool_attempt,
+    record_policy_violation,
+    rogue_score,
+)
+from .dualwrite import (
+    ALLOWED_TABLES as DUAL_WRITE_ALLOWED_TABLES,
+    DualWriteAllowlistError,
+    disable_dual_write,
+    dual_write_status,
+    enable_dual_write,
+)
+from ._inbound_signing import SignatureVerificationError
+from .inbound import (
+    KNOWN_SCOPES as INBOUND_KNOWN_SCOPES,
+    approve_recommendation,
+    disable_inbound,
+    enable_inbound,
+    fetch_now as fetch_inbound_now,
+    inbound_status,
+    list_recommendations,
+    reject_recommendation,
+)
+from ._redactor import Redactor as DualWriteRedactor
+from ._session_factory import (
+    has_factory as has_session_factory,
+    set_session_factory,
+)
+from .storage import init_storage
+from .telemetry import (
+    disable_telemetry,
+    enable_telemetry,
+    telemetry_status,
+)
+from .versioning import (
+    ensure_table,
+    get_version,
+    list_versions,
+    rollback_to,
+    snapshot_agent,
+)
+
+__all__ = [
+    # risk
+    "AgentRiskScore",
+    "RiskFactor",
+    "bucket_for",
+    "score_agent",
+    "is_write_tool",
+    "is_admin_tool",
+    "set_tool_catalog",
+    # data classification
+    "DATA_CLASSES",
+    "CLASS_WEIGHTS",
+    "DEFAULT_TOOL_CLASSIFICATIONS",
+    "classify_tool",
+    "infer_data_classes",
+    "sensitivity_weight",
+    "set_class_weights",
+    "set_tool_classifications",
+    # versioning + unified storage setup
+    "ensure_table",
+    "snapshot_agent",
+    "list_versions",
+    "get_version",
+    "rollback_to",
+    "init_storage",
+    # forensic evidence capture (HMAC-chained, tamper-evident)
+    "VALID_EVIDENCE_KINDS",
+    "init_evidence_table",
+    "record_evidence",
+    "list_evidence",
+    "get_evidence",
+    "verify_chain",
+    "prune_expired_evidence",
+    # Zero-config capture for custom agents + direct LLM SDK calls
+    "autoinstrument",
+    "deinstrument",
+    "patched_sdks",
+    # rogue + governance + anomalies
+    "RogueReport",
+    "Anomaly",
+    "record_oos_tool_attempt",
+    "record_cross_tenant_attempt",
+    "record_data_leak",
+    "record_policy_violation",
+    "get_rogue_signals",
+    "rogue_score",
+    "get_governance_summary",
+    "get_anomalies",
+    # security capabilities
+    "SECURITY_CAPS",
+    "CAPABILITY_WEIGHTS",
+    "DEFAULT_TOOL_CAPABILITIES",
+    "classify_tool_capabilities",
+    "infer_capabilities",
+    "capability_weight",
+    "set_capability_weights",
+    "set_tool_capabilities",
+    # adapter (pluggable registry)
+    "normalize_agent_def",
+    "SupportedFramework",
+    "register_adapter",
+    "list_adapters",
+    # real-time monitoring (Valkey sliding windows + pub/sub alerts)
+    "record_signal",
+    "get_window_counts",
+    "detect_burst_anomalies",
+    "subscribe_alerts",
+    "WINDOWS",
+    # quality signals (hallucination, QA relevance, prompt injection)
+    "QualityReport",
+    "record_hallucination",
+    "record_qa_irrelevance",
+    "record_injection_attempt",
+    "get_quality_signals",
+    "quality_score",
+    # delegation depth
+    "max_delegation_depth",
+    "delegation_chain",
+    "delegation_weight",
+    # blast radius
+    "BlastRadiusBreakdown",
+    "blast_radius_breakdown",
+    "blast_radius_weight",
+    # input sources (where the agent ingests from)
+    "INPUT_SOURCES",
+    "SOURCE_WEIGHTS",
+    "input_source_weight",
+    "set_source_weights",
+    # Round 8 — lifecycle / supply chain / deployment / trust / cost
+    "ownership_weight",
+    "approval_weight",
+    "lifecycle_weight",
+    "supply_chain_weight",
+    "parse_dependencies",
+    "DEPLOYMENT_WEIGHTS",
+    "deployment_weight",
+    "set_deployment_weights",
+    "citation_weight",
+    "trust_score_weight",
+    "cost_burn_weight",
+    # compliance scope (GDPR, HIPAA, SOX, PCI, CCPA, GLBA, FERPA, EU AI Act, etc.)
+    "REGIMES",
+    "REGIME_RETENTION_DAYS",
+    "REGIME_BREACH_NOTIFY",
+    "eu_ai_act_tier",
+    "required_controls",
+    "elevated_severity",
+    "max_retention_days",
+    "compliance_summary",
+    # integrity + lineage (cybersec primitives)
+    "canonical_hash",
+    "detect_drift",
+    "lineage_chain",
+    "lineage_risk_inheritance",
+    "verify_signature",
+    # Round 11.1 — tenant-scoped weight overrides
+    "ensure_weight_tables",
+    "register_scope",
+    "known_scopes",
+    "get_effective_weights",
+    "set_override",
+    "delete_override",
+    "list_overrides",
+    "list_recent_changes",
+    "OverrideLoosensError",
+    # Round 11.2 — interaction multipliers
+    "INTERACTIONS",
+    "Interaction",
+    "MAX_MULTIPLIER",
+    "detect_interactions",
+    "compute_interaction_multiplier",
+    "register_interaction",
+    "list_interactions",
+    # Round 11.3 — KYU (per-user trust)
+    "UserTrust",
+    "STARTING_TRUST",
+    "SIGNAL_DELTAS",
+    "bucket_for_trust",
+    "ensure_user_trust_table",
+    "record_user_signal",
+    "record_user_clean",
+    "get_user_trust",
+    "list_user_trust",
+    # Round 11.4 — incident feedback loop
+    "ensure_suggestions_table",
+    "propose_from_incident",
+    "list_suggestions",
+    "approve_suggestion",
+    "reject_suggestion",
+    # Round 12 — skills as first-class
+    "DEFAULT_SKILL_CLASSIFICATIONS",
+    "normalize_skills",
+    "flatten_to_tools",
+    "classify_skill",
+    "infer_skill_classifications",
+    "set_skill_classifications",
+    # Round 13 — Principal generalization + delegation trust + invocation tracking
+    "PRINCIPAL_KINDS",
+    "PrincipalTrust",
+    "ensure_principal_table",
+    "record_principal_signal",
+    "record_principal_clean",
+    "get_principal_trust",
+    "list_principals",
+    "get_principal_window_counts",
+    "detect_principal_burst_anomalies",
+    "delegation_trust_weight",
+    # Invocation tracking (event-time vs ingest-time + parallel tree)
+    "VALID_MODES",
+    "VALID_OUTCOMES",
+    "ensure_invocations_table",
+    "record_invocation",
+    "list_invocations",
+    "mode_distribution",
+    "active_parallel_invocations",
+    "ingest_lag_stats",
+    "new_correlation_id",
+    # Priority 2 — request-level rollups (correlation_id aggregation)
+    "RequestSummary",
+    "summarize_request",
+    "list_recent_requests",
+    "request_score",
+    # Priority 4 — fault attribution heuristic (per-agent divergence)
+    "DivergenceReport",
+    "agent_divergence_score",
+    # Round 15 — LLM-judge for fault attribution (anti-hallucination guards)
+    "JudgeResult",
+    "VALID_DIVERGENCE_KINDS",
+    "llm_judge_enabled",
+    "judge_alignment",
+    "judged_divergence",
+    # Round 16 — Phoenix evaluator polling
+    "PollResult",
+    "phoenix_poll_enabled",
+    "poll_phoenix_evals",
+    "start_phoenix_poll_thread",
+    "stop_phoenix_poll_thread",
+    # Dual-write (opt-in row mirroring) + aggregate telemetry (on by default,
+    # counts only, no payloads — disable with disable_telemetry()).
+    "enable_dual_write",
+    "disable_dual_write",
+    "dual_write_status",
+    "DUAL_WRITE_ALLOWED_TABLES",
+    "DualWriteAllowlistError",
+    "DualWriteRedactor",
+    "enable_telemetry",
+    "disable_telemetry",
+    "telemetry_status",
+    # Inbound recommendations — cross-tenant feedback loop (opt-in pull;
+    # Ed25519-signed; operator-gated apply via set_override).
+    "enable_inbound",
+    "disable_inbound",
+    "inbound_status",
+    "fetch_inbound_now",
+    "list_recommendations",
+    "approve_recommendation",
+    "reject_recommendation",
+    "INBOUND_KNOWN_SCOPES",
+    "SignatureVerificationError",
+    # Session-factory injection — lets SDK users plug their own
+    # sessionmaker into rogue/inbound mirror-write paths without
+    # depending on the platform's db.database.SessionLocal.
+    "set_session_factory",
+    "has_session_factory",
+]

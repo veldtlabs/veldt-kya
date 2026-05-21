@@ -1,0 +1,126 @@
+[build-system]
+# setuptools >=77 required for PEP 639 SPDX `license = "Apache-2.0"` syntax.
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veldt-kya"
+version = "0.1.0"
+description = "KYA — Know Your Agents. Trust + governance + risk scoring for any autonomous system (LLM agent, lakehouse job, AutoML pipeline, RPA bot)."
+readme = "README.md"
+# Apache-2.0 chosen for:
+#   • Explicit patent grant (protects users + contributors)
+#   • Industry default for infrastructure (k8s, TensorFlow, Linkerd)
+#   • 5-minute enterprise legal review
+#   • Compatible with hosted-Veldt commercial offering on top
+# SPDX identifier per PEP 639.
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    { name = "Veldt Labs Inc.", email = "kola@veldtlabs.ai" },
+]
+keywords = [
+    "agent", "agents", "ai-governance", "ai-safety", "agent-governance",
+    "model-risk", "agent-trust", "kya", "compliance", "ai-act", "nist",
+    "langchain", "crewai", "openai-assistants", "autonomous-systems",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+]
+
+dependencies = [
+    # Required for storage primitives (versioning, principal trust,
+    # compliance shim, governance audit). KYA's read/write helpers
+    # need a Session; if the consumer doesn't want SQL state, they
+    # can still call score_agent / normalize_agent_def directly.
+    "SQLAlchemy>=2.0",
+    # Required by kya_hooks (eager import) and by dualwrite / inbound /
+    # telemetry HTTP paths (lazy import). Bundling it here keeps
+    # `import kya_hooks` working out of the box. The `[webhooks]` extra
+    # is kept below for backward compatibility but is now a no-op.
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+metrics  = ["prometheus_client>=0.20"]
+tracing  = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+webhooks = ["requests>=2.31"]
+judge    = ["litellm>=1.55"]
+all      = [
+    "prometheus_client>=0.20",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "requests>=2.31",
+    "litellm>=1.55",
+]
+
+[project.urls]
+Homepage      = "https://veldtlabs.ai/kya"
+Documentation = "https://veldtlabs.ai/kya/docs"
+Source        = "https://github.com/veldtlabs/veldt-kya"
+Issues        = "https://github.com/veldtlabs/veldt-kya/issues"
+Changelog     = "https://github.com/veldtlabs/veldt-kya/blob/main/CHANGELOG.md"
+
+# ─── Package discovery ──────────────────────────────────────────────
+# `kya/` lives at the repo root. The wheel only ships the core SDK —
+# kya_hooks/, kya_otlp_bridge/, kya_redteam/ are in the same repo for
+# co-located development but are NOT bundled into `pip install veldt-kya`
+# (they have their own packaging or are deployed as separate containers).
+#
+# Result: `pip install veldt-kya` gives users just `kya.*`, importable
+# at top level with no transitive Veldt-platform leak.
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where   = ["."]
+# All 4 top-level packages ship in the wheel. Heavy deps (fastapi,
+# pyrit, garak) are imported lazily inside the relevant submodules so
+# `import kya_otlp_bridge` / `import kya_redteam` always work; only
+# accessing features that need those deps triggers the import. Users
+# who only need the core SDK pay no cost; users who need the OTel
+# sidecar or red-team harness add `pip install fastapi uvicorn` or
+# `pip install pyrit-ai` themselves.
+include = [
+    "kya", "kya.*",
+    "kya_hooks", "kya_hooks.*",
+    "kya_otlp_bridge", "kya_otlp_bridge.*",
+    "kya_redteam", "kya_redteam.*",
+]
+exclude = [
+    "kya.tests*", "kya._scratch*",
+    "tests*", "examples*", "scripts*", "docs*",
+]
+
+[tool.setuptools.package-data]
+kya = ["py.typed"]
+
+# ─── Lint / format ──────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["dist", "build", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# E501 (line length) is enforced by formatter; ignore here to skip
+# false positives on long string literals. B008 — FastAPI Depends
+# patterns trigger this and are intentional in KYA's optional hooks.
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403", "E402"]  # re-exports + intentional late imports
+"examples/*.py" = ["E402"]
+

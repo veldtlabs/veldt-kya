@@ -1,0 +1,46 @@
+# Python build artifacts
+*.pyc
+__pycache__/
+*.egg-info/
+*.egg
+build/
+dist/
+*.whl
+.tox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+.coverage
+htmlcov/
+.kya_test/real_run/
+.kya_test/*.db
+.kya_test/openclaw_repo/
+
+# Secrets — never commit
+*.priv
+*.pem
+*.key
+*-private.txt
+KYA_INBOUND_PUBLIC_KEY*
+.env
+.env.local
+
+# Distribution
+*.tar.gz
