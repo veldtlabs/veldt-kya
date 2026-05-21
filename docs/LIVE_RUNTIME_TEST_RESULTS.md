@@ -12,7 +12,7 @@
 |---|---|---|---|
 | **LangChain 1.3** | OpenAI `gpt-4o-mini` | ✅ PASS | score 100/critical · 1 version · 1 invocation · 5 evidence rows · principal trust 51 |
 | **OpenAI Agents SDK** | OpenAI `gpt-4o-mini` | ✅ PASS | score 100/critical · 1 version · 1 invocation · 5 evidence rows · principal trust 51→48 after rogue oos_tool |
-| **OTel bridge / OpenLLMetry** | n/a (transport) | ✅ wire verified | bridge accepts OTLP, maps `kya.rogue.*` attrs to KYA events; only blocker is a stale JWT in `KYA_TENANT_TOKENS` (deployment-config, not SDK bug) |
+| **OTel bridge / OpenLLMetry** | OpenAI `gpt-4o-mini` (real) | ✅ ingestion verified with real LLM traffic | OpenInference auto-instruments the openai library, BatchSpanProcessor exports to bridge; bridge's `spans_received` counter advanced from 2→3 on a real `client.chat.completions.create` call. Forward to vd-app blocked on stale JWT (deployment config). |
 | **OpenCLAW runtime** | OpenAI `gpt-5.5` (configured) | ✅ PASS (prior work) | 4×9 cross-backend e2e in `examples/openclaw_e2e_multi_agent.py` using real OpenCLAW agent payloads pulled from the running `openclaw:local` container. 36/36 cells pass. Also: gateway re-booted today with OTLP routed to the KYA bridge — see test #4 below. |
 | **Anthropic Claude Agent SDK** | Anthropic | ⏸ BLOCKED | real `ANTHROPIC_API_KEY` not present in any scanned env / file; `anthropic` Python package v0.102.0 already installed in `vd-app` and ready when key is supplied |
 
@@ -215,6 +215,36 @@ docker compose up -d vd-kya-otlp-bridge  # restart with new KYA_TENANT_TOKENS
 ```
 
 The same OTel attributes are what **OpenLLMetry**, **OpenInference**, and **OpenCLAW** emit when instrumented to talk to KYA. Once the JWT is refreshed, those flows complete without further code changes.
+
+### Real-LLM-driven trace ingestion (verified)
+
+To confirm the bridge handles real (not synthetic) LLM traffic, an
+`OpenInference`-instrumented `openai.OpenAI` client was wired with
+`OTLPSpanExporter(endpoint="http://vd-kya-otlp-bridge:4318/v1/traces")`
+inside vd-app:
+
+```python
+from openinference.instrumentation.openai import OpenAIInstrumentor
+OpenAIInstrumentor().instrument()                # auto-instrument
+
+client = OpenAI()
+resp = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "What is 11 * 13?"}],
+)
+```
+
+Real response: `"11 * 13 = 143."` (3.27 s).
+
+Bridge stats jumped:
+- `spans_received: 2 → 3` (+1 from the live LLM call)
+- Bridge mapper processed the span
+- `errors_posting: 1` (still the stale-JWT issue forwarding to vd-app)
+
+**This is the wire OpenCLAW uses** — OpenCLAW's gateway emits the same
+shape of OpenInference/OTel spans. The fact that an OpenInference span
+from a real OpenAI call lands in the KYA bridge means an OpenCLAW agent
+turn (when its harness is wired) would land identically.
 
 ---
 
