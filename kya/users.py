@@ -242,41 +242,105 @@ def _apply_delta(current: int, delta: int) -> int:
 def _upsert_with_delta(
     db, tenant_id: str, user_id: str, signal_kind: str, delta: int, is_signal: bool
 ) -> int:
-    """Atomic upsert: increment signal counter + apply delta to trust score.
-    Returns the new trust score."""
+    """Upsert: increment signal counter + apply delta to trust score.
+
+    Cross-backend strategy:
+        PG       — keeps the single-statement jsonb UPSERT (atomic,
+                   no read-modify-write window).
+        non-PG   — SELECT current state → mutate in Python → portable
+                   upsert via _dialect_helpers. A small lost-update
+                   window is possible under concurrent writers on
+                   non-PG; document as a non-PG limitation.
+
+    Returns the new trust score.
+    """
+    from datetime import datetime, timezone
+    from ._dialect_helpers import dialect_of, portable_upsert
+    from ._legacy_tables import kya_user_trust
+
     ensure_user_trust_table(db)
     ts_col = "last_signal_at" if is_signal else "last_clean_at"
-    # Single-statement UPSERT: insert or update with computed delta
-    result = db.execute(
-        text(f"""
-            INSERT INTO prov_schema.kya_user_trust
-                (tenant_id, user_id, trust_score, signal_counts,
-                 {ts_col}, updated_at)
-            VALUES (
-                :tid, :uid,
-                GREATEST({MIN_TRUST}, LEAST({MAX_TRUST}, {STARTING_TRUST} + :delta)),
-                jsonb_build_object(:kind, 1),
-                now(), now()
-            )
-            ON CONFLICT (tenant_id, user_id) DO UPDATE
-            SET trust_score = GREATEST({MIN_TRUST}, LEAST({MAX_TRUST},
-                                       prov_schema.kya_user_trust.trust_score + :delta)),
-                signal_counts =
-                    jsonb_set(
-                        COALESCE(prov_schema.kya_user_trust.signal_counts, '{{}}'::jsonb),
-                        ARRAY[:kind],
-                        to_jsonb(COALESCE(
-                            (prov_schema.kya_user_trust.signal_counts->>:kind)::int, 0
-                        ) + 1)
-                    ),
-                {ts_col} = now(),
-                updated_at = now()
-            RETURNING trust_score
-        """),
-        {"tid": tenant_id, "uid": user_id, "kind": signal_kind, "delta": delta},
+    dialect = dialect_of(db)
+
+    if dialect == "postgresql":
+        result = db.execute(
+            text(f"""
+                INSERT INTO prov_schema.kya_user_trust
+                    (id, tenant_id, user_id, trust_score, signal_counts,
+                     {ts_col}, updated_at)
+                VALUES (
+                    nextval('kya_user_trust_id_seq'),
+                    :tid, :uid,
+                    GREATEST({MIN_TRUST}, LEAST({MAX_TRUST}, {STARTING_TRUST} + :delta)),
+                    jsonb_build_object(:kind, 1),
+                    now(), now()
+                )
+                ON CONFLICT (tenant_id, user_id) DO UPDATE
+                SET trust_score = GREATEST({MIN_TRUST}, LEAST({MAX_TRUST},
+                                           prov_schema.kya_user_trust.trust_score + :delta)),
+                    signal_counts =
+                        jsonb_set(
+                            COALESCE(prov_schema.kya_user_trust.signal_counts, '{{}}'::jsonb),
+                            ARRAY[:kind],
+                            to_jsonb(COALESCE(
+                                (prov_schema.kya_user_trust.signal_counts->>:kind)::int, 0
+                            ) + 1)
+                        ),
+                    {ts_col} = now(),
+                    updated_at = now()
+                RETURNING trust_score
+            """),
+            {"tid": tenant_id, "uid": user_id, "kind": signal_kind, "delta": delta},
+        ).fetchone()
+        db.commit()
+        return int(result[0]) if result else STARTING_TRUST
+
+    # Non-PG: read-modify-write.
+    schema = kya_user_trust.schema
+    table_ref = f"{schema}.kya_user_trust" if schema else "kya_user_trust"
+    row = db.execute(
+        text(
+            f"SELECT trust_score, signal_counts FROM {table_ref} "
+            f"WHERE tenant_id = :tid AND user_id = :uid"
+        ),
+        {"tid": tenant_id, "uid": user_id},
     ).fetchone()
+
+    if row is None:
+        new_score = _apply_delta(STARTING_TRUST, delta)
+        counts = {signal_kind: 1}
+    else:
+        existing = row[1]
+        if isinstance(existing, str):
+            import json as _json
+            try:
+                existing = _json.loads(existing)
+            except Exception:
+                existing = {}
+        elif existing is None:
+            existing = {}
+        counts = dict(existing)
+        counts[signal_kind] = int(counts.get(signal_kind, 0)) + 1
+        new_score = _apply_delta(int(row[0]), delta)
+
+    now_utc = datetime.now(timezone.utc)
+    values = {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "trust_score": new_score,
+        "signal_counts": counts,
+        ts_col: now_utc,
+        "updated_at": now_utc,
+    }
+    portable_upsert(
+        db,
+        kya_user_trust,
+        values,
+        conflict_cols=("tenant_id", "user_id"),
+        update_cols=("trust_score", "signal_counts", ts_col, "updated_at"),
+    )
     db.commit()
-    return int(result[0]) if result else STARTING_TRUST
+    return new_score
 
 
 def record_user_signal(

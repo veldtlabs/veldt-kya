@@ -66,18 +66,24 @@ _MIGRATIONS = [
     # additive evolution slot
 ]
 
-_ENSURED = False
+_ENSURED_ENGINES: set[int] = set()
 
 
 def ensure_table(db) -> None:
-    """Idempotent — runs once per process. Dialect-aware via _legacy_tables.
+    """Idempotent — runs once per engine. Dialect-aware via _legacy_tables.
 
-    The raw PG DDL kept above is preserved as documentation of the
-    historical schema; the actual table is now created via the portable
-    ORM Table defined in `._legacy_tables`.
+    Per-engine memoization (not process-global) lets a single process
+    safely run init_storage against multiple distinct engines (different
+    backends, fresh test databases) without the second engine being
+    silently skipped if the first one succeeded.
     """
-    global _ENSURED
-    if _ENSURED:
+    try:
+        bind = db.get_bind()
+        engine_key = id(bind.engine if hasattr(bind, "engine") else bind)
+    except Exception:
+        engine_key = -1
+
+    if engine_key in _ENSURED_ENGINES:
         return
     try:
         from ._legacy_tables import create_legacy_tables, kya_agent_aliases
@@ -85,7 +91,7 @@ def ensure_table(db) -> None:
         create_legacy_tables(db, [kya_agent_aliases])
         apply_migrations(db, "kya_agent_aliases", _MIGRATIONS)
         db.commit()
-        _ENSURED = True
+        _ENSURED_ENGINES.add(engine_key)
     except Exception as exc:
         logger.warning("[KYA-ALIAS] ensure_table failed: %s", exc)
         db.rollback()
@@ -119,26 +125,27 @@ def add_alias(
     note: str | None = None,
     user_id: str | None = None,
 ) -> dict:
-    """Create or update an alias. Returns the stored row."""
+    """Create or update an alias. Returns the stored row.
+
+    Cross-backend: portable_upsert dispatches to the right ON CONFLICT
+    syntax for PG / SQLite / DuckDB / MySQL.
+    """
+    from ._dialect_helpers import portable_upsert
+    from ._legacy_tables import kya_agent_aliases
+
     ensure_table(db)
-    # idempotent upsert
-    db.execute(
-        text(
-            "INSERT INTO prov_schema.kya_agent_aliases "
-            "  (tenant_id, alias, canonical_agent_key, note, created_by) "
-            "VALUES ((:tid)::uuid, :alias, :canon, :note, "
-            "        CASE WHEN :uid = '' THEN NULL ELSE (:uid)::uuid END) "
-            "ON CONFLICT (tenant_id, alias) DO UPDATE "
-            "  SET canonical_agent_key = EXCLUDED.canonical_agent_key, "
-            "      note = EXCLUDED.note"
-        ),
+    portable_upsert(
+        db,
+        kya_agent_aliases,
         {
-            "tid": tenant_id,
+            "tenant_id": tenant_id,
             "alias": alias,
-            "canon": canonical_agent_key,
-            "note": note or "",
-            "uid": user_id or "",
+            "canonical_agent_key": canonical_agent_key,
+            "note": note,
+            "created_by": user_id,
         },
+        conflict_cols=("tenant_id", "alias"),
+        update_cols=("canonical_agent_key", "note"),
     )
     db.commit()
     return {

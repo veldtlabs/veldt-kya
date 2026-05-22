@@ -40,6 +40,32 @@ for f in risk.factors:
     print(f.name, f.delta)              # attributable per-factor breakdown
 ```
 
+## Persistence — zero-config evaluation
+
+`score_agent()` is a pure function with no I/O. Anything that records
+evidence, principal trust, agent versions, or invocations needs a
+database. `kya.default_session()` gives you that with no setup —
+it falls back to `sqlite:///~/.kya/kya.db` if `KYA_DB_URL` is unset:
+
+```python
+from kya import default_session, snapshot_agent, record_invocation, record_evidence
+
+with default_session() as db:
+    snapshot_agent(db, tenant_id="t1", agent_key="loan_triage",
+                   definition={"agent_key": "loan_triage", "tools": ["check_credit"]})
+    inv = record_invocation(db, tenant_id="t1", agent_key="loan_triage",
+                            principal_kind="agent", principal_id="loan_triage",
+                            mode="observed", outcome="success")
+    record_evidence(db, tenant_id="t1", invocation_id=inv,
+                    evidence_kind="prompt", payload={"text": "..."})
+    db.commit()
+```
+
+For production, set `KYA_DB_URL=postgresql://...` (or MySQL / DuckDB).
+All 17 KYA-owned tables are portable across **PostgreSQL, MySQL,
+SQLite, and DuckDB** — verified by `tests/verify_all_backends_with_data.py`
+(17 tables × 4 backends × non-empty row counts = 68/68 cells green).
+
 ## Bring your own framework
 
 KYA's `normalize_agent_def(framework, raw_def)` adapts foreign agent

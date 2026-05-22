@@ -173,6 +173,7 @@ from .phoenix_poll import (
 from .phoenix_poll import (
     is_enabled as phoenix_poll_enabled,
 )
+from .session import default_session, reset_default_session
 from .principals import (
     PRINCIPAL_KINDS,
     PrincipalTrust,
@@ -335,6 +336,9 @@ from .versioning import (
 )
 
 __all__ = [
+    # session
+    "default_session",
+    "reset_default_session",
     # risk
     "AgentRiskScore",
     "RiskFactor",

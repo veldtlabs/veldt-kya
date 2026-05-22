@@ -108,21 +108,25 @@ CREATE INDEX IF NOT EXISTS idx_kya_redteam_runs_status
 
 _MIGRATIONS: list = []
 
-_ENSURED = False
+_ENSURED_ENGINES: set[int] = set()
 
 
 def ensure_table(db) -> None:
-    """Idempotent — runs once per process. Dialect-aware via _legacy_tables.
+    """Idempotent — runs once per engine. Dialect-aware via _legacy_tables.
 
     On PG, the advisory lock prevents the two-uvicorn-worker DDL race;
     on non-PG dialects the lock no-ops and create_all is naturally idempotent.
     """
-    global _ENSURED
-    if _ENSURED:
+    try:
+        bind_for_id = db.get_bind()
+        engine_key = id(bind_for_id.engine if hasattr(bind_for_id, "engine") else bind_for_id)
+    except Exception:
+        engine_key = -1
+
+    if engine_key in _ENSURED_ENGINES:
         return
     try:
         bind = db.connection()
-        # PG-only advisory lock — skip on other dialects
         if bind.dialect.name == "postgresql":
             lock_row = db.execute(
                 text("SELECT pg_try_advisory_xact_lock(hashtext('kya_redteam_runs_ddl'))")
@@ -136,7 +140,7 @@ def ensure_table(db) -> None:
         create_legacy_tables(db, [kya_redteam_runs])
         apply_migrations(db, "kya_redteam_runs", _MIGRATIONS)
         db.commit()
-        _ENSURED = True
+        _ENSURED_ENGINES.add(engine_key)
     except Exception as exc:
         logger.warning("[REDTEAM-RUNS] ensure_table failed: %s", exc)
         db.rollback()
@@ -188,27 +192,23 @@ def create_run(
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status}")
     ensure_table(db)
+    from datetime import datetime, timezone
+    from kya._legacy_tables import kya_redteam_runs
     run_id = str(uuid.uuid4())
-    db.execute(
-        text(
-            "INSERT INTO prov_schema.kya_redteam_runs "
-            "  (tenant_id, run_id, campaign_id, agent_key, orchestrator, "
-            "   target_id, target_endpoint_redacted, status, initiated_by, "
-            "   started_at, last_heartbeat_at) "
-            "VALUES ((:tid)::uuid, (:rid)::uuid, :cid, :ak, :ork, "
-            "        :tgt, :ter, :st, "
-            "        CASE WHEN :uid = '' THEN NULL ELSE (:uid)::uuid END, "
-            "        now(), now())"
-        ),
-        {
-            "tid": tenant_id, "rid": run_id, "cid": campaign_id,
-            "ak": agent_key, "ork": orchestrator,
-            "tgt": target_id,
-            "ter": _redact_endpoint(target_endpoint),
-            "st": status,
-            "uid": initiated_by or "",
-        },
-    )
+    now_utc = datetime.now(timezone.utc)
+    db.execute(kya_redteam_runs.insert().values(
+        tenant_id=tenant_id,
+        run_id=run_id,
+        campaign_id=campaign_id,
+        agent_key=agent_key,
+        orchestrator=orchestrator,
+        target_id=target_id,
+        target_endpoint_redacted=_redact_endpoint(target_endpoint),
+        status=status,
+        initiated_by=initiated_by,
+        started_at=now_utc,
+        last_heartbeat_at=now_utc,
+    ))
     db.commit()
     return run_id
 
