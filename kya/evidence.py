@@ -94,8 +94,28 @@ import json
 import logging
 import os
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+# Per-(tenant, invocation) in-process serialization lock for SQLite +
+# DuckDB. PG uses pg_advisory_xact_lock, MySQL uses SELECT FOR UPDATE,
+# both of which work cross-process. SQLite and DuckDB have no
+# row-level lock primitive, so an in-process lock at least guarantees
+# in-process multi-writer safety (the common case under
+# gunicorn-style worker pools + ThreadPoolExecutor).
+_INPROC_CHAIN_LOCKS: dict[str, threading.Lock] = {}
+_INPROC_CHAIN_LOCKS_GUARD = threading.Lock()
+
+
+def _get_chain_lock(tenant_id: str, invocation_id: int) -> threading.Lock:
+    key = f"{tenant_id}:{invocation_id}"
+    with _INPROC_CHAIN_LOCKS_GUARD:
+        lock = _INPROC_CHAIN_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _INPROC_CHAIN_LOCKS[key] = lock
+    return lock
 
 try:
     from sqlalchemy import (
@@ -446,6 +466,19 @@ def record_evidence(
             )
         except Exception:
             pass
+    _inproc_lock: threading.Lock | None = None
+    if dialect in ("sqlite", "duckdb"):
+        # SQLite/DuckDB lack a row-level lock primitive. PG's advisory
+        # lock and MySQL's SELECT FOR UPDATE handle cross-process
+        # serialization; for SQLite/DuckDB we serialize in-process via
+        # a per-(tenant, invocation) Python lock. This catches the
+        # common deployment shape (multi-threaded worker pool in one
+        # process). Cross-process multi-writer on SQLite/DuckDB
+        # remains the documented "single-writer-per-invocation
+        # contract" — true row-level locks would require a sidecar
+        # advisory-lock service or a swap to PG/MySQL.
+        _inproc_lock = _get_chain_lock(tenant_id, invocation_id)
+        _inproc_lock.acquire()
 
     prev_stmt = (
         select(_EvidenceRow.signed_hash)
@@ -500,9 +533,13 @@ def record_evidence(
         data_classes=list(data_classes) if data_classes else None,
         retention_until=retention_until,
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
+    try:
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    finally:
+        if _inproc_lock is not None:
+            _inproc_lock.release()
 
     logger.info(
         "[KYA-EVIDENCE] tenant=%s inv=%d kind=%s size=%dB id=%d",

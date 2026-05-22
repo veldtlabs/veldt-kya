@@ -440,6 +440,21 @@ def record_principal_signal(
     import random as _random
     import time as _time
 
+    # SQLite/DuckDB: serialize in-process per (tenant, kind, id) to
+    # close the lost-update window on the SELECT-merge-UPDATE path.
+    # PG/MySQL use SELECT FOR UPDATE below; SQLite/DuckDB lack row
+    # locks, so without this lock concurrent mirror writes from
+    # different sessions can both read the same row, merge their
+    # local increment, then both write — losing one of the increments.
+    _inproc_lock = None
+    try:
+        if db.bind.dialect.name in ("sqlite", "duckdb"):
+            from .evidence import _get_chain_lock as _gl
+            _inproc_lock = _gl(tenant_id, f"principal:{principal_kind}:{principal_id}")
+            _inproc_lock.acquire()
+    except Exception:
+        _inproc_lock = None
+
     last_exc: Exception | None = None
     for attempt in range(30):
         stmt = (
@@ -498,11 +513,16 @@ def record_principal_signal(
             last_exc = exc
             db.rollback()
             if attempt == 9:
+                if _inproc_lock is not None:
+                    _inproc_lock.release()
                 raise
             # Sleep with exponential backoff + jitter so retries don't
             # synchronize across workers and re-collide on the same tick.
             _time.sleep(0.001 * (2 ** attempt) + _random.uniform(0, 0.002))
             continue
+
+    if _inproc_lock is not None:
+        _inproc_lock.release()
 
     _set_trust_gauge(tenant_id, principal_kind, principal_id, new_score)
 
