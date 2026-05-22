@@ -197,14 +197,17 @@ def _check_only_tighten(db, scope: str, key: str, new_value: int, tenant_id: str
     if scope not in _SCOPE_REGISTRY:
         raise ValueError(f"unknown weight scope: {scope}")
 
+    from sqlalchemy import and_, select
+    from ._legacy_tables import kya_weight_overrides
     platform_eff = dict(_SCOPE_REGISTRY[scope])
-    # Apply platform-level overrides
     row = db.execute(
-        text("""
-            SELECT value FROM prov_schema.kya_weight_overrides
-            WHERE tenant_id IS NULL AND scope = :scope AND key = :key
-        """),
-        {"scope": scope, "key": key},
+        select(kya_weight_overrides.c.value).where(
+            and_(
+                kya_weight_overrides.c.tenant_id.is_(None),
+                kya_weight_overrides.c.scope == scope,
+                kya_weight_overrides.c.key == key,
+            )
+        )
     ).fetchone()
     platform_value = int(row[0]) if row else platform_eff.get(key, 0)
 
@@ -217,15 +220,21 @@ def _check_only_tighten(db, scope: str, key: str, new_value: int, tenant_id: str
 
 
 def _current_value(db, scope: str, key: str, tenant_id: str | None) -> int | None:
-    row = db.execute(
-        text("""
-            SELECT value FROM prov_schema.kya_weight_overrides
-            WHERE scope = :scope AND key = :key
-              AND ((:tid)::uuid IS NULL AND tenant_id IS NULL
-                   OR tenant_id = (:tid)::uuid)
-        """),
-        {"scope": scope, "key": key, "tid": tenant_id},
-    ).fetchone()
+    from sqlalchemy import and_, select
+    from ._legacy_tables import kya_weight_overrides
+    if tenant_id is None:
+        clause = and_(
+            kya_weight_overrides.c.tenant_id.is_(None),
+            kya_weight_overrides.c.scope == scope,
+            kya_weight_overrides.c.key == key,
+        )
+    else:
+        clause = and_(
+            kya_weight_overrides.c.tenant_id == tenant_id,
+            kya_weight_overrides.c.scope == scope,
+            kya_weight_overrides.c.key == key,
+        )
+    row = db.execute(select(kya_weight_overrides.c.value).where(clause)).fetchone()
     return int(row[0]) if row else None
 
 
@@ -240,23 +249,12 @@ def _audit(
     changed_by: str | None,
     reason: str | None,
 ) -> None:
-    db.execute(
-        text("""
-            INSERT INTO prov_schema.kya_weight_changes
-                (tenant_id, scope, key, old_value, new_value, action, changed_by, reason)
-            VALUES (:tid, :scope, :key, :old, :new, :action, :uid, :reason)
-        """),
-        {
-            "tid": tenant_id,
-            "scope": scope,
-            "key": key,
-            "old": old_value,
-            "new": new_value,
-            "action": action,
-            "uid": changed_by,
-            "reason": reason,
-        },
-    )
+    from ._legacy_tables import kya_weight_changes
+    db.execute(kya_weight_changes.insert().values(
+        tenant_id=tenant_id, scope=scope, key=key,
+        old_value=old_value, new_value=new_value,
+        action=action, changed_by=changed_by, reason=reason,
+    ))
 
 
 def set_override(
@@ -269,7 +267,14 @@ def set_override(
     reason: str | None = None,
 ) -> dict:
     """Set or update a weight override. Validates only-tighten for tenant
-    overrides. Audits the change. Returns the new row."""
+    overrides. Audits the change. Returns the new row.
+
+    Cross-backend via portable_upsert.
+    """
+    from datetime import datetime, timezone
+    from ._dialect_helpers import portable_upsert
+    from ._legacy_tables import kya_weight_overrides
+
     ensure_tables(db)
     if scope not in _SCOPE_REGISTRY:
         raise ValueError(f"unknown weight scope: {scope}")
@@ -278,21 +283,20 @@ def set_override(
     _check_only_tighten(db, scope, key, value, tenant_id)
 
     old = _current_value(db, scope, key, tenant_id)
-    db.execute(
-        text("""
-            INSERT INTO prov_schema.kya_weight_overrides
-                (tenant_id, scope, key, value, created_by, updated_at)
-            VALUES (:tid, :scope, :key, :value, :uid, now())
-            ON CONFLICT (tenant_id, scope, key)
-            DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-        """),
+    now_utc = datetime.now(timezone.utc)
+    portable_upsert(
+        db,
+        kya_weight_overrides,
         {
-            "tid": tenant_id,
+            "tenant_id": tenant_id,
             "scope": scope,
             "key": key,
             "value": value,
-            "uid": changed_by,
+            "created_by": changed_by,
+            "updated_at": now_utc,
         },
+        conflict_cols=("tenant_id", "scope", "key"),
+        update_cols=("value", "updated_at"),
     )
     _audit(db, scope, key, old, value, "set", tenant_id, changed_by, reason)
     db.commit()

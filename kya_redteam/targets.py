@@ -133,14 +133,19 @@ CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_target_secrets (
 _MIGRATIONS_TARGETS: list = []
 _MIGRATIONS_SECRETS: list = []
 
-_ENSURED = False
+_ENSURED_ENGINES: set[int] = set()
 
 
 def ensure_tables(db) -> None:
     """Idempotent — dialect-aware via _legacy_tables. PG keeps the
     advisory lock; non-PG dialects skip it (no contention there)."""
-    global _ENSURED
-    if _ENSURED:
+    try:
+        bind_for_id = db.get_bind()
+        engine_key = id(bind_for_id.engine if hasattr(bind_for_id, "engine") else bind_for_id)
+    except Exception:
+        engine_key = -1
+
+    if engine_key in _ENSURED_ENGINES:
         return
     try:
         bind = db.connection()
@@ -165,7 +170,7 @@ def ensure_tables(db) -> None:
         apply_migrations(db, "kya_redteam_targets", _MIGRATIONS_TARGETS)
         apply_migrations(db, "kya_redteam_target_secrets", _MIGRATIONS_SECRETS)
         db.commit()
-        _ENSURED = True
+        _ENSURED_ENGINES.add(engine_key)
     except Exception as exc:
         logger.warning("[REDTEAM-TARGETS] ensure_tables failed: %s", exc)
         db.rollback()
@@ -276,39 +281,31 @@ def create_target(
             "to permit (in-cluster targets) or use a public hostname."
         )
     ensure_tables(db)
+    from kya._dialect_helpers import insert_returning_id
+    from kya._legacy_tables import kya_redteam_targets, kya_redteam_target_secrets
 
-    row = db.execute(
-        text(
-            "INSERT INTO prov_schema.kya_redteam_targets "
-            "  (tenant_id, agent_key, name, description, endpoint_url, "
-            "   auth_kind, auth_header_name, body_template, "
-            "   response_parser_kind, rate_limit_rps, created_by) "
-            "VALUES ((:tid)::uuid, :ak, :nm, :ds, :url, "
-            "        :ak2, :hdr, CAST(:bt AS JSONB), "
-            "        :pk, :rrps, "
-            "        CASE WHEN :uid = '' THEN NULL ELSE (:uid)::uuid END) "
-            "RETURNING id, created_at"
-        ),
-        {
-            "tid": tenant_id, "ak": agent_key, "nm": name, "ds": description,
-            "url": endpoint_url, "ak2": auth_kind, "hdr": auth_header_name,
-            "bt": _json.dumps(body_template) if body_template else None,
-            "pk": response_parser_kind, "rrps": rate_limit_rps,
-            "uid": created_by or "",
-        },
-    ).fetchone()
-    target_id = int(row[0])
+    target_id = insert_returning_id(db, kya_redteam_targets, {
+        "tenant_id": tenant_id,
+        "agent_key": agent_key,
+        "name": name,
+        "description": description,
+        "endpoint_url": endpoint_url,
+        "auth_kind": auth_kind,
+        "auth_header_name": auth_header_name,
+        "body_template": body_template,
+        "response_parser_kind": response_parser_kind,
+        "rate_limit_rps": rate_limit_rps,
+        "created_by": created_by,
+    })
 
     if auth_secret:
         ciphertext, key_id = encrypt_secret(auth_secret)
-        db.execute(
-            text(
-                "INSERT INTO prov_schema.kya_redteam_target_secrets "
-                "  (target_id, tenant_id, ciphertext, key_id) "
-                "VALUES (:tid, (:tt)::uuid, :ct, :kid)"
-            ),
-            {"tid": target_id, "tt": tenant_id, "ct": ciphertext, "kid": key_id},
-        )
+        db.execute(kya_redteam_target_secrets.insert().values(
+            target_id=target_id,
+            tenant_id=tenant_id,
+            ciphertext=ciphertext,
+            key_id=key_id,
+        ))
     db.commit()
     return get_target(db, tenant_id, target_id, include_secret=False)
 
@@ -443,11 +440,14 @@ def get_target(
     paths must NEVER set this flag).
     """
     ensure_tables(db)
+    from kya._legacy_tables import kya_redteam_targets, kya_redteam_target_secrets
+    schema = kya_redteam_targets.schema
+    targets_ref = f"{schema}.kya_redteam_targets" if schema else "kya_redteam_targets"
+    secrets_ref = f"{schema}.kya_redteam_target_secrets" if schema else "kya_redteam_target_secrets"
     row = db.execute(
         text(
-            f"SELECT {_SELECT_TARGET_COLS} "
-            "FROM prov_schema.kya_redteam_targets "
-            "WHERE tenant_id = (:tid)::uuid AND id = :id"
+            f"SELECT {_SELECT_TARGET_COLS} FROM {targets_ref} "
+            f"WHERE tenant_id = :tid AND id = :id"
         ),
         {"tid": tenant_id, "id": target_id},
     ).fetchone()
@@ -457,9 +457,8 @@ def get_target(
     if include_secret and out["auth_kind"] != "none":
         sec = db.execute(
             text(
-                "SELECT ciphertext, key_id "
-                "FROM prov_schema.kya_redteam_target_secrets "
-                "WHERE target_id = :id AND tenant_id = (:tid)::uuid"
+                f"SELECT ciphertext, key_id FROM {secrets_ref} "
+                f"WHERE target_id = :id AND tenant_id = :tid"
             ),
             {"id": target_id, "tid": tenant_id},
         ).fetchone()

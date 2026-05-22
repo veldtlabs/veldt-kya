@@ -174,14 +174,19 @@ _MIGRATIONS_POLICY = [
     "  ADD COLUMN IF NOT EXISTS attacker_tokens_monthly_cap BIGINT;",
 ]
 
-_ENSURED = False
+_ENSURED_ENGINES: set[int] = set()
 
 
 def ensure_tables(db) -> None:
-    """Idempotent — runs once per process. Dialect-aware via _legacy_tables.
+    """Idempotent — runs once per engine. Dialect-aware via _legacy_tables.
     Same portable Table objects used on PG/SQLite/DuckDB/MySQL."""
-    global _ENSURED
-    if _ENSURED:
+    try:
+        bind = db.get_bind()
+        engine_key = id(bind.engine if hasattr(bind, "engine") else bind)
+    except Exception:
+        engine_key = -1
+
+    if engine_key in _ENSURED_ENGINES:
         return
     try:
         from kya._legacy_tables import (
@@ -203,7 +208,7 @@ def ensure_tables(db) -> None:
         apply_migrations(db, "kya_redteam_findings", _MIGRATIONS_FINDINGS)
         apply_migrations(db, "kya_redteam_tenant_policy", _MIGRATIONS_POLICY)
         db.commit()
-        _ENSURED = True
+        _ENSURED_ENGINES.add(engine_key)
     except Exception as exc:
         logger.warning("[KYA-REDTEAM] ensure_tables failed: %s", exc)
         db.rollback()
@@ -250,35 +255,31 @@ def create_campaign(
             f"got tier_required='{tier_required}'"
         )
     ensure_tables(db)
-    row = db.execute(
-        text(
-            "INSERT INTO prov_schema.kya_redteam_campaigns "
-            "  (tenant_id, agent_key, name, description, "
-            "   orchestrator_kind, scorer_kind, dataset, attacker_llm, "
-            "   converters, schedule_cron, budget_max_prompts, threshold, "
-            "   enabled, tier_required, auto_incident_mode, created_by) "
-            "VALUES ((:tid)::uuid, :ak, :nm, :ds, "
-            "        :ork, :sck, :dsn, :alm, "
-            "        CAST(:conv AS JSONB), :cron, :budget, :thr, "
-            "        :en, :tier, :aim, "
-            "        CASE WHEN :uid = '' THEN NULL ELSE (:uid)::uuid END) "
-            "RETURNING id, created_at"
-        ),
-        {
-            "tid": tenant_id, "ak": agent_key, "nm": name, "ds": description,
-            "ork": orchestrator_kind, "sck": scorer_kind, "dsn": dataset,
-            "alm": attacker_llm,
-            "conv": _json.dumps(converters or []),
-            "cron": schedule_cron,
-            "budget": budget_max_prompts,
-            "thr": threshold,
-            "en": enabled, "tier": tier_required, "aim": auto_incident_mode,
-            "uid": created_by or "",
-        },
-    ).fetchone()
+    from datetime import datetime, timezone
+    from kya._dialect_helpers import insert_returning_id
+    from kya._legacy_tables import kya_redteam_campaigns
+
+    now_utc = datetime.now(timezone.utc)
+    values = {
+        "tenant_id": tenant_id, "agent_key": agent_key, "name": name,
+        "description": description,
+        "orchestrator_kind": orchestrator_kind, "scorer_kind": scorer_kind,
+        "dataset": dataset, "attacker_llm": attacker_llm,
+        "converters": converters or [],
+        "schedule_cron": schedule_cron,
+        "budget_max_prompts": budget_max_prompts,
+        "threshold": threshold,
+        "enabled": enabled,
+        "tier_required": tier_required,
+        "auto_incident_mode": auto_incident_mode,
+        "created_by": created_by,
+        "created_at": now_utc,
+        "updated_at": now_utc,
+    }
+    new_id = insert_returning_id(db, kya_redteam_campaigns, values)
     db.commit()
     return {
-        "id": row[0],
+        "id": new_id,
         "tenant_id": tenant_id,
         "agent_key": agent_key,
         "name": name,
@@ -294,7 +295,7 @@ def create_campaign(
         "enabled": enabled,
         "tier_required": tier_required,
         "auto_incident_mode": auto_incident_mode,
-        "created_at": row[1],
+        "created_at": now_utc,
     }
 
 
@@ -491,28 +492,26 @@ def record_finding(
     _validate_enum(severity, VALID_SEVERITIES, "severity")
     ensure_tables(db)
     _ensure_findings_counter()
-    row = db.execute(
-        text(
-            "INSERT INTO prov_schema.kya_redteam_findings "
-            "  (tenant_id, campaign_id, run_id, agent_key, orchestrator, "
-            "   attack_category, finding_class, severity, score, "
-            "   prompt_redacted, response_redacted, conversation_redacted, "
-            "   pyrit_memory_id, evidence_source, posted_event_id) "
-            "VALUES ((:tid)::uuid, :cid, (:rid)::uuid, :ak, :ork, "
-            "        :cat, :fc, :sev, :sc, "
-            "        :pr, :rr, CAST(:conv AS JSONB), "
-            "        :pmi, :es, :pei) "
-            "RETURNING id"
-        ),
-        {
-            "tid": tenant_id, "cid": campaign_id, "rid": run_id, "ak": agent_key,
-            "ork": orchestrator, "cat": attack_category, "fc": finding_class,
-            "sev": severity, "sc": score,
-            "pr": prompt_redacted, "rr": response_redacted,
-            "conv": _json.dumps(conversation_redacted or []),
-            "pmi": pyrit_memory_id, "es": evidence_source, "pei": posted_event_id,
-        },
-    ).fetchone()
+    from kya._dialect_helpers import insert_returning_id
+    from kya._legacy_tables import kya_redteam_findings
+    new_id = insert_returning_id(db, kya_redteam_findings, {
+        "tenant_id": tenant_id,
+        "campaign_id": campaign_id,
+        "run_id": run_id,
+        "agent_key": agent_key,
+        "orchestrator": orchestrator,
+        "attack_category": attack_category,
+        "finding_class": finding_class,
+        "severity": severity,
+        "score": score,
+        "prompt_redacted": prompt_redacted,
+        "response_redacted": response_redacted,
+        "conversation_redacted": conversation_redacted or [],
+        "pyrit_memory_id": pyrit_memory_id,
+        "evidence_source": evidence_source,
+        "posted_event_id": posted_event_id,
+    })
+    row = (new_id,)  # back-compat for the existing tail emit code
     db.commit()
     # Fire the findings counter AFTER commit so the metric reflects
     # durably-written state, not in-flight INSERTs.
@@ -637,14 +636,14 @@ def list_findings(
 def get_tenant_policy(db, tenant_id: str) -> dict:
     """Return the tenant's policy row, creating defaults if missing."""
     ensure_tables(db)
+    from sqlalchemy import select
+    from kya._legacy_tables import kya_redteam_tenant_policy as tbl
     row = db.execute(
-        text(
-            "SELECT max_auto_incident_mode, budget_monthly_prompts, redteam_tier, "
-            "       attacker_llm_model, attacker_tokens_monthly_cap, updated_at "
-            "FROM prov_schema.kya_redteam_tenant_policy "
-            "WHERE tenant_id = (:tid)::uuid"
-        ),
-        {"tid": tenant_id},
+        select(
+            tbl.c.max_auto_incident_mode, tbl.c.budget_monthly_prompts,
+            tbl.c.redteam_tier, tbl.c.attacker_llm_model,
+            tbl.c.attacker_tokens_monthly_cap, tbl.c.updated_at,
+        ).where(tbl.c.tenant_id == tenant_id)
     ).fetchone()
     if not row:
         return {
@@ -714,31 +713,29 @@ def set_tenant_policy(
             else current.get("attacker_tokens_monthly_cap")
         ),
     }
-    db.execute(
-        text(
-            "INSERT INTO prov_schema.kya_redteam_tenant_policy "
-            "  (tenant_id, max_auto_incident_mode, budget_monthly_prompts, "
-            "   redteam_tier, attacker_llm_model, attacker_tokens_monthly_cap, "
-            "   updated_by) "
-            "VALUES ((:tid)::uuid, :aim, :budget, :tier, :alm, :atc, "
-            "        CASE WHEN :uid = '' THEN NULL ELSE (:uid)::uuid END) "
-            "ON CONFLICT (tenant_id) DO UPDATE "
-            "  SET max_auto_incident_mode = EXCLUDED.max_auto_incident_mode, "
-            "      budget_monthly_prompts = EXCLUDED.budget_monthly_prompts, "
-            "      redteam_tier = EXCLUDED.redteam_tier, "
-            "      attacker_llm_model = EXCLUDED.attacker_llm_model, "
-            "      attacker_tokens_monthly_cap = EXCLUDED.attacker_tokens_monthly_cap, "
-            "      updated_at = now(), updated_by = EXCLUDED.updated_by"
-        ),
+    from datetime import datetime, timezone
+    from kya._dialect_helpers import portable_upsert
+    from kya._legacy_tables import kya_redteam_tenant_policy
+    now_utc = datetime.now(timezone.utc)
+    portable_upsert(
+        db,
+        kya_redteam_tenant_policy,
         {
-            "tid": tenant_id,
-            "aim": new["max_auto_incident_mode"],
-            "budget": new["budget_monthly_prompts"],
-            "tier": new["redteam_tier"],
-            "alm": new["attacker_llm_model"],
-            "atc": new["attacker_tokens_monthly_cap"],
-            "uid": updated_by or "",
+            "tenant_id": tenant_id,
+            "max_auto_incident_mode": new["max_auto_incident_mode"],
+            "budget_monthly_prompts": new["budget_monthly_prompts"],
+            "redteam_tier": new["redteam_tier"],
+            "attacker_llm_model": new["attacker_llm_model"],
+            "attacker_tokens_monthly_cap": new["attacker_tokens_monthly_cap"],
+            "updated_by": updated_by,
+            "updated_at": now_utc,
         },
+        conflict_cols=("tenant_id",),
+        update_cols=(
+            "max_auto_incident_mode", "budget_monthly_prompts", "redteam_tier",
+            "attacker_llm_model", "attacker_tokens_monthly_cap",
+            "updated_by", "updated_at",
+        ),
     )
     db.commit()
     return {"tenant_id": tenant_id, **new}
