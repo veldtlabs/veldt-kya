@@ -55,6 +55,22 @@ from kya import (
 TENANT = "00000000-0000-0000-0000-000000000001"
 
 
+def _tref(Session, table: str) -> str:
+    """Return a dialect-correct schema-qualified table reference.
+    PG uses ``prov_schema.<t>`` (or whatever KYA_VERSIONS_SCHEMA names);
+    SQLite/DuckDB/MySQL use the bare table name."""
+    db = Session()
+    try:
+        dialect = db.bind.dialect.name
+    finally:
+        db.close()
+    if dialect == "postgresql":
+        schema = os.environ.get("KYA_VERSIONS_SCHEMA", "prov_schema") or None
+        if schema:
+            return f"{schema}.{table}"
+    return table
+
+
 def _hdr(title: str) -> None:
     print()
     print("=" * 78)
@@ -97,7 +113,7 @@ def test_invocation_concurrency(Session, workers: int, per_worker: int) -> bool:
     db = Session()
     try:
         count = int(db.execute(
-            text("SELECT COUNT(*) FROM prov_schema.kya_invocations")
+            text(f"SELECT COUNT(*) FROM {_tref(Session, 'kya_invocations')}")
         ).scalar() or 0)
     finally:
         db.close()
@@ -155,7 +171,7 @@ def test_evidence_chain_concurrency(Session, workers: int, per_worker: int) -> b
     db = Session()
     try:
         count = int(db.execute(
-            text("SELECT COUNT(*) FROM prov_schema.kya_evidence "
+            text(f"SELECT COUNT(*) FROM {_tref(Session, 'kya_evidence')} "
                  "WHERE invocation_id = :iid"),
             {"iid": inv_id},
         ).scalar() or 0)
@@ -207,14 +223,21 @@ def test_principal_signal_concurrency(Session, workers: int, per_worker: int) ->
     db = Session()
     try:
         row = db.execute(text(
-            "SELECT signal_counts FROM prov_schema.kya_principal_trust "
+            f"SELECT signal_counts FROM {_tref(Session, 'kya_principal_trust')} "
             "WHERE principal_id = :pid"
         ), {"pid": pid}).fetchone()
     finally:
         db.close()
 
     expected = workers * per_worker
-    observed = (row[0] or {}).get("oos_tool", 0) if row else 0
+    raw = row[0] if row else None
+    if isinstance(raw, str):
+        import json as _json
+        try:
+            raw = _json.loads(raw)
+        except Exception:
+            raw = {}
+    observed = (raw or {}).get("oos_tool", 0) if row else 0
     _row("elapsed", f"{elapsed:.2f}s")
     _row("throughput", f"{expected / elapsed:.0f} ops/sec")
     _row("expected oos_tool count", expected)
@@ -256,14 +279,21 @@ def test_actor_mirror_concurrency(Session, workers: int, per_worker: int) -> boo
     db = Session()
     try:
         row = db.execute(text(
-            "SELECT signal_counts FROM prov_schema.kya_principal_trust "
+            f"SELECT signal_counts FROM {_tref(Session, 'kya_principal_trust')} "
             "WHERE principal_id = :pid AND principal_kind = 'agent'"
         ), {"pid": actor}).fetchone()
     finally:
         db.close()
 
     expected = workers * per_worker
-    observed = (row[0] or {}).get("oos_tool", 0) if row else 0
+    raw = row[0] if row else None
+    if isinstance(raw, str):
+        import json as _json
+        try:
+            raw = _json.loads(raw)
+        except Exception:
+            raw = {}
+    observed = (raw or {}).get("oos_tool", 0) if row else 0
     _row("elapsed", f"{elapsed:.2f}s")
     _row("throughput", f"{expected / elapsed:.0f} ops/sec")
     _row("expected mirror writes", expected)
