@@ -43,6 +43,22 @@ The SDK also ships with a `DEFAULT_PINNED_KEYS` constant in
 `_inbound_signing.py`. Env keys *merge over* defaults, so customers
 who want to swap to a self-managed gateway just set the env var.
 
+### v0.1 default behavior: no implicit trust
+
+`DEFAULT_PINNED_KEYS` ships empty in v0.1 by design — the SDK never
+implicitly trusts a vendor-published key without you opting in. The
+inbound enforcement path (`enable_inbound()` and `fetch_now()`)
+hard-refuses with `RuntimeError` when neither
+`KYA_INBOUND_PUBLIC_KEY` nor `DEFAULT_PINNED_KEYS` has at least one
+entry. This is a deliberate choice over silently no-op'ing — see the
+"why" note in `_inbound_signing.py` and the v0.1 release notes.
+
+When Veldt's production collector signing key is live, the published
+key will land in `DEFAULT_PINNED_KEYS` in a subsequent SDK release;
+customers who want to opt in by then will already be pinned via
+`DEFAULT_PINNED_KEYS`. Customers who prefer to remain on a
+self-managed key can keep their env override (env wins over defaults).
+
 ### Key rotation
 
 Veldt's signing key lives in KMS / Vault (separate from anything
