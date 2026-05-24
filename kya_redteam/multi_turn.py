@@ -40,29 +40,34 @@ for customers who want the full PyRIT feature set.
 """
 from __future__ import annotations
 
-import json as _json
 import logging
 import os
 import time
-import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
 
 from . import campaigns as _campaigns_mod
 from . import runs as _runs_mod
 from .attacker_llm import (
-    AttackerCallResult, ConversationState,
-    ATTACKER_SYSTEM_PROMPT_REDTEAM, ATTACKER_SYSTEM_PROMPT_CRESCENDO,
-    ATTACKER_SYSTEM_PROMPT_XPIA, ATTACKER_SYSTEM_PROMPT_TAP,
-    build_attacker_user_prompt, call_attacker_with_retry, model_for_tier,
+    ATTACKER_SYSTEM_PROMPT_CRESCENDO,
+    ATTACKER_SYSTEM_PROMPT_REDTEAM,
+    ATTACKER_SYSTEM_PROMPT_TAP,
+    ATTACKER_SYSTEM_PROMPT_XPIA,
+    AttackerCallResult,
+    ConversationState,
+    build_attacker_user_prompt,
+    call_attacker_with_retry,
+    model_for_tier,
 )
 from .campaigns import (
-    record_finding, get_tenant_policy, effective_auto_incident_mode,
+    effective_auto_incident_mode,
+    get_tenant_policy,
+    record_finding,
     tier_allows_orchestrator,
 )
 from .datasets import load_dataset
 from .pyrit_scorer import (
-    ScorerVerdict, SelfAskTrueFalseScorer,
+    ScorerVerdict,
+    SelfAskTrueFalseScorer,
 )
 from .pyrit_target import HttpAgentTarget, TargetResponse
 from .runs import HeartbeatState
@@ -205,7 +210,7 @@ class ConversationResult:
     turns_completed: int = 0           # depth-levels reached
     target_calls: int = 0              # actual target HTTP calls (≠ turns for TAP)
     finding_fired: bool = False
-    best_verdict: Optional[ScorerVerdict] = None
+    best_verdict: ScorerVerdict | None = None
     attacker_tokens: int = 0
     judge_tokens: int = 0
     target_errors: int = 0
@@ -224,7 +229,7 @@ def _run_conversation_tap(
     budget_check=None,
     token_budget_check=None,
     consume_attacker_tokens=None,
-    opening_prompt: Optional[str] = None,
+    opening_prompt: str | None = None,
 ) -> ConversationResult:
     """Tree-of-Attacks-with-Pruning runner.
 
@@ -406,7 +411,7 @@ def _run_conversation(
     budget_check=None,             # callable: () -> dict
     token_budget_check=None,       # callable: () -> dict
     consume_attacker_tokens=None,  # callable: (n_tokens) -> dict
-    opening_prompt: Optional[str] = None,
+    opening_prompt: str | None = None,
 ) -> ConversationResult:
     """Drive ONE attacker↔target conversation. Returns ConversationResult.
 
@@ -540,11 +545,11 @@ def run_multi_turn(
     *,
     target: HttpAgentTarget,
     kya_poster=None,
-    dataset_override: Optional[list[dict]] = None,
-    run_id: Optional[str] = None,
-    initiated_by: Optional[str] = None,
-    target_id: Optional[int] = None,
-) -> "RunReport":
+    dataset_override: list[dict] | None = None,
+    run_id: str | None = None,
+    initiated_by: str | None = None,
+    target_id: int | None = None,
+) -> RunReport:  # type: ignore[name-defined]  # noqa: F821 — imported lazily inside the function body
     """Multi-turn campaign — RedTeaming or Crescendo.
 
     Same contract as pyrit_orchestrator.run_campaign but drives the
@@ -591,7 +596,7 @@ def run_multi_turn(
     _runs_mod.set_running(db, run_id)
     hb = HeartbeatState(run_id)
 
-    def _finalize(status: str, error_message: Optional[str] = None):
+    def _finalize(status: str, error_message: str | None = None):
         report.status = status
         report.finished_at = time.monotonic()
         try:
@@ -667,7 +672,10 @@ def run_multi_turn(
                 _runs_mod.is_cancel_requested_db(db, run_id))
 
     from .runtime import (
-        consume_budget, check_token_budget,
+        check_token_budget,
+        consume_budget,
+    )
+    from .runtime import (
         consume_attacker_tokens as _rt_consume_tokens,
     )
     budget_monthly = int(tenant_policy.get("budget_monthly_prompts") or 10000)

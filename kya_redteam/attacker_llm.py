@@ -39,10 +39,8 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +90,7 @@ _DEFAULT_TIMEOUT_S = _int_env("KYA_REDTEAM_ATTACKER_TIMEOUT", 30)
 _DEFAULT_MAX_TOKENS = _int_env("KYA_REDTEAM_ATTACKER_MAX_TOKENS", 512)
 
 
-def model_for_tier(tier: str, override: Optional[str] = None) -> Optional[str]:
+def model_for_tier(tier: str, override: str | None = None) -> str | None:
     """Resolve the attacker model for a tier. None means "no LLM
     available" — the orchestrator should reject any multi-turn campaign
     for this tenant.
@@ -123,7 +121,7 @@ class AttackerCallResult:
     completion_tokens: int = 0
     total_tokens: int = 0
     duration_ms: int = 0
-    error: Optional[str] = None
+    error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -148,7 +146,7 @@ def _normalize_for_litellm(model: str) -> str:
     return model
 
 
-def _resolve_with_fallback(requested: str) -> Optional[str]:
+def _resolve_with_fallback(requested: str) -> str | None:
     """Pick the first model whose provider has an env API key. Returns
     the LiteLLM model string, or None when nothing's usable.
 
@@ -221,7 +219,7 @@ def call_attacker(
     max_tokens: int = _DEFAULT_MAX_TOKENS,
     temperature: float = 0.7,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
-    extra_params: Optional[dict] = None,
+    extra_params: dict | None = None,
 ) -> AttackerCallResult:
     """Single LLM round-trip via LiteLLM. Returns AttackerCallResult.
 
