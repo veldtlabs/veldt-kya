@@ -46,6 +46,7 @@ from sqlalchemy import func, select, update
 
 from ._inbound_signing import (
     SignatureVerificationError,
+    require_trusted_keys,
     trusted_keys,
     verify_envelope,
 )
@@ -272,7 +273,12 @@ def fetch_now(db, *, collector_url: str, request_timeout_s: float = 15.0,
 
     Pure foreground call — usable in tests and ops scripts. The schedule
     loop installed by `enable_inbound()` wraps this.
+
+    Raises :class:`RuntimeError` immediately if no trust anchors are
+    configured, so a direct ``fetch_now()`` call never silently no-ops
+    or wastes an HTTP request against the collector.
     """
+    require_trusted_keys()
     _ensure_counters()
     ensure_inbound_table(db)
 
@@ -534,11 +540,8 @@ def enable_inbound(
     global _ACTIVE, _ACTIVE_CFG
     if not collector_url:
         raise ValueError("collector_url is required")
-    if not trusted_keys():
-        raise RuntimeError(
-            "no trust anchor configured — set KYA_INBOUND_PUBLIC_KEY=<keyid>:<base64> "
-            "or populate DEFAULT_PINNED_KEYS in _inbound_signing.py before enabling"
-        )
+    # Hard-refuse if no trust anchors — never silently no-op the inbound path.
+    require_trusted_keys()
     with _ACTIVE_LOCK:
         if _ACTIVE is not None:
             _ACTIVE.shutdown()
