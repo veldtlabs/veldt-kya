@@ -153,7 +153,14 @@ class TelemetryTransmitter:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="kya-telemetry", daemon=True)
         self._thread.start()
-        atexit.register(self.shutdown)
+        # Capture a stable reference: atexit.unregister cannot match a
+        # fresh bound method object (Python bug-feature) — every
+        # `self.shutdown` access produces a new bound-method instance
+        # that compares unequal to the registered one. Storing the
+        # callable here lets shutdown() unregister cleanly so
+        # enable/disable cycles don't leak handlers.
+        self._atexit_handle = self.shutdown
+        atexit.register(self._atexit_handle)
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
@@ -208,6 +215,14 @@ class TelemetryTransmitter:
         try:
             if self._thread.is_alive() and threading.current_thread() is not self._thread:
                 self._thread.join(timeout=2.0)
+        except Exception:
+            pass
+        # Unregister the atexit handler — otherwise repeated
+        # enable_telemetry()/disable_telemetry() cycles accumulate
+        # one atexit handler per cycle for the process lifetime
+        # (one of the silent-leak modes flagged in PYPI item 8).
+        try:
+            atexit.unregister(self._atexit_handle)
         except Exception:
             pass
 
