@@ -18,8 +18,8 @@ caused in healthcare and e-commerce tenants.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,7 @@ class DataLeakScanner:
 
     def add_pattern(
         self, data_class: str, regex: str, label: str,
-        validator: Optional[PatternValidator] = None,
+        validator: PatternValidator | None = None,
     ) -> None:
         """Register an additional pattern. `validator` (optional) is run on
         each match — returning False drops the match (validates without

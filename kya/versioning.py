@@ -186,9 +186,10 @@ def snapshot_agent(
     # backoff so high-throughput agent fleets don't silently lose
     # versions under contention. The race window per attempt is small
     # so a handful of retries lands the write.
-    from sqlalchemy.exc import IntegrityError
     import random
     import time as _time
+
+    from sqlalchemy.exc import IntegrityError
 
     last_exc: Exception | None = None
     version_no: int = 1

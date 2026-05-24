@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 DEFAULT_PII_FIELDS: tuple[str, ...] = (
     "email", "phone", "ssn", "address", "ip_address",

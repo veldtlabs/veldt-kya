@@ -26,7 +26,6 @@ the customer actually calls this function. KYA core has zero SDK deps.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
 
 from .client import KyaClient
 from .scanner import DataLeakScanner
@@ -36,9 +35,9 @@ logger = logging.getLogger(__name__)
 
 def openai_agents_hooks(
     client: KyaClient,
-    allowed_tools_per_agent: Optional[dict[str, set[str]]] = None,
-    scanner: Optional[DataLeakScanner] = None,
-    correlation_id: Optional[str] = None,
+    allowed_tools_per_agent: dict[str, set[str]] | None = None,
+    scanner: DataLeakScanner | None = None,
+    correlation_id: str | None = None,
 ):
     """Build a RunHooks subclass instance wired to a KyaClient.
 
@@ -63,7 +62,7 @@ def openai_agents_hooks(
     """
     # Lazy import — only fails if customer actually uses this adapter.
     try:
-        from agents import RunHooks, RunContextWrapper, Agent
+        from agents import Agent, RunContextWrapper, RunHooks
     except ImportError as exc:
         raise ImportError(
             "openai_agents_hooks() requires `pip install openai-agents`."

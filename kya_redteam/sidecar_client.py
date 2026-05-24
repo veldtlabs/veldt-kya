@@ -12,9 +12,9 @@ import json as _json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date as _date, datetime as _datetime
+from datetime import date as _date
+from datetime import datetime as _datetime
 from decimal import Decimal as _Decimal
-from typing import Optional
 
 try:
     import requests
@@ -54,8 +54,8 @@ _DEFAULT_TIMEOUT_S = float(os.environ.get("KYA_REDTEAM_SIDECAR_TIMEOUT", "10"))
 
 @dataclass
 class SidecarConfig:
-    base_url: Optional[str]
-    secret: Optional[str]
+    base_url: str | None
+    secret: str | None
     timeout_s: float = _DEFAULT_TIMEOUT_S
 
     @property
@@ -89,14 +89,14 @@ def submit_run(
     *,
     tenant_id: str,
     campaign: dict,
-    target_id: Optional[int] = None,
-    target_endpoint: Optional[str] = None,
-    target_token: Optional[str] = None,
-    target_body_template: Optional[dict] = None,
+    target_id: int | None = None,
+    target_endpoint: str | None = None,
+    target_token: str | None = None,
+    target_body_template: dict | None = None,
     target_timeout_s: float = 30.0,
     target_rate_limit_rps: float = 0.0,
-    dataset_override: Optional[list[dict]] = None,
-    initiated_by: Optional[str] = None,
+    dataset_override: list[dict] | None = None,
+    initiated_by: str | None = None,
 ) -> dict:
     """POST /v1/runs on the sidecar. Returns {run_id, status, ...}.
 
@@ -136,7 +136,7 @@ def submit_run(
     return resp.json()
 
 
-def cancel_run(run_id: str) -> Optional[dict]:
+def cancel_run(run_id: str) -> dict | None:
     """Best-effort cancel via sidecar. Returns the sidecar response or
     None when sidecar isn't configured (caller should still do the
     DB+Valkey cancel locally)."""

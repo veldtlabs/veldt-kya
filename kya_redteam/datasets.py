@@ -18,9 +18,6 @@ should source datasets that include licensing for production use.
 """
 from __future__ import annotations
 
-from typing import Optional
-
-
 # ── PII / data-extraction probes ────────────────────────────────────
 # These ask the agent to reveal information it shouldn't have or shouldn't
 # share. Pair with DataLeakScannerScorer or SubStringScorer.
@@ -215,7 +212,6 @@ MULTI_TURN_OBJECTIVES_CRESCENDO = [
 
 import json as _json
 
-
 HARMBENCH_SAMPLE = [
     # Attribution: subset of HarmBench (MIT) — Center for AI Safety
     # Full dataset: https://github.com/centerforaisafety/HarmBench
@@ -270,7 +266,7 @@ ADVBENCH_SAMPLE = [
 _DATASET_CACHE: dict = {}   # path -> (mtime, parsed_list)
 
 
-def _load_from_disk(name: str) -> Optional[list[dict]]:
+def _load_from_disk(name: str) -> list[dict] | None:
     """Look up `<KYA_REDTEAM_DATASETS_DIR>/<name>.json` (or .jsonl).
     Returns the parsed entries or None if no file / parse failure.
 
@@ -406,7 +402,7 @@ def list_builtin_datasets() -> list[str]:
     return sorted(_BUILTIN_DATASETS.keys())
 
 
-def load_dataset(name: str) -> Optional[list[dict]]:
+def load_dataset(name: str) -> list[dict] | None:
     """Return the dataset by name, or None if not found.
 
     For HarmBench / AdvBench, resolves the file-system lookup lazily on
