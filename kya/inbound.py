@@ -476,7 +476,10 @@ class _InboundWorker:
         self._thread = threading.Thread(target=self._run, name="kya-inbound", daemon=True)
         self._thread.start()
         self._last_fetch_summary: dict | None = None
-        atexit.register(self.shutdown)
+        # Capture a stable reference; atexit.unregister can't match a
+        # freshly-bound method (Python quirk). See PYPI item 8 fix.
+        self._atexit_handle = self.shutdown
+        atexit.register(self._atexit_handle)
 
     def _run(self) -> None:
         interval = max(60.0, float(self._cfg["interval_s"]))
@@ -510,6 +513,14 @@ class _InboundWorker:
         try:
             if self._thread.is_alive() and threading.current_thread() is not self._thread:
                 self._thread.join(timeout=2.0)
+        except Exception:
+            pass
+        # Unregister the atexit handler — otherwise repeated
+        # enable_inbound()/disable_inbound() cycles accumulate one
+        # atexit handler per cycle for the process lifetime (PYPI
+        # SHOULD-DO item 8: silent leak in long-running hosts).
+        try:
+            atexit.unregister(self._atexit_handle)
         except Exception:
             pass
 

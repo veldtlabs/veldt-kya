@@ -106,6 +106,33 @@ jobs:
       - name: Smoke from installed wheel
         run: /tmp/v/bin/python examples/sdk_smoke_test.py
 
+      # PYPI SHOULD-DO item 10: wheel-install behavioral parity.
+      # The pytest step above runs from repo root, so kya imports could
+      # resolve from the source tree rather than the wheel. This step
+      # cd's into /tmp (no source on path) and verifies the wheel-
+      # installed kya is what's actually being imported, and exercises
+      # the major public surfaces from that wheel.
+      - name: Wheel parity (kya imported from installed wheel)
+        run: |
+          cd /tmp && /tmp/v/bin/python -c "
+          import os
+          import kya
+          src = os.path.abspath(kya.__file__)
+          assert '/tmp/v/' in src, f'kya is NOT from the installed wheel: {src}'
+          # Exercise the major public surfaces from the wheel-installed kya.
+          from kya import score_agent, normalize_agent_def, default_session
+          r = score_agent({'agent_key':'wheel_parity','tools':['t'],'human_loop':'in_the_loop'})
+          assert 0 <= r.score <= 100, f'score out of range: {r.score}'
+          assert r.bucket in ('low','medium','high','critical')
+          normed = normalize_agent_def('langchain', {'name':'lc','tools':['t']})
+          assert normed['agent_key'] == 'lc'
+          # Sibling packages must also resolve from the wheel.
+          import kya_hooks, kya_otlp_bridge, kya_redteam
+          for mod in (kya_hooks, kya_otlp_bridge, kya_redteam):
+              assert '/tmp/v/' in os.path.abspath(mod.__file__), f'{mod.__name__} not from wheel'
+          print(f'Wheel parity OK: kya from {src}')
+          "
+
   # ────────────────────────────────────────────────────────────────────
   # Cleanroom install matrix (PYPI release-blocker item 3)
   #
@@ -170,3 +197,81 @@ jobs:
           "$VPY" -c "import kya_hooks, kya_otlp_bridge, kya_redteam; print('siblings OK')"
           "$VPY" examples/sdk_smoke_test.py
           "$VPY" examples/four_gate_adversarial_test.py
+
+  # ────────────────────────────────────────────────────────────────────
+  # Optional extras install matrix (PYPI SHOULD-DO item 9)
+  #
+  # Each extra has a corresponding gated import in the SDK. Install
+  # the wheel WITH ONLY that extra in a fresh venv, then verify the
+  # gated import wakes up. Catches the silent-disable failure mode
+  # where an extra is declared in pyproject.toml but its consumer
+  # module has a bad import path or unmet transitive dep.
+  # ────────────────────────────────────────────────────────────────────
+  extras:
+    name: Extras · ${{ matrix.extra }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: cleanroom
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - extra: metrics
+            verify: |
+              import prometheus_client
+              from prometheus_client import Counter
+              c = Counter("kya_extras_test", "test"); c.inc()
+              print("metrics OK:", prometheus_client.__version__ if hasattr(prometheus_client, "__version__") else "imported")
+          - extra: tracing
+            verify: |
+              from opentelemetry import trace
+              tracer = trace.get_tracer("kya-extras-test")
+              with tracer.start_as_current_span("test") as span:
+                  span.set_attribute("ok", True)
+              print("tracing OK")
+          - extra: webhooks
+            verify: |
+              import requests
+              print("webhooks OK:", requests.__version__)
+          - extra: judge
+            verify: |
+              from kya import llm_judge
+              assert hasattr(llm_judge, "DEFAULT_JUDGE_MODEL")
+              print("judge OK:", llm_judge.DEFAULT_JUDGE_MODEL)
+          - extra: all
+            verify: |
+              import prometheus_client
+              from opentelemetry import trace
+              import requests
+              from kya import llm_judge
+              print("all OK")
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip
+          pip install "setuptools>=77" build
+          python -m build --wheel
+
+      - name: Install veldt-kya[${{ matrix.extra }}] in fresh venv + verify gate
+        shell: bash
+        run: |
+          python -m venv .v
+          .v/bin/pip install --upgrade pip
+          # Install the wheel with the specific extra. --find-links points pip
+          # at the local dist/, --no-cache-dir avoids cross-job cache contamination.
+          WHEEL=$(ls dist/*.whl)
+          .v/bin/pip install --no-cache-dir "veldt-kya[${{ matrix.extra }}] @ file://$PWD/$WHEEL"
+          # Run the per-extra verification snippet — confirms the gated
+          # import wakes up, not just that pip resolved the dependency.
+          .v/bin/python - <<'PYEOF'
+          ${{ matrix.verify }}
+          PYEOF
