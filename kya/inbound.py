@@ -445,6 +445,11 @@ def approve_recommendation(db, rec_id: int, *, approved_by: str | None = None,
             tenant_id=decision["tenant_id"],
             changed_by=approved_by,
             reason=f"approved inbound recommendation id={rec_id}",
+            # Operator explicitly approved this recommendation, so a
+            # platform-level decrease (if that's what it is) is an
+            # informed decision — bypass the platform-only-tighten
+            # defense added 2026-05.
+            allow_platform_decrease=True,
         )
         db.execute(
             update(_T)

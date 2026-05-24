@@ -40,7 +40,6 @@ Public API
     reject_suggestion(db, suggestion_id, rejected_by, notes=None) -> dict
 """
 
-import json
 import logging
 
 # Lazy SQLAlchemy import for SDK pluggability
@@ -232,28 +231,28 @@ def propose_from_incident(db, incident_row: dict) -> list[dict]:
             "policy_id": incident_row.get("policy_id"),
             "resolved_at": str(incident_row.get("resolved_at") or ""),
         }
+        # Use SA Core insert (not raw text()) so the autoinc_id Sequence
+        # default fires Python-side. Raw text INSERT on PG fails with
+        # NotNullViolation on the id column because SA 2.x doesn't emit
+        # DEFAULT nextval() in the CREATE TABLE DDL when Sequence is
+        # only a positional Column arg — the sequence value is supplied
+        # by SA at insert time when using table.insert(). The text()
+        # path bypassed that. (PYPI task #12, May 2026.)
+        from ._legacy_tables import kya_weight_suggestions
         result = db.execute(
-            text("""
-                INSERT INTO prov_schema.kya_weight_suggestions
-                    (tenant_id, incident_id, agent_key, scope, key,
-                     current_value, suggested_value, suggested_delta,
-                     rationale, evidence, status)
-                VALUES (:tid, :iid, :agent, :scope, :key, :cur, :sug, :delta,
-                        :rationale, CAST(:evidence AS jsonb), 'pending')
-                RETURNING id
-            """),
-            {
-                "tid": tenant_id,
-                "iid": incident_id,
-                "agent": incident_row.get("model_id"),
-                "scope": scope,
-                "key": key,
-                "cur": current,
-                "sug": suggested,
-                "delta": delta,
-                "rationale": rationale_template,
-                "evidence": json.dumps(evidence, default=str),
-            },
+            kya_weight_suggestions.insert().values(
+                tenant_id=tenant_id,
+                incident_id=incident_id,
+                agent_key=incident_row.get("model_id"),
+                scope=scope,
+                key=key,
+                current_value=current,
+                suggested_value=suggested,
+                suggested_delta=delta,
+                rationale=rationale_template,
+                evidence=evidence,  # json_or_jsonb() type handles dialect
+                status="pending",
+            ).returning(kya_weight_suggestions.c.id)
         ).fetchone()
         sid = int(result[0])
         suggestions.append(
@@ -394,6 +393,9 @@ def approve_suggestion(
             tenant_id=decision["tenant_id"],
             changed_by=approved_by,
             reason=f"applied from kya_weight_suggestion id={suggestion_id}",
+            # Operator approval IS the gate — if they approved a
+            # platform-level decrease, honor it.
+            allow_platform_decrease=True,
         )
         # Mark as applied
         db.execute(

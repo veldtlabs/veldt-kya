@@ -47,14 +47,6 @@ def db():
         eng.dispose()
 
 
-@pytest.mark.skip(
-    reason="Pre-existing PG sequence-default bug on kya_weight_suggestions.id "
-           "— the autoinc_id() Sequence isn't producing nextval() DEFAULT on PG "
-           "in this code path; INSERT raises NotNullViolation on 'id'. Test was "
-           "previously masked by CI ruff-lint failure. Investigation separate; "
-           "closed-loop is a supporting discipline (not a headline contribution) "
-           "per the paper. Skip until the underlying PG DDL issue is fixed."
-)
 def test_in_tenant_feedback_loop_closes(db):
     """incident → suggestion → approve → weight changed."""
     import kya
