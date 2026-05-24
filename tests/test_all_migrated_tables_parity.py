@@ -6,6 +6,11 @@ For each (backend, table) pair, verifies:
   3. Data can be inserted via ORM (or raw INSERT for the 1 lazy-Table)
   4. Data can be queried back with the expected shape
 
+NOTE: side-loads ORM models from monorepo path /repo/app/{decisions,agents/kya}/.
+Skipped automatically when those paths are unavailable (i.e. running in the
+standalone veldt-kya repo). Equivalent cross-backend coverage is in
+tests/verify_all_backends_with_data.py (68/68 cells passing).
+
 Tables checked (12 total, the ones we've already migrated):
 
 Core (SDK-owned ORM):
@@ -33,6 +38,13 @@ import uuid as _uuid
 from datetime import datetime, timezone
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists("/repo/app/agents/kya/_portable.py"),
+    reason="Monorepo-only side-load path /repo/app/ not available in "
+           "standalone veldt-kya; equivalent coverage in "
+           "tests/verify_all_backends_with_data.py.",
+)
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 

@@ -3,6 +3,12 @@
 For each backend (SQLite, DuckDB, MySQL, PostgreSQL), verifies:
   - All 12 tables CREATE successfully via the shared _LEGACY_MD.create_all
   - Catalog inspection confirms each table exists
+
+NOTE: side-loads kya._portable and kya._legacy_tables from the monorepo
+path /repo/app/agents/kya/. Skipped automatically when those paths are
+unavailable (i.e. running in the standalone veldt-kya repo). Equivalent
+cross-backend coverage in the standalone repo is provided by
+tests/verify_all_backends_with_data.py (68/68 cells passing).
 """
 
 import os
@@ -11,6 +17,13 @@ import types
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists("/repo/app/agents/kya/_portable.py"),
+    reason="Monorepo-only side-load path /repo/app/agents/kya/ not available "
+           "in standalone veldt-kya; equivalent coverage in "
+           "tests/verify_all_backends_with_data.py.",
+)
 
 
 def _stub_parents():
