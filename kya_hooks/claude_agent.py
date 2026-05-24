@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
 from .client import KyaClient
 from .scanner import DataLeakScanner
@@ -39,9 +38,9 @@ def claude_agent_hooks(
     client: KyaClient,
     *,
     agent_key: str,
-    allowed_tools: Optional[set[str]] = None,
-    scanner: Optional[DataLeakScanner] = None,
-    correlation_id: Optional[str] = None,
+    allowed_tools: set[str] | None = None,
+    scanner: DataLeakScanner | None = None,
+    correlation_id: str | None = None,
     matcher: str = "mcp__.*",
 ):
     """Build a hooks dict to pass into `ClaudeAgentOptions(hooks=...)`.

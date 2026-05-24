@@ -14,17 +14,18 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str, dict], None]
 
-_emitter: Optional[EmitFn] = None
+_emitter: EmitFn | None = None
 _lock = threading.Lock()
 
 
-def set_emitter(fn: Optional[EmitFn]) -> None:
+def set_emitter(fn: EmitFn | None) -> None:
     """Atomically install (or remove) the active emitter."""
     global _emitter
     with _lock:

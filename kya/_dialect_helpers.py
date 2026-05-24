@@ -26,7 +26,7 @@ Concurrency notes:
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
 
 from sqlalchemy import Table, text
 from sqlalchemy.dialects import mysql as mysql_d
@@ -115,7 +115,7 @@ def _duckdb_upsert_raw(db, table: Table, values: dict, conflict_cols, update_col
     placeholders = ", ".join(f":{c}" for c in cols)
     conflict_list = ", ".join(conflict_cols)
     if update_cols_map:
-        set_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols_map.keys())
+        set_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols_map)
         upsert_tail = f"ON CONFLICT ({conflict_list}) DO UPDATE SET {set_clause}"
     else:
         upsert_tail = f"ON CONFLICT ({conflict_list}) DO NOTHING"

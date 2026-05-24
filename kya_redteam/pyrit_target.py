@@ -16,7 +16,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 try:
     import requests
@@ -72,8 +72,8 @@ class TargetResponse:
     duration_ms: int = 0
     tools_used: list[str] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
-    raw_payload: Optional[dict] = None
-    error: Optional[str] = None
+    raw_payload: dict | None = None
+    error: str | None = None
 
 
 class HttpAgentTarget:
@@ -96,12 +96,12 @@ class HttpAgentTarget:
         *,
         agent_key: str,
         timeout_s: float = 30.0,
-        response_parser: Optional[Any] = None,
-        session_id: Optional[str] = None,
-        extra_headers: Optional[dict] = None,
-        body_template: Optional[dict] = None,
+        response_parser: Any | None = None,
+        session_id: str | None = None,
+        extra_headers: dict | None = None,
+        body_template: dict | None = None,
         rate_limit_rps: float = 0.0,
-        rate_limit_key: Optional[str] = None,
+        rate_limit_key: str | None = None,
     ):
         self.endpoint_url = endpoint_url
         self.token = token

@@ -39,8 +39,9 @@ import atexit
 import logging
 import threading
 import time
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from sqlalchemy import func, select, update
 
@@ -52,6 +53,8 @@ from ._inbound_signing import (
 )
 from ._legacy_tables import (
     create_legacy_tables,
+)
+from ._legacy_tables import (
     kya_inbound_recommendations as _T,
 )
 
@@ -219,7 +222,7 @@ def _persist_one(db, envelope: dict, rec: dict) -> tuple[bool, str]:
 
 
 def _auto_apply_if_allowed(db, rec_external_id: str, scope: str, key: str,
-                           recommended_value: int, allowlist: Optional[Iterable[tuple]]) -> bool:
+                           recommended_value: int, allowlist: Iterable[tuple] | None) -> bool:
     """Apply a fresh recommendation immediately if (scope, key) is in the
     customer-configured auto-apply allowlist. Returns True if applied."""
     if not allowlist:
@@ -266,8 +269,8 @@ def _auto_apply_if_allowed(db, rec_external_id: str, scope: str, key: str,
 
 
 def fetch_now(db, *, collector_url: str, request_timeout_s: float = 15.0,
-              auto_apply_allowlist: Optional[Iterable[tuple]] = None,
-              since: Optional[datetime] = None) -> dict:
+              auto_apply_allowlist: Iterable[tuple] | None = None,
+              since: datetime | None = None) -> dict:
     """Pull the latest envelope from the collector, verify signature,
     persist all OK recommendations. Returns a summary dict.
 
@@ -375,8 +378,8 @@ def fetch_now(db, *, collector_url: str, request_timeout_s: float = 15.0,
 # ── Operator queue API ────────────────────────────────────────────
 
 
-def list_recommendations(db, *, status: Optional[str] = None,
-                         tenant_id: Optional[str] = None,
+def list_recommendations(db, *, status: str | None = None,
+                         tenant_id: str | None = None,
                          limit: int = 100) -> list[dict]:
     ensure_inbound_table(db)
     stmt = select(_T)
@@ -390,7 +393,7 @@ def list_recommendations(db, *, status: Optional[str] = None,
 
 
 def _decide(db, rec_id: int, *, new_status: str,
-            decided_by: Optional[str], notes: Optional[str]) -> dict:
+            decided_by: str | None, notes: str | None) -> dict:
     ensure_inbound_table(db)
     row = db.execute(
         select(_T.c.id, _T.c.external_id, _T.c.tenant_id, _T.c.scope,
@@ -426,8 +429,8 @@ def _decide(db, rec_id: int, *, new_status: str,
     }
 
 
-def approve_recommendation(db, rec_id: int, *, approved_by: Optional[str] = None,
-                           notes: Optional[str] = None) -> dict:
+def approve_recommendation(db, rec_id: int, *, approved_by: str | None = None,
+                           notes: str | None = None) -> dict:
     """Mark as approved AND apply via set_override. Mirrors
     `kya.approve_suggestion` semantics so reviewers use one mental model."""
     decision = _decide(db, rec_id, new_status="approved", decided_by=approved_by, notes=notes)
@@ -457,8 +460,8 @@ def approve_recommendation(db, rec_id: int, *, approved_by: Optional[str] = None
     return decision
 
 
-def reject_recommendation(db, rec_id: int, *, rejected_by: Optional[str] = None,
-                          notes: Optional[str] = None) -> dict:
+def reject_recommendation(db, rec_id: int, *, rejected_by: str | None = None,
+                          notes: str | None = None) -> dict:
     return _decide(db, rec_id, new_status="rejected", decided_by=rejected_by, notes=notes)
 
 
@@ -472,7 +475,7 @@ class _InboundWorker:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="kya-inbound", daemon=True)
         self._thread.start()
-        self._last_fetch_summary: Optional[dict] = None
+        self._last_fetch_summary: dict | None = None
         atexit.register(self.shutdown)
 
     def _run(self) -> None:
@@ -511,7 +514,7 @@ class _InboundWorker:
             pass
 
 
-_ACTIVE: Optional[_InboundWorker] = None
+_ACTIVE: _InboundWorker | None = None
 _ACTIVE_LOCK = threading.Lock()
 _ACTIVE_CFG: dict[str, Any] = {}
 
@@ -522,7 +525,7 @@ def enable_inbound(
     collector_url: str,
     interval_s: float = 86400.0,           # daily by default
     request_timeout_s: float = 15.0,
-    auto_apply_allowlist: Optional[list[tuple[str, str]]] = None,
+    auto_apply_allowlist: list[tuple[str, str]] | None = None,
 ) -> dict:
     """Start polling the collector.
 

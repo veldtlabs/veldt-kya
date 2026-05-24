@@ -25,7 +25,6 @@ import datetime as _dt
 import logging
 import os
 import time
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 def _get_valkey():
     try:
-        from db.redis import get_redis   # type: ignore
+        from db.redis import get_redis  # type: ignore
         return get_redis()
     except Exception:
         return None
@@ -45,7 +44,7 @@ def _get_valkey():
 _BUDGET_TTL_S = 35 * 24 * 3600   # 35 days — long enough to cover end-of-month grace
 
 
-def _budget_key(tenant_id: str, now: Optional[_dt.datetime] = None) -> str:
+def _budget_key(tenant_id: str, now: _dt.datetime | None = None) -> str:
     now = now or _dt.datetime.now(_dt.timezone.utc)
     return f"kya:redteam:budget:{tenant_id}:{now.strftime('%Y%m')}"
 
@@ -112,12 +111,12 @@ _DEFAULT_ATTACKER_TOKEN_CAP = int(os.environ.get(
 ))
 
 
-def _token_budget_key(tenant_id: str, now: Optional[_dt.datetime] = None) -> str:
+def _token_budget_key(tenant_id: str, now: _dt.datetime | None = None) -> str:
     now = now or _dt.datetime.now(_dt.timezone.utc)
     return f"kya:redteam:tokens:{tenant_id}:{now.strftime('%Y%m')}"
 
 
-def check_token_budget(tenant_id: str, cap: Optional[int] = None) -> dict:
+def check_token_budget(tenant_id: str, cap: int | None = None) -> dict:
     """Read-only check of attacker/judge token usage this month.
 
     M7 — cap=0 is treated as "explicit zero" (no tokens allowed); only
@@ -143,7 +142,7 @@ def check_token_budget(tenant_id: str, cap: Optional[int] = None) -> dict:
 
 
 def consume_attacker_tokens(
-    tenant_id: str, tokens: int, cap: Optional[int] = None,
+    tenant_id: str, tokens: int, cap: int | None = None,
 ) -> dict:
     """INCRBY the monthly attacker-token counter. Returns the standard
     {used, cap, allowed} dict. `allowed=False` means the cap has been

@@ -115,12 +115,37 @@ extend-exclude = ["dist", "build", "*.egg-info"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
-# E501 (line length) is enforced by formatter; ignore here to skip
-# false positives on long string literals. B008 — FastAPI Depends
-# patterns trigger this and are intentional in KYA's optional hooks.
-ignore = ["E501", "B008"]
+# E501 — long lines: enforced by formatter; ignore here to skip false
+#        positives on long string literals.
+# B008  — FastAPI Depends() default-value pattern, intentional in
+#         optional hooks.
+# SIM105 — `try/except/pass` is perfectly idiomatic for best-effort
+#          counter increments and atexit cleanup; contextlib.suppress
+#          adds an import dependency without changing semantics.
+# SIM102/SIM103 — nested `if` and `return wrap` style; preserved where
+#                 chosen for readability.
+# E701  — multiple statements per line; sometimes used for compact
+#         one-line conditionals.
+# B904  — `raise X` inside `except` without `from e`; we have many
+#         intentional swallow-and-rewrap patterns where chaining adds
+#         noise rather than signal.
+# B905  — `zip()` without `strict=`; backwards-compatible default
+#         behavior is intentional.
+# UP031 — `%`-format → f-string; preserved where the % form is
+#         clearer (e.g. logging templates).
+# F841  — assigned-but-unused locals; preserved where the assignment
+#         documents intent (e.g. capturing last exception for debugger).
+ignore = ["E501", "B008", "SIM105", "SIM102", "SIM103", "E701",
+          "B904", "B905", "UP031", "F841"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403", "E402"]  # re-exports + intentional late imports
 "examples/*.py" = ["E402"]
+# Optional-dependency availability checks: importing the module is the
+# probe; the imported names are intentionally unused.
+"kya_redteam/garak_runtime.py" = ["F401"]
+# Conditional / lazy module-level imports after a feature gate.
+"kya_redteam/datasets.py" = ["E402"]
+"kya_redteam/pyrit_target.py" = ["E402"]
+"kya/principals.py" = ["E402"]
 
