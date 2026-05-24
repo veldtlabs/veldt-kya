@@ -40,10 +40,9 @@ from __future__ import annotations
 import hmac
 import logging
 import os
-from typing import Any, Optional
 
 try:
-    from fastapi import FastAPI, HTTPException, Header, Depends
+    from fastapi import Depends, FastAPI, Header, HTTPException
     from pydantic import BaseModel
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError(
@@ -62,7 +61,7 @@ logger = logging.getLogger("kya_redteam.server")
 
 # ── Auth (constant-time bearer check, applied via Depends) ──────────
 
-def require_sidecar_auth(authorization: Optional[str] = Header(None)) -> None:
+def require_sidecar_auth(authorization: str | None = Header(None)) -> None:
     """FastAPI dependency. Constant-time bearer comparison via
     hmac.compare_digest to defeat timing side-channels.
 
@@ -96,18 +95,18 @@ class RunRequest(BaseModel):
     ready-to-use target_endpoint + token pair OR a materialized
     target_id that the sidecar re-materializes from the shared DB."""
     tenant_id: str
-    initiated_by: Optional[str] = None
+    initiated_by: str | None = None
     # Campaign dict (from kya_redteam_campaigns row)
     campaign: dict
     # Either: target_id (sidecar re-materializes from DB) OR ad-hoc fields
-    target_id: Optional[int] = None
-    target_endpoint: Optional[str] = None
-    target_token: Optional[str] = None
-    target_body_template: Optional[dict] = None
+    target_id: int | None = None
+    target_endpoint: str | None = None
+    target_token: str | None = None
+    target_body_template: dict | None = None
     target_timeout_s: float = 30.0
     target_rate_limit_rps: float = 0.0
     # Optional override
-    dataset_override: Optional[list[dict]] = None
+    dataset_override: list[dict] | None = None
 
 
 # ── App ─────────────────────────────────────────────────────────────
@@ -132,7 +131,7 @@ def _warm_imports() -> dict:
         "target_vault_key_configured": None,
     }
     try:
-        import db.database                                # type: ignore
+        import db.database  # type: ignore
         # Touch SessionLocal so the engine actually initializes
         _ = db.database.SessionLocal
         status["db"] = True
@@ -140,7 +139,7 @@ def _warm_imports() -> dict:
         status["errors"].append(f"db.database: {exc}")
         logger.warning("[REDTEAM-SIDECAR] warm import db.database: %s", exc)
     try:
-        import kya_redteam                        # noqa: F401
+        import kya_redteam  # noqa: F401
         from kya_redteam.pyrit_target import HttpAgentTarget  # noqa: F401
         status["redteam_pkg"] = True
     except Exception as exc:
@@ -238,7 +237,9 @@ def create_app() -> FastAPI:
         target-secret key is configured, PyRIT status, thread-pool
         size, warm-import status."""
         from kya_redteam import (
-            describe_configuration, is_encryption_configured, pyrit_status,
+            describe_configuration,
+            is_encryption_configured,
+            pyrit_status,
         )
         return {
             "service": "vd-kya-redteam",
@@ -256,9 +257,11 @@ def create_app() -> FastAPI:
         """Submit a campaign run. Returns run_id immediately; the
         caller polls vd-app's /redteam/runs/{run_id} (which reads from
         the shared DB) for status."""
-        from db.database import SessionLocal              # type: ignore
+        from db.database import SessionLocal  # type: ignore
+
         from kya_redteam import (
-            run_campaign_async, materialize_target,
+            materialize_target,
+            run_campaign_async,
         )
         from kya_redteam.pyrit_target import HttpAgentTarget
 
@@ -321,8 +324,9 @@ def create_app() -> FastAPI:
         when vd-app is down but the sidecar is up, an operator can hit
         the sidecar directly to stop a runaway run.
         """
-        from db.database import SessionLocal              # type: ignore
+        from db.database import SessionLocal  # type: ignore
         from sqlalchemy import text as _sa_text
+
         from kya_redteam import request_cancel
         with SessionLocal() as db:
             existing = db.execute(
@@ -345,7 +349,7 @@ def create_app() -> FastAPI:
         the canonical UI surface; this endpoint exists for operators
         who want to talk to the sidecar directly during incident
         response."""
-        from db.database import SessionLocal              # type: ignore
+        from db.database import SessionLocal  # type: ignore
         from sqlalchemy import text as _sa_text
         with SessionLocal() as db:
             row = db.execute(

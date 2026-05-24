@@ -151,6 +151,10 @@ jobs:
 
       - name: Install wheel in fresh venv + smoke test
         shell: bash
+        env:
+          # Force UTF-8 for Windows console output — sdk_smoke_test prints
+          # non-ASCII glyphs (arrows, en-dashes) that crash cp1252 stdout.
+          PYTHONIOENCODING: utf-8
         run: |
           python -m venv .v
           if [ -d ".v/Scripts" ]; then

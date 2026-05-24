@@ -35,7 +35,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from . import _emit
 from ._redactor import Redactor, passthrough_redactor
@@ -104,7 +104,7 @@ class DualWriteConfig:
     collector_url: str
     api_key: str
     allowlist: frozenset[str]
-    redactor: Optional[Redactor] = None
+    redactor: Redactor | None = None
     queue_max: int = 10_000
     batch_max: int = 50
     flush_interval_s: float = 2.0
@@ -342,7 +342,7 @@ class DualWriteSink:
 
 
 # ── Module-level API ───────────────────────────────────────────────
-_ACTIVE: Optional[DualWriteSink] = None
+_ACTIVE: DualWriteSink | None = None
 _ACTIVE_LOCK = threading.Lock()
 
 
@@ -352,7 +352,7 @@ def enable_dual_write(
     api_key: str,
     allowlist: list[str],
     redact: bool = True,
-    redactor: Optional[Redactor] = None,
+    redactor: Redactor | None = None,
     **kwargs: Any,
 ) -> DualWriteSink:
     """Start forwarding KYA recorder events to a Veldt collector.

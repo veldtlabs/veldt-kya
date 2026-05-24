@@ -43,7 +43,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 try:
     from sqlalchemy import text
@@ -148,7 +148,7 @@ def ensure_table(db) -> None:
 
 # ── URL redaction for the run-row breadcrumb ────────────────────────
 
-def _redact_endpoint(url: Optional[str]) -> str:
+def _redact_endpoint(url: str | None) -> str:
     """Strip user-info + query string from a URL for storage. The full
     URL stays in the (encrypted) target row; this is just a label so a
     regulator can tell which endpoint was hit without seeing tokens."""
@@ -180,12 +180,12 @@ def _redact_endpoint(url: Optional[str]) -> str:
 def create_run(
     db, *,
     tenant_id: str,
-    campaign_id: Optional[int],
+    campaign_id: int | None,
     agent_key: str,
     orchestrator: str,
-    target_id: Optional[int] = None,
-    target_endpoint: Optional[str] = None,
-    initiated_by: Optional[str] = None,
+    target_id: int | None = None,
+    target_endpoint: str | None = None,
+    initiated_by: str | None = None,
     status: str = "queued",
 ) -> str:
     """Create a run row, return the public run_id (UUID)."""
@@ -193,6 +193,7 @@ def create_run(
         raise ValueError(f"invalid status: {status}")
     ensure_table(db)
     from datetime import datetime, timezone
+
     from kya._legacy_tables import kya_redteam_runs
     run_id = str(uuid.uuid4())
     now_utc = datetime.now(timezone.utc)
@@ -265,13 +266,13 @@ def heartbeat(db, state: HeartbeatState) -> None:
 def update_run_progress(
     db, run_id: str,
     *,
-    prompts_sent: Optional[int] = None,
-    findings_count: Optional[int] = None,
-    severity_buckets: Optional[dict] = None,
-    attacker_tokens: Optional[int] = None,
-    target_errors: Optional[int] = None,
-    posted_event_id: Optional[int] = None,
-    auto_incidents_created: Optional[int] = None,
+    prompts_sent: int | None = None,
+    findings_count: int | None = None,
+    severity_buckets: dict | None = None,
+    attacker_tokens: int | None = None,
+    target_errors: int | None = None,
+    posted_event_id: int | None = None,
+    auto_incidents_created: int | None = None,
 ) -> None:
     """Patch-update progress fields. None = leave unchanged.
 
@@ -340,7 +341,7 @@ def _get_valkey():
         return None
 
 
-def request_cancel(db, run_id: str, *, by_user_id: Optional[str]) -> bool:
+def request_cancel(db, run_id: str, *, by_user_id: str | None) -> bool:
     """Request cancellation. Writes to DB AND Valkey. Returns True if a
     row matched and was flagged. Idempotent — re-requesting a cancel
     just refreshes the Valkey TTL.
@@ -405,8 +406,8 @@ def finalize_run(
     db, run_id: str,
     *,
     status: str,
-    error_message: Optional[str] = None,
-    tenant_id: Optional[str] = None,
+    error_message: str | None = None,
+    tenant_id: str | None = None,
     sign_attestation: bool = True,
 ) -> dict:
     """Set status + finished_at, optionally create an Ed25519
@@ -437,7 +438,7 @@ def finalize_run(
     return get_run(db, tenant_id, run_id) if tenant_id else {"run_id": run_id, "status": status}
 
 
-def _sign_run_attestation(db, tenant_id: str, run: dict) -> Optional[int]:
+def _sign_run_attestation(db, tenant_id: str, run: dict) -> int | None:
     """Best-effort Ed25519 signing of the run summary."""
     try:
         from decisions.attestation.service import create_attestation  # type: ignore
@@ -522,7 +523,7 @@ def _row_to_run(r) -> dict:
     }
 
 
-def get_run(db, tenant_id: str, run_id: str) -> Optional[dict]:
+def get_run(db, tenant_id: str, run_id: str) -> dict | None:
     ensure_table(db)
     row = db.execute(
         text(
@@ -538,9 +539,9 @@ def get_run(db, tenant_id: str, run_id: str) -> Optional[dict]:
 def list_runs(
     db, tenant_id: str,
     *,
-    agent_key: Optional[str] = None,
-    campaign_id: Optional[int] = None,
-    status: Optional[str] = None,
+    agent_key: str | None = None,
+    campaign_id: int | None = None,
+    status: str | None = None,
     limit: int = 50,
 ) -> list[dict]:
     ensure_table(db)

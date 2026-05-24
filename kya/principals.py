@@ -436,9 +436,10 @@ def record_principal_signal(
     # don't silently lose signal counts. 10 retries with jitter handle
     # the worst contention observed in the load test (20 workers × 50
     # ops on the same principal — 99% land).
-    from sqlalchemy.exc import IntegrityError, OperationalError
     import random as _random
     import time as _time
+
+    from sqlalchemy.exc import IntegrityError, OperationalError
 
     # SQLite/DuckDB: serialize in-process per (tenant, kind, id) to
     # close the lost-update window on the SELECT-merge-UPDATE path.

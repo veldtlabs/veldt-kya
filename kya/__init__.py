@@ -13,7 +13,8 @@ running from a source checkout without `pip install`).
 """
 
 try:
-    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
 
     try:
         __version__ = _pkg_version("veldt-kya")
@@ -173,7 +174,6 @@ from .phoenix_poll import (
 from .phoenix_poll import (
     is_enabled as phoenix_poll_enabled,
 )
-from .session import default_session, reset_default_session
 from .principals import (
     PRINCIPAL_KINDS,
     PrincipalTrust,
@@ -211,6 +211,7 @@ from .security_caps import (
     set_tool_capabilities,
 )
 from .security_caps import CAPABILITY_WEIGHTS as _CAPABILITY_WEIGHTS
+from .session import default_session, reset_default_session
 from .skills import (
     DEFAULT_SKILL_CLASSIFICATIONS,
     classify_skill,
@@ -250,10 +251,27 @@ register_scope("class_weights", _CLASS_WEIGHTS)
 register_scope("capability_weights", _CAPABILITY_WEIGHTS)
 register_scope("source_weights", _SOURCE_WEIGHTS)
 register_scope("deployment_weights", _DEPLOYMENT_WEIGHTS)
+from ._inbound_signing import SignatureVerificationError
+from ._redactor import Redactor as DualWriteRedactor
+from ._session_factory import (
+    has_factory as has_session_factory,
+)
+from ._session_factory import (
+    set_session_factory,
+)
 from .autoinstrument import (
     autoinstrument,
     deinstrument,
     patched_sdks,
+)
+from .dualwrite import (
+    ALLOWED_TABLES as DUAL_WRITE_ALLOWED_TABLES,
+)
+from .dualwrite import (
+    DualWriteAllowlistError,
+    disable_dual_write,
+    dual_write_status,
+    enable_dual_write,
 )
 from .evidence import (
     VALID_EVIDENCE_KINDS,
@@ -269,6 +287,20 @@ from .format_adapter import (
     list_adapters,
     normalize_agent_def,
     register_adapter,
+)
+from .inbound import (
+    KNOWN_SCOPES as INBOUND_KNOWN_SCOPES,
+)
+from .inbound import (
+    approve_recommendation,
+    disable_inbound,
+    enable_inbound,
+    inbound_status,
+    list_recommendations,
+    reject_recommendation,
+)
+from .inbound import (
+    fetch_now as fetch_inbound_now,
 )
 from .quality import (
     QualityReport,
@@ -297,29 +329,6 @@ from .rogue import (
     record_oos_tool_attempt,
     record_policy_violation,
     rogue_score,
-)
-from .dualwrite import (
-    ALLOWED_TABLES as DUAL_WRITE_ALLOWED_TABLES,
-    DualWriteAllowlistError,
-    disable_dual_write,
-    dual_write_status,
-    enable_dual_write,
-)
-from ._inbound_signing import SignatureVerificationError
-from .inbound import (
-    KNOWN_SCOPES as INBOUND_KNOWN_SCOPES,
-    approve_recommendation,
-    disable_inbound,
-    enable_inbound,
-    fetch_now as fetch_inbound_now,
-    inbound_status,
-    list_recommendations,
-    reject_recommendation,
-)
-from ._redactor import Redactor as DualWriteRedactor
-from ._session_factory import (
-    has_factory as has_session_factory,
-    set_session_factory,
 )
 from .storage import init_storage
 from .telemetry import (

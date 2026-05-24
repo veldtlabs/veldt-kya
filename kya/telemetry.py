@@ -44,9 +44,8 @@ import os
 import platform
 import socket
 import threading
-import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +84,7 @@ class _Aggregator:
         self._by_kind: dict[str, dict[str, int]] = {}
         self._window_start = datetime.now(timezone.utc)
 
-    def inc(self, key: str, kind: Optional[str] = None, n: int = 1) -> None:
+    def inc(self, key: str, kind: str | None = None, n: int = 1) -> None:
         with self._lock:
             self._totals[key] = self._totals.get(key, 0) + n
             if kind:
@@ -125,7 +124,7 @@ _AGG = _Aggregator()
 _DISABLED = _TELEMETRY_DISABLED_AT_IMPORT
 
 
-def record_event(key: str, kind: Optional[str] = None) -> None:
+def record_event(key: str, kind: str | None = None) -> None:
     """Increment one of the named aggregate counters. Always safe; cheap."""
     if _DISABLED:
         return
@@ -216,13 +215,13 @@ class TelemetryTransmitter:
 # ── Module-level API ───────────────────────────────────────────────
 
 
-_TX: Optional[TelemetryTransmitter] = None
+_TX: TelemetryTransmitter | None = None
 _TX_LOCK = threading.Lock()
 
 
 def enable_telemetry(
     *,
-    url: Optional[str] = None,
+    url: str | None = None,
     flush_interval_s: float = 900.0,
     request_timeout_s: float = 10.0,
 ) -> None:

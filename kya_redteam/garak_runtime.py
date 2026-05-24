@@ -34,7 +34,6 @@ import importlib.util
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +59,8 @@ class GarakStatus:
     import_ok: bool = False
     enabled_by_env: bool = False
     disabled_by_env: bool = False
-    version: Optional[str] = None
-    error: Optional[str] = None
+    version: str | None = None
+    error: str | None = None
     probe_count_native: int = 0
 
     def to_dict(self) -> dict:
@@ -208,9 +207,9 @@ def run_probe_via_garak(probe_name: str, http_target) -> dict:
     # Lazy import the real library inside the function so module import
     # stays cheap when garak isn't installed.
     try:
-        from garak import _config                              # type: ignore
-        from garak.probes import base as probes_base           # type: ignore
-        from garak.detectors import base as detectors_base     # type: ignore
+        from garak import _config  # type: ignore
+        from garak.detectors import base as detectors_base  # type: ignore
+        from garak.probes import base as probes_base  # type: ignore
     except ImportError as exc:
         raise RuntimeError(f"garak import failed: {exc}") from exc
 
