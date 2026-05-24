@@ -17,7 +17,7 @@ import sys
 
 
 def _score(agent_def: dict, *, with_multipliers: bool):
-    """Score agent_def. Returns (additive, final, mult, fired_codes, bucket)."""
+    """Score agent_def. Returns (additive, final, mult, fired_codes, bucket, overrun)."""
     from kya.risk import score_agent
     d = dict(agent_def)
     if not with_multipliers:
@@ -31,6 +31,7 @@ def _score(agent_def: dict, *, with_multipliers: bool):
         float(r.interaction_multiplier),
         [c for c in fired if c],
         r.bucket,
+        int(r.overrun),
     )
 
 
@@ -134,30 +135,34 @@ SCENARIOS: list[tuple[str, dict]] = [
 
 def main():
     print("Interaction-Multiplier Ablation — kya/risk.py")
-    print("=" * 92)
-    print(f"{'Scenario':<32} {'Add':<5} {'AddBkt':<8} {'Mult':<5} {'Final':<6} "
-          f"{'FinBkt':<8} {'Bucket Change':<16}")
-    print("-" * 92)
+    print("=" * 100)
+    print(f"{'Scenario':<32} {'Add':<5} {'AddBkt':<8} {'Conc':<5} {'Final':<6} "
+          f"{'FinBkt':<8} {'Over':<5} {'Bucket Change':<16}")
+    print("-" * 100)
 
     bucket_changes = 0
+    saturated = 0
     fired_total = 0
     for name, agent_def in SCENARIOS:
-        a_add, a_fin, a_mult, a_fired, _ = _score(agent_def, with_multipliers=False)
-        b_add, b_fin, b_mult, b_fired, b_bkt = _score(agent_def, with_multipliers=True)
+        a_add, a_fin, a_mult, a_fired, _, _ = _score(agent_def, with_multipliers=False)
+        b_add, b_fin, b_mult, b_fired, b_bkt, b_over = _score(agent_def, with_multipliers=True)
         from kya.risk import bucket_for
         add_bkt = bucket_for(a_add)
         fin_bkt = bucket_for(b_fin)
         change = f"{add_bkt}->{fin_bkt}" if add_bkt != fin_bkt else "--"
         if add_bkt != fin_bkt:
             bucket_changes += 1
+        if b_over > 0:
+            saturated += 1
         fired_total += len(b_fired)
         print(f"{name:<32} {a_add:<5} {add_bkt:<8} {b_mult:<5.2f} "
-              f"{b_fin:<6} {fin_bkt:<8} {change:<16}")
+              f"{b_fin:<6} {fin_bkt:<8} {b_over:<5} {change:<16}")
         if b_fired:
             print(f"    fired: {', '.join(b_fired)}")
-    print("-" * 92)
-    print(f"Bucket boundary crossings: {bucket_changes} of {len(SCENARIOS)}")
-    print(f"Total interactions fired:  {fired_total}")
+    print("-" * 100)
+    print(f"Bucket boundary crossings (visible at score-only):     {bucket_changes} of {len(SCENARIOS)}")
+    print(f"Saturated (multiplier amplification hidden by clamp):  {saturated} of {len(SCENARIOS)}  -- visible via 'Over' (overrun) column")
+    print(f"Total interactions fired:                              {fired_total}")
     return 0
 
 
