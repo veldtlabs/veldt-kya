@@ -65,10 +65,40 @@ def _load_env_keys() -> dict[str, str]:
 
 
 def trusted_keys() -> dict[str, str]:
-    """Effective trust anchor map: env overrides default pinned keys."""
+    """Effective trust anchor map: env overrides default pinned keys.
+
+    Quiet getter — returns an empty dict if nothing is pinned. Status /
+    introspection callers (e.g. ``inbound_status``) rely on this being
+    non-raising. Use ``require_trusted_keys()`` instead when calling
+    from an enforcement path that must refuse to proceed without keys.
+    """
     merged = dict(DEFAULT_PINNED_KEYS)
     merged.update(_load_env_keys())  # env wins
     return merged
+
+
+def require_trusted_keys() -> dict[str, str]:
+    """Same as :func:`trusted_keys` but raises :class:`RuntimeError` when
+    no trust anchors are configured.
+
+    KYA v0.1 ships with an empty ``DEFAULT_PINNED_KEYS`` by design ---
+    the SDK never *implicitly* trusts a vendor key. Customers must
+    either set the ``KYA_INBOUND_PUBLIC_KEY`` env var (BYO collector
+    key) or paste a Veldt-published key into ``DEFAULT_PINNED_KEYS``
+    out-of-band. Failure mode is *loud*: the inbound enforcement path
+    refuses to start rather than silently no-op.
+    """
+    keys = trusted_keys()
+    if not keys:
+        raise RuntimeError(
+            "kya inbound: no trust anchors configured. Set "
+            "KYA_INBOUND_PUBLIC_KEY='<keyid>:<base64-32B-pubkey>' "
+            "(BYO collector key), or paste a Veldt-published key into "
+            "DEFAULT_PINNED_KEYS in kya/_inbound_signing.py. The "
+            "inbound apply path refuses to start without an explicit "
+            "trust anchor; see docs/inbound.md."
+        )
+    return keys
 
 
 def canonical_bytes(payload: Mapping[str, Any]) -> bytes:
