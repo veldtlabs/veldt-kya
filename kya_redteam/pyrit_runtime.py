@@ -45,7 +45,6 @@ import importlib
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +73,8 @@ class PyritStatus:
     import_ok: bool = False
     enabled_by_env: bool = False
     disabled_by_env: bool = False
-    version: Optional[str] = None
-    error: Optional[str] = None
+    version: str | None = None
+    error: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -135,10 +134,10 @@ class _KyaPyritTarget:
     """
     @staticmethod
     def build_class(pyrit_module):
-        from pyrit.prompt_target import PromptTarget   # type: ignore
-        from pyrit.models import (                      # type: ignore
-            PromptRequestPiece, PromptRequestResponse, construct_response_from_request,
+        from pyrit.models import (  # type: ignore
+            construct_response_from_request,
         )
+        from pyrit.prompt_target import PromptTarget  # type: ignore
 
         class KyaWrappedTarget(PromptTarget):
             def __init__(self, http_target):
@@ -189,8 +188,8 @@ def _build_chat_target_classes():
     → list[Message] contract. Message.get_value() extracts text;
     Message.from_prompt() builds the response.
     """
-    from pyrit.prompt_target import PromptChatTarget       # type: ignore
-    from pyrit.models import Message                        # type: ignore
+    from pyrit.models import Message  # type: ignore
+    from pyrit.prompt_target import PromptChatTarget  # type: ignore
 
     class KyaWrappedChatTarget(PromptChatTarget):
         """Wraps the customer's HTTP agent endpoint. PyRIT's executor
@@ -276,7 +275,7 @@ def _build_chat_target_classes():
             # turn attacks see the full context, not just the latest.
             messages_for_llm = []
             try:
-                from pyrit.memory import CentralMemory       # type: ignore
+                from pyrit.memory import CentralMemory  # type: ignore
                 mem = CentralMemory.get_memory_instance()
                 if conv_id and mem is not None:
                     history = mem.get_prompt_request_pieces(
@@ -365,13 +364,17 @@ def run_via_pyrit(
         )
 
     import asyncio
-    from pyrit.executor.attack import (                     # type: ignore
-        RedTeamingAttack, CrescendoAttack, PromptSendingAttack,
-        AttackAdversarialConfig, AttackScoringConfig,
+
+    from pyrit.executor.attack import (  # type: ignore
+        AttackAdversarialConfig,
+        AttackScoringConfig,
+        CrescendoAttack,
+        PromptSendingAttack,
+        RedTeamingAttack,
     )
-    from pyrit.prompt_target import OpenAIChatTarget         # type: ignore
-    from pyrit.score import SelfAskTrueFalseScorer            # type: ignore
-    from pyrit.memory import SQLiteMemory, CentralMemory     # type: ignore
+    from pyrit.memory import CentralMemory, SQLiteMemory  # type: ignore
+    from pyrit.prompt_target import OpenAIChatTarget  # type: ignore
+    from pyrit.score import SelfAskTrueFalseScorer  # type: ignore
 
     # PyRIT 0.13 requires memory be registered before any attack runs.
     # Per-call ephemeral SQLite (:memory:) keeps each campaign isolated
@@ -486,7 +489,7 @@ def run_via_pyrit(
     # SQLiteMemory keyed by conversation_id. Walk them in order.
     transcript = []
     try:
-        from pyrit.memory import CentralMemory               # type: ignore
+        from pyrit.memory import CentralMemory  # type: ignore
         mem = CentralMemory.get_memory_instance()
         if conv_id and mem is not None:
             pieces = mem.get_prompt_request_pieces(

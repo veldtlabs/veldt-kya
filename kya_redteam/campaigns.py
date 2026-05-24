@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
-import uuid
-from typing import Any, Optional
+from typing import Any
 
 try:
     from sqlalchemy import text
@@ -228,17 +227,17 @@ def create_campaign(
     *,
     orchestrator_kind: str,
     scorer_kind: str,
-    description: Optional[str] = None,
-    dataset: Optional[str] = None,
-    attacker_llm: Optional[str] = None,
-    converters: Optional[list] = None,
-    schedule_cron: Optional[str] = None,
+    description: str | None = None,
+    dataset: str | None = None,
+    attacker_llm: str | None = None,
+    converters: list | None = None,
+    schedule_cron: str | None = None,
     budget_max_prompts: int = 100,
     threshold: float = 0.5,
     enabled: bool = True,
     tier_required: str = "free",
     auto_incident_mode: str = "never",
-    created_by: Optional[str] = None,
+    created_by: str | None = None,
 ) -> dict:
     """Create a red-team campaign. Returns the inserted row."""
     _validate_enum(orchestrator_kind, VALID_ORCHESTRATORS, "orchestrator_kind")
@@ -256,6 +255,7 @@ def create_campaign(
         )
     ensure_tables(db)
     from datetime import datetime, timezone
+
     from kya._dialect_helpers import insert_returning_id
     from kya._legacy_tables import kya_redteam_campaigns
 
@@ -336,7 +336,7 @@ _SELECT_CAMPAIGN_COLS = (
 )
 
 
-def list_campaigns(db, tenant_id: str, agent_key: Optional[str] = None) -> list[dict]:
+def list_campaigns(db, tenant_id: str, agent_key: str | None = None) -> list[dict]:
     ensure_tables(db)
     if agent_key:
         rows = db.execute(
@@ -361,7 +361,7 @@ def list_campaigns(db, tenant_id: str, agent_key: Optional[str] = None) -> list[
     return [_row_to_campaign(r) for r in rows]
 
 
-def get_campaign(db, tenant_id: str, campaign_id: int) -> Optional[dict]:
+def get_campaign(db, tenant_id: str, campaign_id: int) -> dict | None:
     ensure_tables(db)
     row = db.execute(
         text(
@@ -382,7 +382,7 @@ _MUTABLE_FIELDS = {
 }
 
 
-def update_campaign(db, tenant_id: str, campaign_id: int, **patch) -> Optional[dict]:
+def update_campaign(db, tenant_id: str, campaign_id: int, **patch) -> dict | None:
     """Patch-update mutable fields. Returns the updated row or None if
     no campaign matched. orchestrator_kind / scorer_kind / tier_required
     are immutable post-create — create a new campaign instead."""
@@ -468,20 +468,20 @@ def _ensure_findings_counter():
 def record_finding(
     db, tenant_id: str,
     *,
-    campaign_id: Optional[int],
+    campaign_id: int | None,
     run_id: str,
     agent_key: str,
-    orchestrator: Optional[str] = None,
-    attack_category: Optional[str] = None,
-    finding_class: Optional[str] = None,
+    orchestrator: str | None = None,
+    attack_category: str | None = None,
+    finding_class: str | None = None,
     severity: str = "medium",
-    score: Optional[float] = None,
-    prompt_redacted: Optional[str] = None,
-    response_redacted: Optional[str] = None,
-    conversation_redacted: Optional[list] = None,
-    pyrit_memory_id: Optional[str] = None,
+    score: float | None = None,
+    prompt_redacted: str | None = None,
+    response_redacted: str | None = None,
+    conversation_redacted: list | None = None,
+    pyrit_memory_id: str | None = None,
     evidence_source: str = "pyrit",
-    posted_event_id: Optional[int] = None,
+    posted_event_id: int | None = None,
 ) -> int:
     """Persist a single finding. Returns the new finding id.
 
@@ -582,7 +582,7 @@ def _row_to_finding(r) -> dict:
     }
 
 
-def get_finding(db, tenant_id: str, finding_id: int) -> Optional[dict]:
+def get_finding(db, tenant_id: str, finding_id: int) -> dict | None:
     ensure_tables(db)
     row = db.execute(
         text(
@@ -598,10 +598,10 @@ def get_finding(db, tenant_id: str, finding_id: int) -> Optional[dict]:
 def list_findings(
     db, tenant_id: str,
     *,
-    campaign_id: Optional[int] = None,
-    run_id: Optional[str] = None,
-    agent_key: Optional[str] = None,
-    severity: Optional[str] = None,
+    campaign_id: int | None = None,
+    run_id: str | None = None,
+    agent_key: str | None = None,
+    severity: str | None = None,
     limit: int = 50,
 ) -> list[dict]:
     ensure_tables(db)
@@ -637,6 +637,7 @@ def get_tenant_policy(db, tenant_id: str) -> dict:
     """Return the tenant's policy row, creating defaults if missing."""
     ensure_tables(db)
     from sqlalchemy import select
+
     from kya._legacy_tables import kya_redteam_tenant_policy as tbl
     row = db.execute(
         select(
@@ -669,12 +670,12 @@ def get_tenant_policy(db, tenant_id: str) -> dict:
 def set_tenant_policy(
     db, tenant_id: str,
     *,
-    max_auto_incident_mode: Optional[str] = None,
-    budget_monthly_prompts: Optional[int] = None,
-    redteam_tier: Optional[str] = None,
-    attacker_llm_model: Optional[str] = None,
-    attacker_tokens_monthly_cap: Optional[int] = None,
-    updated_by: Optional[str] = None,
+    max_auto_incident_mode: str | None = None,
+    budget_monthly_prompts: int | None = None,
+    redteam_tier: str | None = None,
+    attacker_llm_model: str | None = None,
+    attacker_tokens_monthly_cap: int | None = None,
+    updated_by: str | None = None,
 ) -> dict:
     """Upsert the tenant's policy. Only non-None fields are written.
 
@@ -714,6 +715,7 @@ def set_tenant_policy(
         ),
     }
     from datetime import datetime, timezone
+
     from kya._dialect_helpers import portable_upsert
     from kya._legacy_tables import kya_redteam_tenant_policy
     now_utc = datetime.now(timezone.utc)

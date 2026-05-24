@@ -45,10 +45,10 @@ Design
 - All KYA event POSTs include `actor_agent_key` defaulting to `agent_key`
   for autonomous attribution (discovered during real runs in Scenario 8)
 """
-from .client import KyaClient, KyaClientError
-from .scanner import DataLeakScanner, ScanMatch
-from .openai_agents import openai_agents_hooks
 from .claude_agent import claude_agent_hooks
+from .client import KyaClient, KyaClientError
+from .openai_agents import openai_agents_hooks
+from .scanner import DataLeakScanner, ScanMatch
 
 __all__ = [
     "KyaClient",

@@ -255,6 +255,7 @@ def _upsert_with_delta(
     Returns the new trust score.
     """
     from datetime import datetime, timezone
+
     from ._dialect_helpers import dialect_of, portable_upsert
     from ._legacy_tables import kya_user_trust
 

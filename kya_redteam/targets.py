@@ -39,7 +39,6 @@ time. Custom (tenant-defined) parsers come in Phase 3.5.
 """
 from __future__ import annotations
 
-import base64
 import ipaddress as _ipaddress
 import json as _json
 import logging
@@ -47,7 +46,7 @@ import os
 import socket as _socket
 import time
 import urllib.parse as _urlparse
-from typing import Any, Optional
+from typing import Any
 
 try:
     from sqlalchemy import text
@@ -183,7 +182,7 @@ class SecretConfigError(RuntimeError):
     fail closed rather than store plaintext."""
 
 
-def _resolve_key(key_id: str) -> Optional[bytes]:
+def _resolve_key(key_id: str) -> bytes | None:
     """Find the Fernet key for a given key_id. Current key under
     KYA_REDTEAM_SECRET_KEY; rotated keys under
     KYA_REDTEAM_SECRET_KEY_<key_id>."""
@@ -249,13 +248,13 @@ def create_target(
     *,
     endpoint_url: str,
     auth_kind: str = "bearer",
-    auth_header_name: Optional[str] = None,
-    auth_secret: Optional[str] = None,
-    body_template: Optional[dict] = None,
+    auth_header_name: str | None = None,
+    auth_secret: str | None = None,
+    body_template: dict | None = None,
     response_parser_kind: str = "standard",
     rate_limit_rps: float = 1.0,
-    description: Optional[str] = None,
-    created_by: Optional[str] = None,
+    description: str | None = None,
+    created_by: str | None = None,
 ) -> dict:
     """Register a target. Encrypts auth_secret if provided.
 
@@ -282,7 +281,7 @@ def create_target(
         )
     ensure_tables(db)
     from kya._dialect_helpers import insert_returning_id
-    from kya._legacy_tables import kya_redteam_targets, kya_redteam_target_secrets
+    from kya._legacy_tables import kya_redteam_target_secrets, kya_redteam_targets
 
     target_id = insert_returning_id(db, kya_redteam_targets, {
         "tenant_id": tenant_id,
@@ -434,13 +433,13 @@ def _row_to_target(r) -> dict:
 
 def get_target(
     db, tenant_id: str, target_id: int, *, include_secret: bool = False,
-) -> Optional[dict]:
+) -> dict | None:
     """Return target row. With include_secret=True, decrypts and includes
     the auth secret — only used in the run path (the dashboard list/view
     paths must NEVER set this flag).
     """
     ensure_tables(db)
-    from kya._legacy_tables import kya_redteam_targets, kya_redteam_target_secrets
+    from kya._legacy_tables import kya_redteam_targets
     schema = kya_redteam_targets.schema
     targets_ref = f"{schema}.kya_redteam_targets" if schema else "kya_redteam_targets"
     secrets_ref = f"{schema}.kya_redteam_target_secrets" if schema else "kya_redteam_target_secrets"
@@ -465,7 +464,7 @@ def get_target(
         if sec:
             try:
                 out["_auth_secret_decrypted"] = decrypt_secret(bytes(sec[0]), sec[1])
-            except SecretConfigError as exc:
+            except SecretConfigError:
                 raise
             except Exception as exc:
                 # H5: do NOT mark this as None and continue — the caller
@@ -488,7 +487,7 @@ def get_target(
 
 
 def list_targets(
-    db, tenant_id: str, agent_key: Optional[str] = None,
+    db, tenant_id: str, agent_key: str | None = None,
 ) -> list[dict]:
     ensure_tables(db)
     if agent_key:
@@ -523,9 +522,9 @@ _MUTABLE_FIELDS = {
 def update_target(
     db, tenant_id: str, target_id: int,
     *,
-    auth_secret: Optional[str] = None,
+    auth_secret: str | None = None,
     **patch,
-) -> Optional[dict]:
+) -> dict | None:
     """Patch update. auth_secret=None means "leave the existing secret
     unchanged"; pass a string to rotate it.
 
