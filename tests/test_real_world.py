@@ -1340,17 +1340,24 @@ def test_autoinstrument_captures_openai_call():
 
 
 def test_no_veldt_runtime_leak():
-    forbidden = (
-        "fastapi",
-        "uvicorn",
-        "starlette",
-        "decisions",
-        "services",
-        "routes",
-        "agents.api",
-        "agents.registry",
+    """Subprocess isolation: other tests in this file pre-load
+    ``decisions.*`` modules into ``sys.modules`` (intentionally, to stub
+    out the parent app for cross-backend table tests). We need a fresh
+    interpreter to verify ``import kya`` alone does not pull them in.
+    """
+    import json
+    import subprocess
+
+    code = (
+        "import sys, json\n"
+        "import kya\n"
+        "forbidden = ('fastapi','uvicorn','starlette','decisions','services','routes','agents.api','agents.registry')\n"
+        "leaked = sorted(m for m in sys.modules if any(m == k or m.startswith(k + '.') for k in forbidden))\n"
+        "print(json.dumps(leaked))\n"
     )
-    leaked = sorted(
-        m for m in sys.modules if any(m == k or m.startswith(k + ".") for k in forbidden)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
     )
+    assert result.returncode == 0, f"subprocess failed: {result.stderr}"
+    leaked = json.loads(result.stdout.strip())
     assert not leaked, f"runtime leak after `import kya`: {leaked}"
