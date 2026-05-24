@@ -133,11 +133,26 @@ def test_no_private_leakage():
 
 
 def test_no_veldt_runtime_leak():
-    """Importing kya MUST NOT pull in Veldt-runtime modules."""
-    import sys
+    """Importing kya MUST NOT pull in Veldt-runtime modules.
 
-    forbidden = ("fastapi", "uvicorn", "starlette", "decisions", "services", "routes", "agents.api")
-    leaked = sorted(
-        m for m in sys.modules if any(m == k or m.startswith(k + ".") for k in forbidden)
+    Runs `import kya` in a subprocess so other tests' sys.modules
+    pollution can't contaminate the check. Only a fresh interpreter
+    shows whether `import kya` ALONE pulls in forbidden modules.
+    """
+    import json
+    import subprocess
+    import sys as _sys
+
+    code = (
+        "import sys, json\n"
+        "import kya\n"
+        "forbidden = ('fastapi','uvicorn','starlette','decisions','services','routes','agents.api','agents.registry')\n"
+        "leaked = sorted(m for m in sys.modules if any(m == k or m.startswith(k + '.') for k in forbidden))\n"
+        "print(json.dumps(leaked))\n"
     )
+    result = subprocess.run(
+        [_sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, f"subprocess failed: {result.stderr}"
+    leaked = json.loads(result.stdout.strip())
     assert not leaked, f"runtime leak after `import kya`: {leaked}"
