@@ -10,10 +10,25 @@ For each backend, verifies:
   2. INSERT lands and persists
   3. SELECT returns the inserted row
   4. Column types are dialect-appropriate (raw introspection)
+
+NOTE: side-loads decisions.governance.models and decisions.attestation.service
+from the veldt-decisions repo at /repo/app/decisions/. Skipped automatically
+when those paths are unavailable (i.e. running in standalone veldt-kya).
+These are cross-repo integration tests; equivalent KYA-side cross-backend
+coverage is in tests/verify_all_backends_with_data.py.
 """
 
 import importlib.util
 import os
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists("/repo/app/decisions/governance/models.py"),
+    reason="Monorepo-only cross-repo integration test (loads "
+           "decisions.governance.models + decisions.attestation.service "
+           "from veldt-decisions). Skipped in standalone veldt-kya.",
+)
 import sys
 import types
 from datetime import datetime, timezone
