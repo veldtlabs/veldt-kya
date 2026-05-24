@@ -150,27 +150,37 @@ def get_effective_weights(db, scope: str, tenant_id: str | None = None) -> dict:
         raise ValueError(f"unknown weight scope: {scope}")
     weights = dict(_SCOPE_REGISTRY[scope])  # start with in-process default
 
-    # Platform-level overrides (tenant_id IS NULL)
-    rows = db.execute(
-        text("""
-            SELECT key, value FROM prov_schema.kya_weight_overrides
-            WHERE tenant_id IS NULL AND scope = :scope
-        """),
-        {"scope": scope},
+    # Use SA Core (not raw text) so the schema_translate_map applies
+    # on non-PG backends. Raw text with literal "prov_schema." would
+    # fail on SQLite (no schema-translate for raw SQL).
+    #
+    # ORDER BY id ASC: if a backend somehow ended up with multiple
+    # platform-level rows for the same (scope, key) — possible on
+    # MySQL where the partial unique index in _legacy_tables.py is
+    # silently ignored — the LATEST row wins after we iterate (dict
+    # overwrite). On PG + SQLite the partial index prevents duplicates
+    # at write time, so ORDER BY is harmless there.
+    from sqlalchemy import and_
+    from sqlalchemy import select as sa_select
+
+    from ._legacy_tables import kya_weight_overrides as _WO
+
+    plat_rows = db.execute(
+        sa_select(_WO.c.key, _WO.c.value).where(
+            and_(_WO.c.tenant_id.is_(None), _WO.c.scope == scope)
+        ).order_by(_WO.c.id.asc())
     ).fetchall()
-    for k, v in rows:
+    for k, v in plat_rows:
         weights[k] = int(v)
 
-    # Tenant-level overrides — only-tighten enforced at set time, not here
+    # Tenant-level overrides — only-tighten enforced at set time, not here.
     if tenant_id:
-        rows = db.execute(
-            text("""
-                SELECT key, value FROM prov_schema.kya_weight_overrides
-                WHERE tenant_id = :tid AND scope = :scope
-            """),
-            {"tid": tenant_id, "scope": scope},
+        tenant_rows = db.execute(
+            sa_select(_WO.c.key, _WO.c.value).where(
+                and_(_WO.c.tenant_id == tenant_id, _WO.c.scope == scope)
+            ).order_by(_WO.c.id.asc())
         ).fetchall()
-        for k, v in rows:
+        for k, v in tenant_rows:
             weights[k] = int(v)
 
     return weights
@@ -350,21 +360,33 @@ def set_override(
         # SQLite default-treat NULL as DISTINCT, so a second INSERT
         # would create a duplicate. We added a partial unique index
         # (uq_kya_weight_overrides_platform_scope_key) to catch that
-        # at the storage layer, which means portable_upsert would now
+        # at the storage layer, which means portable_upsert would
         # raise IntegrityError on the second platform-level write.
         # Application-level update-or-insert keeps the call portable
         # without needing a partial-index-aware on_conflict target.
+        #
+        # Race-safety: SELECT-then-INSERT is not atomic. Two concurrent
+        # platform writes could both see existing=None, both attempt
+        # INSERT, and the second would hit the partial unique index.
+        # We catch that IntegrityError and retry as UPDATE so the
+        # caller still sees a successful set_override (the second
+        # caller's value wins — last-write-wins semantics).
         from sqlalchemy import and_, select
         from sqlalchemy import update as sa_update
-        existing = db.execute(
-            select(kya_weight_overrides.c.id).where(
-                and_(
-                    kya_weight_overrides.c.tenant_id.is_(None),
-                    kya_weight_overrides.c.scope == scope,
-                    kya_weight_overrides.c.key == key,
+        from sqlalchemy.exc import IntegrityError
+
+        def _platform_select_existing():
+            return db.execute(
+                select(kya_weight_overrides.c.id).where(
+                    and_(
+                        kya_weight_overrides.c.tenant_id.is_(None),
+                        kya_weight_overrides.c.scope == scope,
+                        kya_weight_overrides.c.key == key,
+                    )
                 )
-            )
-        ).scalar()
+            ).scalar()
+
+        existing = _platform_select_existing()
         if existing is not None:
             db.execute(
                 sa_update(kya_weight_overrides)
@@ -372,12 +394,28 @@ def set_override(
                 .values(value=value, updated_at=now_utc)
             )
         else:
-            db.execute(
-                kya_weight_overrides.insert().values(
-                    tenant_id=None, scope=scope, key=key, value=value,
-                    created_by=changed_by, updated_at=now_utc,
+            try:
+                db.execute(
+                    kya_weight_overrides.insert().values(
+                        tenant_id=None, scope=scope, key=key, value=value,
+                        created_by=changed_by, updated_at=now_utc,
+                    )
                 )
-            )
+            except IntegrityError:
+                # Concurrent writer beat us to the INSERT. Roll back the
+                # failed INSERT and re-fetch+UPDATE so we still apply
+                # the caller's value (last-write-wins).
+                db.rollback()
+                existing = _platform_select_existing()
+                if existing is None:
+                    # Shouldn't happen — the IntegrityError implies a
+                    # row exists. Re-raise the original failure mode.
+                    raise
+                db.execute(
+                    sa_update(kya_weight_overrides)
+                    .where(kya_weight_overrides.c.id == existing)
+                    .values(value=value, updated_at=now_utc)
+                )
     else:
         portable_upsert(
             db,
@@ -426,14 +464,17 @@ def delete_override(
     old = _current_value(db, scope, key, tenant_id)
     if old is None:
         return False
+    # SA Core delete for cross-dialect (raw text with prov_schema. +
+    # ::uuid casts is PG-only).
+    from sqlalchemy import and_
+    from sqlalchemy import delete as sa_delete
+
+    from ._legacy_tables import kya_weight_overrides as _WO
+    tid_clause = _WO.c.tenant_id.is_(None) if tenant_id is None else _WO.c.tenant_id == tenant_id
     db.execute(
-        text("""
-            DELETE FROM prov_schema.kya_weight_overrides
-            WHERE scope = :scope AND key = :key
-              AND ((:tid)::uuid IS NULL AND tenant_id IS NULL
-                   OR tenant_id = (:tid)::uuid)
-        """),
-        {"scope": scope, "key": key, "tid": tenant_id},
+        sa_delete(_WO).where(
+            and_(_WO.c.scope == scope, _WO.c.key == key, tid_clause)
+        )
     )
     _audit(db, scope, key, old, None, "delete", tenant_id, changed_by, reason)
     db.commit()
@@ -442,27 +483,24 @@ def delete_override(
 
 def list_overrides(db, tenant_id: str | None = None) -> list[dict]:
     """List overrides. tenant_id=None returns platform-level; otherwise
-    returns both platform AND that tenant's overrides for visibility."""
+    returns both platform AND that tenant's overrides for visibility.
+    SA Core for cross-dialect portability."""
     ensure_tables(db)
+    from sqlalchemy import or_
+    from sqlalchemy import select as sa_select
+
+    from ._legacy_tables import kya_weight_overrides as _WO
+    stmt = sa_select(
+        _WO.c.tenant_id, _WO.c.scope, _WO.c.key, _WO.c.value,
+        _WO.c.created_by, _WO.c.updated_at,
+    )
     if tenant_id is None:
-        rows = db.execute(
-            text("""
-                SELECT tenant_id, scope, key, value, created_by, updated_at
-                FROM prov_schema.kya_weight_overrides
-                WHERE tenant_id IS NULL
-                ORDER BY scope, key
-            """),
-        ).fetchall()
+        stmt = stmt.where(_WO.c.tenant_id.is_(None)).order_by(_WO.c.scope, _WO.c.key)
     else:
-        rows = db.execute(
-            text("""
-                SELECT tenant_id, scope, key, value, created_by, updated_at
-                FROM prov_schema.kya_weight_overrides
-                WHERE tenant_id IS NULL OR tenant_id = :tid
-                ORDER BY (tenant_id IS NULL) DESC, scope, key
-            """),
-            {"tid": tenant_id},
-        ).fetchall()
+        stmt = stmt.where(
+            or_(_WO.c.tenant_id.is_(None), _WO.c.tenant_id == tenant_id)
+        ).order_by(_WO.c.tenant_id.is_(None).desc(), _WO.c.scope, _WO.c.key)
+    rows = db.execute(stmt).fetchall()
     return [
         {
             "tenant_id": str(r[0]) if r[0] else None,
@@ -477,29 +515,24 @@ def list_overrides(db, tenant_id: str | None = None) -> list[dict]:
 
 
 def list_recent_changes(db, tenant_id: str | None = None, limit: int = 100) -> list[dict]:
-    """Recent audit-log entries for change visibility."""
+    """Recent audit-log entries for change visibility. SA Core for
+    cross-dialect portability."""
     ensure_tables(db)
-    if tenant_id is None:
-        rows = db.execute(
-            text("""
-                SELECT tenant_id, scope, key, old_value, new_value, action,
-                       changed_by, reason, created_at
-                FROM prov_schema.kya_weight_changes
-                ORDER BY created_at DESC LIMIT :lim
-            """),
-            {"lim": limit},
-        ).fetchall()
-    else:
-        rows = db.execute(
-            text("""
-                SELECT tenant_id, scope, key, old_value, new_value, action,
-                       changed_by, reason, created_at
-                FROM prov_schema.kya_weight_changes
-                WHERE tenant_id = :tid OR tenant_id IS NULL
-                ORDER BY created_at DESC LIMIT :lim
-            """),
-            {"tid": tenant_id, "lim": limit},
-        ).fetchall()
+    from sqlalchemy import or_
+    from sqlalchemy import select as sa_select
+
+    from ._legacy_tables import kya_weight_changes as _WC
+    stmt = sa_select(
+        _WC.c.tenant_id, _WC.c.scope, _WC.c.key,
+        _WC.c.old_value, _WC.c.new_value, _WC.c.action,
+        _WC.c.changed_by, _WC.c.reason, _WC.c.created_at,
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(
+            or_(_WC.c.tenant_id == tenant_id, _WC.c.tenant_id.is_(None))
+        )
+    stmt = stmt.order_by(_WC.c.created_at.desc()).limit(int(limit))
+    rows = db.execute(stmt).fetchall()
     return [
         {
             "tenant_id": str(r[0]) if r[0] else None,
