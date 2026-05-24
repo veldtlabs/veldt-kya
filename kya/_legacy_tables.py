@@ -36,6 +36,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 
 from ._portable import (
@@ -144,6 +145,21 @@ kya_weight_overrides = Table(
     UniqueConstraint("tenant_id", "scope", "key",
                      name="uq_kya_weight_overrides_tenant_scope_key"),
     Index("idx_kya_weight_overrides_tenant_scope", "tenant_id", "scope"),
+    # PG and SQLite (default) both treat NULL as DISTINCT in UNIQUE
+    # indexes, so the constraint above does NOT coalesce platform-level
+    # rows (tenant_id IS NULL). Without this partial index, repeated
+    # platform-level writes accumulate duplicate rows for the same
+    # (scope, key) — observed and documented in the three-channel
+    # composition witness (May 2026). The WHERE clause is supported on
+    # PG 9.0+ and SQLite 3.8+. MySQL ignores postgresql_where; on MySQL
+    # the same-NULL-treats-as-distinct semantics persist (acceptable
+    # known limit; multiple platform-level rows are caught read-side by
+    # ORDER BY id DESC LIMIT 1).
+    Index("uq_kya_weight_overrides_platform_scope_key",
+          "scope", "key",
+          unique=True,
+          postgresql_where=text("tenant_id IS NULL"),
+          sqlite_where=text("tenant_id IS NULL")),
 )
 
 

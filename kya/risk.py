@@ -202,6 +202,13 @@ class AgentRiskScore:
     delegation_trust_evidence: list[dict] = field(
         default_factory=list
     )  # risky delegates (Round 13.3)
+    # Two-axis view (PYPI task #9, "Option E" minimum-blast-radius):
+    # surface concentration + overrun alongside the existing single
+    # 0-100 score so consumers can distinguish "additive at ceiling
+    # with strong concentration" from "additive at ceiling, no
+    # concentration." score/bucket semantics unchanged.
+    concentration: float = 1.0   # alias for interaction_multiplier with clearer semantics
+    overrun: int = 0             # how much the 0-100 score clamp suppressed (additive * multiplier - 100, floored at 0)
 
 
 def bucket_for(score: int) -> str:
@@ -507,7 +514,14 @@ def score_agent(
     else:
         mult, fired = 1.0, []
 
-    final_score = max(0, min(100, int(round(additive * mult))))
+    raw_with_mult = int(round(additive * mult))
+    final_score = max(0, min(100, raw_with_mult))
+    # Overrun captures how much the multiplier amplification was
+    # absorbed by the 0-100 clamp. For saturated-additive agents
+    # (e.g. additive=86, mult=1.95 → raw=168 → score=100), overrun=68
+    # tells operators "this agent had concentration that pushed past
+    # the ceiling" — invisible at the score/bucket level alone.
+    overrun = max(0, raw_with_mult - 100)
 
     return AgentRiskScore(
         score=final_score,
@@ -525,4 +539,6 @@ def score_agent(
         interaction_multiplier=mult,
         interactions=fired,
         delegation_trust_evidence=delegation_trust_evidence,
+        concentration=mult,        # two-axis alias for interaction_multiplier
+        overrun=overrun,           # suppressed-by-clamp amplification
     )
