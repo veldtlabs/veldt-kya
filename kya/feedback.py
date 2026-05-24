@@ -205,16 +205,27 @@ def propose_from_incident(db, incident_row: dict) -> list[dict]:
         current = int(current_weights.get(key, 0))
         suggested = current + delta
 
-        # Don't propose duplicate pending suggestions for the same key
+        # Don't propose duplicate pending suggestions for the same key.
+        # SA Core (not raw text) so it works cross-dialect — the raw
+        # version used PG-specific `::uuid` casts and `prov_schema.`
+        # prefix that don't translate on SQLite/MySQL.
+        from sqlalchemy import and_
+        from sqlalchemy import select as sa_select
+
+        from ._legacy_tables import kya_weight_suggestions as _WS
+        tid_clause = (
+            _WS.c.tenant_id.is_(None) if tenant_id is None
+            else _WS.c.tenant_id == tenant_id
+        )
         existing = db.execute(
-            text("""
-                SELECT id FROM prov_schema.kya_weight_suggestions
-                WHERE scope = :scope AND key = :key
-                  AND status = 'pending'
-                  AND ((:tid)::uuid IS NULL AND tenant_id IS NULL
-                       OR tenant_id = (:tid)::uuid)
-            """),
-            {"scope": scope, "key": key, "tid": tenant_id},
+            sa_select(_WS.c.id).where(
+                and_(
+                    _WS.c.scope == scope,
+                    _WS.c.key == key,
+                    _WS.c.status == "pending",
+                    tid_clause,
+                )
+            )
         ).fetchone()
         if existing:
             logger.info(
@@ -289,25 +300,25 @@ def list_suggestions(
     limit: int = 100,
 ) -> list[dict]:
     """List suggestions, optionally filtered. Default returns 100 most-
-    recent across all statuses."""
+    recent across all statuses. SA Core for cross-dialect portability."""
     ensure_suggestions_table(db)
-    sql = """
-        SELECT id, tenant_id, incident_id, agent_key, scope, key,
-               current_value, suggested_value, suggested_delta,
-               rationale, evidence, status, suggested_at,
-               decided_at, decided_by, decision_notes
-        FROM prov_schema.kya_weight_suggestions
-        WHERE 1=1
-    """
-    params: dict = {"lim": limit}
+    from sqlalchemy import select as sa_select
+
+    from ._legacy_tables import kya_weight_suggestions as _WS
+    stmt = sa_select(
+        _WS.c.id, _WS.c.tenant_id, _WS.c.incident_id, _WS.c.agent_key,
+        _WS.c.scope, _WS.c.key,
+        _WS.c.current_value, _WS.c.suggested_value, _WS.c.suggested_delta,
+        _WS.c.rationale, _WS.c.evidence, _WS.c.status,
+        _WS.c.suggested_at, _WS.c.decided_at, _WS.c.decided_by,
+        _WS.c.decision_notes,
+    )
     if tenant_id is not None:
-        sql += " AND tenant_id = :tid"
-        params["tid"] = tenant_id
+        stmt = stmt.where(_WS.c.tenant_id == tenant_id)
     if status is not None:
-        sql += " AND status = :status"
-        params["status"] = status
-    sql += " ORDER BY suggested_at DESC LIMIT :lim"
-    rows = db.execute(text(sql), params).fetchall()
+        stmt = stmt.where(_WS.c.status == status)
+    stmt = stmt.order_by(_WS.c.suggested_at.desc()).limit(int(limit))
+    rows = db.execute(stmt).fetchall()
     return [
         {
             "id": int(r[0]),
@@ -341,17 +352,27 @@ def _set_decision(
     decided_by: str | None,
     notes: str | None,
 ) -> dict:
+    """SA Core update with RETURNING — cross-dialect (raw text would
+    fail on SQLite because of the prov_schema. prefix)."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update as sa_update
+
+    from ._legacy_tables import kya_weight_suggestions as _WS
     row = db.execute(
-        text("""
-            UPDATE prov_schema.kya_weight_suggestions
-            SET status         = :status,
-                decided_at     = now(),
-                decided_by     = :uid,
-                decision_notes = :notes
-            WHERE id = :id AND status = 'pending'
-            RETURNING id, tenant_id, scope, key, suggested_value, status
-        """),
-        {"id": suggestion_id, "status": new_status, "uid": decided_by, "notes": notes},
+        sa_update(_WS)
+        .where(_WS.c.id == suggestion_id)
+        .where(_WS.c.status == "pending")
+        .values(
+            status=new_status,
+            decided_at=datetime.now(timezone.utc),
+            decided_by=decided_by,
+            decision_notes=notes,
+        )
+        .returning(
+            _WS.c.id, _WS.c.tenant_id, _WS.c.scope, _WS.c.key,
+            _WS.c.suggested_value, _WS.c.status,
+        )
     ).fetchone()
     db.commit()
     if not row:
@@ -397,10 +418,12 @@ def approve_suggestion(
             # platform-level decrease, honor it.
             allow_platform_decrease=True,
         )
-        # Mark as applied
+        # Mark as applied. SA Core for cross-dialect.
+        from sqlalchemy import update as sa_update
+
+        from ._legacy_tables import kya_weight_suggestions as _WS
         db.execute(
-            text("UPDATE prov_schema.kya_weight_suggestions SET status='applied' WHERE id = :id"),
-            {"id": suggestion_id},
+            sa_update(_WS).where(_WS.c.id == suggestion_id).values(status="applied")
         )
         db.commit()
         decision["status"] = "applied"
