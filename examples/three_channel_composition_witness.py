@@ -146,12 +146,14 @@ def main():
         value=5, tenant_id=TENANT_BANK, expected_blocked=True,
     ))
 
-    # Channel 3c: signed rec at platform level can lower platform default
-    # (skips only-tighten because platform-level writes are by design
-    # vendor-authoritative). Allowed — but tenant override still wins.
+    # Channel 3c: signed rec at platform level attempts to LOWER platform
+    # default. Defense-in-depth (2026-05): platform-level writes default
+    # to only-tighten; a compromised collector key cannot silently lower
+    # the platform default unless the caller passes
+    # allow_platform_decrease=True explicitly.
     cases.append(_try_write(db,
         channel="3-signed-rec-platform-lower", scope="class_weights", key="pii",
-        value=12, tenant_id=None, expected_blocked=False,
+        value=12, tenant_id=None, expected_blocked=True,
     ))
 
     # Header
