@@ -31,7 +31,6 @@ from sqlalchemy import (
     LargeBinary,
     MetaData,
     Numeric,
-    Sequence,
     String,
     Table,
     Text,

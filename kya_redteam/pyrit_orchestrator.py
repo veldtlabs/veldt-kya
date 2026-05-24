@@ -23,23 +23,28 @@ incremented per run so dashboards can show campaign cadence.
 """
 from __future__ import annotations
 
-import json as _json
 import logging
 import time
-import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from . import campaigns as _campaigns_mod
 from . import runs as _runs_mod
 from .campaigns import (
-    record_finding, get_tenant_policy, effective_auto_incident_mode,
+    effective_auto_incident_mode,
+    get_tenant_policy,
+    record_finding,
     tier_allows_orchestrator,
 )
 from .datasets import load_dataset
 from .pyrit_scorer import (
-    ScorerVerdict, CompositeScorer, build_scorer,
-    DataLeakScannerScorer, RefusalFailureScorer, SubStringScorer,
+    CompositeScorer,
+    DataLeakScannerScorer,
+    RefusalFailureScorer,
+    ScorerVerdict,
+    SubStringScorer,
+    build_scorer,
 )
 from .pyrit_target import HttpAgentTarget, TargetResponse
 from .runs import HeartbeatState
@@ -89,7 +94,7 @@ class RunReport:
     errors: list[str] = field(default_factory=list)
     target_errors: int = 0
     status: str = "running"      # 'running' | 'completed' | 'failed' | 'denied_by_tier'
-    finished_at: Optional[float] = None
+    finished_at: float | None = None
 
     def duration_s(self) -> float:
         end = self.finished_at or time.monotonic()
@@ -183,7 +188,7 @@ class _KyaPosterProtocol:
 def _maybe_create_incident(
     db, *, tenant_id: str, agent_key: str, severity: str,
     verdict: ScorerVerdict, finding_id: int, campaign_id: int,
-) -> Optional[int]:
+) -> int | None:
     """Promote a finding to a governance_incidents row when the effective
     auto_incident_mode permits it. Returns the incident id or None.
 
@@ -233,13 +238,13 @@ def run_campaign(
     campaign: dict,
     *,
     target: HttpAgentTarget,
-    kya_poster: Optional[_KyaPosterProtocol] = None,
-    scorer: Optional[Any] = None,
-    dataset_override: Optional[list[dict]] = None,
-    on_finding: Optional[Callable[[ScorerVerdict, int], None]] = None,
-    run_id: Optional[str] = None,
-    initiated_by: Optional[str] = None,
-    target_id: Optional[int] = None,
+    kya_poster: _KyaPosterProtocol | None = None,
+    scorer: Any | None = None,
+    dataset_override: list[dict] | None = None,
+    on_finding: Callable[[ScorerVerdict, int], None] | None = None,
+    run_id: str | None = None,
+    initiated_by: str | None = None,
+    target_id: int | None = None,
 ) -> RunReport:
     """Execute one run of a red-team campaign.
 
@@ -302,7 +307,7 @@ def run_campaign(
     _runs_mod.set_running(db, run_id)
     hb = HeartbeatState(run_id)
 
-    def _finalize(status: str, error_message: Optional[str] = None):
+    def _finalize(status: str, error_message: str | None = None):
         report.status = status
         report.finished_at = time.monotonic()
         try:
@@ -551,9 +556,9 @@ def run_campaign_async(
     campaign: dict,
     *,
     target: HttpAgentTarget,
-    target_id: Optional[int] = None,
-    initiated_by: Optional[str] = None,
-    dataset_override: Optional[list[dict]] = None,
+    target_id: int | None = None,
+    initiated_by: str | None = None,
+    dataset_override: list[dict] | None = None,
 ) -> str:
     """Submit a campaign to the thread pool. Returns the run_id (UUID).
 
@@ -569,6 +574,7 @@ def run_campaign_async(
     cancellation.
     """
     from db.database import SessionLocal  # local import — avoid app-startup cycle
+
     from kya_redteam.runs import create_run
 
     # Pre-create the run row on the submitting connection so the caller
@@ -685,15 +691,16 @@ def _run_garak_campaign(
     run_id, tenant_policy, hb, report, _finalize,
 ):
     """Garak campaign — per-probe scorer dispatch."""
-    from .datasets import load_dataset
-    from .runtime import consume_budget
-    from .garak_runtime import (
-        garak_available, run_probe_via_garak,
-        get_native_probe_detector_strings,
-    )
     from .campaigns import (
-        record_finding, effective_auto_incident_mode,
+        effective_auto_incident_mode,
     )
+    from .datasets import load_dataset
+    from .garak_runtime import (
+        garak_available,
+        get_native_probe_detector_strings,
+        run_probe_via_garak,
+    )
+    from .runtime import consume_budget
 
     tenant_id = campaign["tenant_id"]
     agent_key = campaign["agent_key"]
@@ -804,9 +811,9 @@ def _process_garak_outcome(
     kya_poster, report, auto_mode, evidence_source,
 ):
     """Score one Garak probe outcome and persist a finding if hit."""
+    from .campaigns import record_finding
     from .pyrit_scorer import SubStringScorer
     from .pyrit_target import TargetResponse
-    from .campaigns import record_finding
 
     if not detector_subs:
         return   # no detector configured = no finding

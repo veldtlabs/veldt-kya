@@ -198,6 +198,7 @@ def _check_only_tighten(db, scope: str, key: str, new_value: int, tenant_id: str
         raise ValueError(f"unknown weight scope: {scope}")
 
     from sqlalchemy import and_, select
+
     from ._legacy_tables import kya_weight_overrides
     platform_eff = dict(_SCOPE_REGISTRY[scope])
     row = db.execute(
@@ -221,6 +222,7 @@ def _check_only_tighten(db, scope: str, key: str, new_value: int, tenant_id: str
 
 def _current_value(db, scope: str, key: str, tenant_id: str | None) -> int | None:
     from sqlalchemy import and_, select
+
     from ._legacy_tables import kya_weight_overrides
     if tenant_id is None:
         clause = and_(
@@ -272,6 +274,7 @@ def set_override(
     Cross-backend via portable_upsert.
     """
     from datetime import datetime, timezone
+
     from ._dialect_helpers import portable_upsert
     from ._legacy_tables import kya_weight_overrides
 
