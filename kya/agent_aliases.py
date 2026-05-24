@@ -104,12 +104,16 @@ def resolve_alias(db, tenant_id: str, alias: str) -> str | None:
         return None
     try:
         ensure_table(db)
+        # SA Core for cross-dialect (raw text with prov_schema. + ::uuid
+        # is PG-only).
+        from sqlalchemy import and_
+        from sqlalchemy import select as sa_select
+
+        from ._legacy_tables import kya_agent_aliases as _AL
         row = db.execute(
-            text(
-                "SELECT canonical_agent_key FROM prov_schema.kya_agent_aliases "
-                "WHERE tenant_id = (:tid)::uuid AND alias = :alias"
-            ),
-            {"tid": tenant_id, "alias": alias},
+            sa_select(_AL.c.canonical_agent_key).where(
+                and_(_AL.c.tenant_id == tenant_id, _AL.c.alias == alias)
+            )
         ).fetchone()
         return row[0] if row else None
     except Exception as exc:
@@ -156,15 +160,17 @@ def add_alias(
 
 
 def list_aliases(db, tenant_id: str, canonical_agent_key: str) -> list[dict]:
-    """All aliases pointing at this canonical_agent_key. For the card UI."""
+    """All aliases pointing at this canonical_agent_key. For the card UI.
+    SA Core for cross-dialect portability."""
     ensure_table(db)
+    from sqlalchemy import and_
+    from sqlalchemy import select as sa_select
+
+    from ._legacy_tables import kya_agent_aliases as _AL
     rows = db.execute(
-        text(
-            "SELECT id, alias, note, created_at FROM prov_schema.kya_agent_aliases "
-            "WHERE tenant_id = (:tid)::uuid AND canonical_agent_key = :canon "
-            "ORDER BY created_at DESC"
-        ),
-        {"tid": tenant_id, "canon": canonical_agent_key},
+        sa_select(_AL.c.id, _AL.c.alias, _AL.c.note, _AL.c.created_at).where(
+            and_(_AL.c.tenant_id == tenant_id, _AL.c.canonical_agent_key == canonical_agent_key)
+        ).order_by(_AL.c.created_at.desc())
     ).fetchall()
     return [{"id": r[0], "alias": r[1], "note": r[2], "created_at": r[3]} for r in rows]
 
@@ -291,13 +297,17 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
 
 
 def delete_alias(db, tenant_id: str, alias_id: int) -> bool:
-    """Remove an alias by id. Returns True if a row was deleted."""
+    """Remove an alias by id. Returns True if a row was deleted.
+    SA Core for cross-dialect portability."""
     ensure_table(db)
+    from sqlalchemy import and_
+    from sqlalchemy import delete as sa_delete
+
+    from ._legacy_tables import kya_agent_aliases as _AL
     result = db.execute(
-        text(
-            "DELETE FROM prov_schema.kya_agent_aliases WHERE id = :id AND tenant_id = (:tid)::uuid"
-        ),
-        {"id": alias_id, "tid": tenant_id},
+        sa_delete(_AL).where(
+            and_(_AL.c.id == alias_id, _AL.c.tenant_id == tenant_id)
+        )
     )
     db.commit()
     return (result.rowcount or 0) > 0
