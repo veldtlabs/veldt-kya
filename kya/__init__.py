@@ -337,6 +337,12 @@ from .delegation_policy import (
     enforce_delegation_policy,
     ensure_delegation_violations_table,
 )
+from .policy_config import (
+    DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
+    InvalidDelegationModeError,
+    active_delegation_mode,
+    configure_delegation_policy,
+)
 from .storage import init_storage
 from .telemetry import (
     disable_telemetry,
@@ -589,4 +595,11 @@ __all__ = [
     "check_delegation",
     "enforce_delegation_policy",
     "ensure_delegation_violations_table",
+    # One-line startup configurator for the delegation-policy mode.
+    # configure_delegation_policy("observe") is the safe default; flip
+    # to "flag" then "block" as the violations surface stabilizes.
+    "configure_delegation_policy",
+    "active_delegation_mode",
+    "DEFAULT_DELEGATION_MODE",
+    "InvalidDelegationModeError",
 ]
