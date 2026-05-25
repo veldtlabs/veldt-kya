@@ -421,6 +421,137 @@ kya_inbound_recommendations = Table(
 )
 
 
+# 14. kya_tenant_cost_budgets — per-(tenant, scope, scope_key, window)
+#     budget configuration with only-tighten composition.
+kya_tenant_cost_budgets = Table(
+    "kya_tenant_cost_budgets",
+    _LEGACY_MD,
+    autoinc_id("kya_tenant_cost_budgets_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=True),  # NULL = platform default
+    Column("scope", String(20), nullable=False),
+    Column("scope_key", String(200), nullable=False),
+    # 'window' is a reserved word in PG / DuckDB / MySQL (OVER WINDOW
+    # clause). Using 'time_window' avoids dialect-specific escaping.
+    Column("time_window", String(10), nullable=False),
+    Column("threshold_usd", Numeric(12, 4), nullable=False),
+    Column("hard_refuse", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("forecast_horizon_sec", BigInteger, nullable=False,
+           server_default=text("3600")),
+    Column("created_by", uuid_or_string(), nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Column("updated_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    UniqueConstraint("tenant_id", "scope", "scope_key", "time_window",
+                     name="uq_kya_budgets_tenant_scope_key_window"),
+    Index("idx_kya_budgets_tenant_scope", "tenant_id", "scope"),
+)
+
+
+# 15. kya_budget_changes — audit log for budget set/delete operations.
+#     Mirrors kya_weight_changes; same shape for the same reason
+#     (tenant-mutable config without an append-only audit becomes a
+#     stealth-modification surface).
+kya_budget_changes = Table(
+    "kya_budget_changes",
+    _LEGACY_MD,
+    autoinc_id("kya_budget_changes_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=True),
+    Column("scope", String(20), nullable=False),
+    Column("scope_key", String(200), nullable=False),
+    Column("time_window", String(10), nullable=False),
+    Column("old_threshold_usd", Numeric(12, 4), nullable=True),
+    Column("new_threshold_usd", Numeric(12, 4), nullable=True),
+    Column("old_hard_refuse", Boolean, nullable=True),
+    Column("new_hard_refuse", Boolean, nullable=True),
+    Column("action", String(20), nullable=False),  # "set" / "delete"
+    Column("changed_by", uuid_or_string(), nullable=True),
+    Column("reason", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Index("idx_kya_budget_changes_tenant_created",
+          "tenant_id", "created_at"),
+)
+
+
+# 16. kya_cost_events — append-only cost ledger paired with Valkey
+#     running counters in tenant_budget.py. Analytics-ready: FinOps,
+#     chargeback, cost-of-failure, cache-efficiency, latency/cost ratio
+#     all answerable with a single GROUP BY query.
+#
+# Analytics dimensions (all kept lean — derived columns sit alongside
+# raw inputs so dashboards never need a JOIN to interpret a row):
+#   provider           : openai / anthropic / google / azure / cohere /
+#                        bedrock / vertex / self_hosted / other
+#                        (closed-set, derived from model_used at write
+#                        time if not supplied)
+#   outcome            : success / failure / refused / partial / unknown
+#   cost_center        : org-level chargeback target (string, e.g.
+#                        "platform-eng", "marketing-team")
+#   business_unit      : revenue/cost attribution (string)
+#   environment        : dev / staging / prod / enclave
+#   invocation_id      : FK-shaped link to kya_invocations.id (no FK
+#                        constraint to keep cross-backend portability;
+#                        joins still work)
+#   parent_request_id  : delegation-chain root → child cost attribution
+#   latency_ms         : performance/cost ratio analysis
+#   cached_tokens      : caching efficiency metric (separated from
+#                        input_tokens because Anthropic and OpenAI
+#                        bill cached tokens at a fraction of the rate)
+#   tags               : open-ended dimensions for tenant-specific
+#                        analytics (cost-tracking labels, A/B test IDs)
+kya_cost_events = Table(
+    "kya_cost_events",
+    _LEGACY_MD,
+    autoinc_id("kya_cost_events_id_seq"),
+    # Identity columns
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("agent_key", String(200), nullable=False),
+    Column("principal_kind", String(20), nullable=False),
+    Column("principal_id", String(200), nullable=False),
+    # Cost columns
+    Column("usd_amount", Numeric(12, 6), nullable=False),
+    Column("input_token_cost_usd", Numeric(12, 6), nullable=True),
+    Column("output_token_cost_usd", Numeric(12, 6), nullable=True),
+    # Token columns
+    Column("input_tokens", BigInteger, nullable=True),
+    Column("output_tokens", BigInteger, nullable=True),
+    Column("cached_tokens", BigInteger, nullable=True),
+    # Model + provider columns (analytics)
+    Column("model_used", String(100), nullable=True),
+    Column("provider", String(50), nullable=True),
+    # Attribution columns (chargeback + business reporting)
+    Column("cost_center", String(100), nullable=True),
+    Column("business_unit", String(100), nullable=True),
+    Column("environment", String(20), nullable=True),
+    # Causal-chain linkage (cost ↔ audit)
+    Column("invocation_id", BigInteger, nullable=True),
+    Column("parent_request_id", String(200), nullable=True),
+    # Performance
+    Column("latency_ms", BigInteger, nullable=True),
+    Column("outcome", String(20), nullable=True),
+    # Flexible
+    Column("tags", json_or_jsonb(), nullable=True),
+    Column("request_id", String(200), nullable=True),
+    Column("recorded_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    UniqueConstraint("request_id", name="uq_kya_cost_events_request_id"),
+    # Analytics indexes — each maps to a high-frequency dashboard query.
+    Index("idx_kya_cost_events_tenant_recorded",
+          "tenant_id", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_provider_recorded",
+          "tenant_id", "provider", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_agent_recorded",
+          "tenant_id", "agent_key", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_cost_center_recorded",
+          "tenant_id", "cost_center", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_outcome",
+          "tenant_id", "outcome"),
+    Index("idx_kya_cost_events_invocation",
+          "invocation_id"),
+)
+
+
 # Convenience list — every legacy table for batch create_all().
 ALL_LEGACY_TABLES = [
     kya_agent_aliases,
@@ -436,4 +567,7 @@ ALL_LEGACY_TABLES = [
     kya_redteam_targets,
     kya_redteam_target_secrets,
     kya_inbound_recommendations,
+    kya_tenant_cost_budgets,
+    kya_budget_changes,
+    kya_cost_events,
 ]
