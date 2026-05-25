@@ -120,9 +120,20 @@ def _duckdb_upsert_raw(db, table: Table, values: dict, conflict_cols, update_col
     else:
         upsert_tail = f"ON CONFLICT ({conflict_list}) DO NOTHING"
 
-    table_ref = (
-        f"{table.schema}.{table.name}" if table.schema else table.name
-    )
+    # Schema resolution must honor schema_translate_map — SQLAlchemy's
+    # core/dialect insert constructors apply it automatically, but our
+    # raw text() bypass does not. Look up the active map on the bound
+    # connection and rewrite the qualifier (None / "" → unqualified).
+    schema = table.schema
+    try:
+        bind = db.get_bind() if hasattr(db, "get_bind") else db.bind
+        exec_opts = getattr(bind, "_execution_options", None) or {}
+        translate = (exec_opts.get("schema_translate_map") or {}) if exec_opts else {}
+        if schema in translate:
+            schema = translate[schema]
+    except Exception:  # pragma: no cover
+        pass
+    table_ref = f"{schema}.{table.name}" if schema else table.name
     sql = f"INSERT INTO {table_ref} ({col_list}) VALUES ({placeholders}) {upsert_tail}"
     return db.execute(text(sql), values)
 

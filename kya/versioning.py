@@ -246,6 +246,47 @@ def snapshot_agent(
     return version_no
 
 
+def snapshot_on_first_sight(
+    db,
+    *,
+    tenant_id: str,
+    agent_key: str,
+    definition: dict,
+    created_by: str | None = None,
+    note: str | None = "auto-snapshot on first sight",
+) -> tuple[int, bool]:
+    """Idempotent ``snapshot_agent`` — appends a new version ONLY when
+    the definition's ``canonical_hash`` differs from the latest known
+    version for this (tenant, agent_key).
+
+    Designed for use inside runtime hooks (kya_hooks/* adapters) where
+    every invocation triggers a "have we seen this definition?" check.
+    Safe to call on every invocation without bloating ``agent_versions``.
+
+    Returns:
+        (version_no, is_new) — the resolved version number and whether
+        this call wrote a new row.
+    """
+    from .integrity import canonical_hash
+
+    new_hash = canonical_hash(definition)
+
+    # Look up most-recent version (cheap — one row)
+    recent = list_versions(db, tenant_id=tenant_id, agent_key=agent_key,
+                           limit=1)
+    if recent:
+        latest_no = recent[0]["version_no"]
+        latest = get_version(db, tenant_id, agent_key, latest_no)
+        if latest and canonical_hash(latest.get("definition") or {}) == new_hash:
+            return latest_no, False  # already snapshotted — idempotent no-op
+
+    version_no = snapshot_agent(
+        db, tenant_id=tenant_id, agent_key=agent_key,
+        definition=definition, created_by=created_by, note=note,
+    )
+    return version_no, True
+
+
 def list_versions(db, tenant_id: str, agent_key: str, limit: int = 50) -> list[dict]:
     """Return versions newest-first, capped at `limit`."""
     _require_sqlalchemy()
