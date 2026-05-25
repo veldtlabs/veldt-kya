@@ -122,17 +122,21 @@ def _rule_spike(item: dict, spike_threshold: int) -> dict | None:
 
 
 def _rule_active_violations_hold(item: dict) -> dict | None:
-    """Any violations in the current window AND mode is observe →
-    hold. Don't promote a kind that's actively misbehaving."""
+    """Any violations in the current window AND mode is non-block →
+    hold. Don't promote a kind that's actively misbehaving (whether
+    we'd otherwise promote observe→flag or flag→block). In block
+    mode, active violations are handled by the block_mode_spike_rollback
+    rule instead."""
     if (item["count_in_window"] > 0
-            and item["current_effective_mode"] == "observe"):
+            and item["current_effective_mode"] in ("observe", "flag")):
         return {
             "rule_id": "active_violations_block_promotion",
             "recommendation": "hold",
             "rationale": (
                 f"{item['count_in_window']} active violations in last "
-                f"{item['_window_days']}d — stay in observe until "
-                f"surface stabilizes."
+                f"{item['_window_days']}d while in "
+                f"'{item['current_effective_mode']}' mode — wait until "
+                f"surface stabilizes before promoting."
             ),
         }
     return None
@@ -299,6 +303,8 @@ def delegation_readiness_report(
     parent_agent_key / sub_agent_key / violation_kind : optional
         Scope filters. Useful for drill-down dashboards.
     """
+    if not tenant_id:
+        raise ValueError("tenant_id is required (got empty or None)")
     if stable_days_to_promote < window_days:
         raise ValueError(
             "stable_days_to_promote must be >= window_days "
@@ -399,10 +405,16 @@ def delegation_readiness_report(
         last_seen = entry["_last_seen_overall"]
         first_in_window = (min(entry["_in_window_created_at"])
                             if entry["_in_window_created_at"] else None)
-        days_since_last = (
-            (now - last_seen).total_seconds() / 86400
-            if last_seen is not None else None
-        )
+        # Clock-skew safe: if DB clock is ahead of app clock,
+        # last_seen > now produces a negative delta. Clamp to 0 so
+        # the report doesn't surface confusing negative
+        # days_since_last. Rule predicates check >= stable_days so
+        # the clamped value still won't trigger false promotion.
+        if last_seen is not None:
+            raw_delta = (now - last_seen).total_seconds() / 86400
+            days_since_last = max(0.0, raw_delta)
+        else:
+            days_since_last = None
 
         effective_mode = _resolve_current_mode(
             db, tenant_id=tenant_id,
@@ -444,8 +456,12 @@ def delegation_readiness_report(
             public_item.update(match)
             attention.append(public_item)
         else:
-            # Steady-state entry — counts toward stable_pairs only if
-            # it has actually been silent recently enough to matter.
+            # Steady-state entry — count toward "previously violated
+            # but quiet long enough to be considered stable". This is
+            # NOT a count of pairs that never violated (those don't
+            # appear in the violations table at all); it's a count of
+            # pairs that USED TO violate and have been silent past
+            # the stable threshold.
             if in_window == 0 and (days_since_last or 0) >= stable_days_to_promote:
                 stable_pairs += 1
 
@@ -468,7 +484,12 @@ def delegation_readiness_report(
                  if len(e["_in_window_created_at"]) > 0]),
             "violation_kinds_in_window": dict(sorted(kind_counts.items())),
             "active_parent_agents": dict(sorted(parent_counts.items())),
-            "stable_pairs": stable_pairs,
+            # `previously_violating_pairs_now_stable` is the count of
+            # (parent, sub, kind) groups that have at least one
+            # historical violation but have been silent for
+            # >= stable_days_to_promote. Pairs that NEVER violated
+            # are not tracked here (they don't exist in the table).
+            "previously_violating_pairs_now_stable": stable_pairs,
             "actionable_items": len(attention),
         },
         "attention": attention,
