@@ -552,6 +552,45 @@ kya_cost_events = Table(
 )
 
 
+# kya_delegation_violations — recorded breaches of the
+# principal-of-least-privilege chain when one agent delegates to another.
+# Mode-aware: env KYA_DELEGATION_POLICY controls whether a detected
+# violation is observed (logged silently to this table), flagged (logged
+# + warning), or blocks the delegation (raises). Either way the row is
+# written so the audit surface is consistent.
+#
+# violation_kind values:
+#   access_escalation   — sub.access_level > parent.access_level
+#   data_class_widening — sub.data_classes ⊄ parent.data_classes
+#   human_loop_relax    — sub.human_loop offers less oversight than parent
+#   tool_widening       — sub.tools includes an admin/write tool the
+#                          parent doesn't have (admin-tool subset check)
+#   trust_low_under_parent — sub-agent score below threshold while parent
+#                            is high-trust (anomalous spawn pattern)
+kya_delegation_violations = Table(
+    "kya_delegation_violations",
+    _LEGACY_MD,
+    autoinc_id("kya_delegation_violations_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("sub_invocation_id", BigInteger, nullable=False),
+    Column("parent_invocation_id", BigInteger, nullable=True),
+    Column("parent_agent_key", String(100), nullable=False),
+    Column("sub_agent_key", String(100), nullable=False),
+    Column("violation_kind", String(40), nullable=False),
+    Column("detail", json_or_jsonb(), nullable=True),
+    Column("mode_active", String(20), nullable=False),
+    Column("blocked", Boolean, nullable=False, default=False),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Index("idx_kya_deleg_viol_tenant_created",
+          "tenant_id", "created_at"),
+    Index("idx_kya_deleg_viol_parent",
+          "parent_agent_key", "created_at"),
+    Index("idx_kya_deleg_viol_kind",
+          "tenant_id", "violation_kind", "created_at"),
+)
+
+
 # Convenience list — every legacy table for batch create_all().
 ALL_LEGACY_TABLES = [
     kya_agent_aliases,
@@ -570,4 +609,5 @@ ALL_LEGACY_TABLES = [
     kya_tenant_cost_budgets,
     kya_budget_changes,
     kya_cost_events,
+    kya_delegation_violations,
 ]
