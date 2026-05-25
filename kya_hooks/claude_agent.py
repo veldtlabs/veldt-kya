@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any, Callable
 
+from ._snapshot import maybe_snapshot_first_sight
 from .client import KyaClient
 from .scanner import DataLeakScanner
 
@@ -42,6 +44,10 @@ def claude_agent_hooks(
     scanner: DataLeakScanner | None = None,
     correlation_id: str | None = None,
     matcher: str = "mcp__.*",
+    tenant_id: str | None = None,
+    session_factory: Callable[[], Any] | None = None,
+    snapshot_on_first_sight: bool = True,
+    agent_def: dict[str, Any] | None = None,
 ):
     """Build a hooks dict to pass into `ClaudeAgentOptions(hooks=...)`.
 
@@ -61,6 +67,23 @@ def claude_agent_hooks(
         Content scanner for tool outputs. Defaults provided.
     correlation_id : str | None
         Shared correlation ID for the run.
+    tenant_id : str | None
+        Enables snapshot-on-first-sight against the local KYA DB. The
+        first tool call this hook intercepts will write an
+        ``agent_versions`` row for ``agent_key`` if one doesn't exist
+        yet. Required for delegation-policy enforcement coverage.
+        If None, snapshotting is skipped.
+    session_factory : callable | None
+        Zero-arg callable returning a SQLAlchemy ``Session``. If None,
+        ``kya.default_session`` is used (KYA_DB_URL → sqlite fallback).
+    snapshot_on_first_sight : bool
+        Master switch for the first-sight snapshot. Defaults True.
+    agent_def : dict | None
+        Override the auto-generated agent_def passed to
+        snapshot_on_first_sight(). Use this to populate
+        safety-relevant fields the Claude SDK doesn't expose
+        (``access_level``, ``data_classes``, ``human_loop``) so the
+        delegation policy has dimensions to check against.
 
     Returns
     -------
@@ -78,8 +101,30 @@ def claude_agent_hooks(
     _scanner = scanner or DataLeakScanner()
     _allowed = allowed_tools  # None means "OOS detection disabled"
 
+    # Build a sensible default agent_def from what the caller gave us.
+    # Claude Agent SDK doesn't expose a structured Agent object, so the
+    # snapshot is sparser than the OpenAI Agents one — but
+    # snapshot_on_first_sight is idempotent: a richer def can be
+    # snapshotted out-of-band later.
+    _agent_def = agent_def or {
+        "agent_key": agent_key,
+        "tools": sorted(_allowed) if _allowed else [],
+        "model": "claude",
+    }
+
     async def pre_tool_hook(input_data, tool_use_id, context):  # noqa: ARG001
         tool_name = input_data.get("tool_name", "unknown")
+        # First-sight snapshot — closes the delegation-policy gap for
+        # this Claude agent. Idempotent per process per (tenant, key).
+        try:
+            maybe_snapshot_first_sight(
+                tenant_id=tenant_id, agent_key=agent_key,
+                agent_def=_agent_def,
+                session_factory=session_factory,
+                enabled=snapshot_on_first_sight,
+            )
+        except Exception as exc:
+            logger.debug("[KYA] first-sight snapshot raised: %s", exc)
         if _allowed is not None and tool_name not in _allowed:
             try:
                 client.record_oos_tool(agent_key=agent_key, tool=tool_name)
