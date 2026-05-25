@@ -274,6 +274,7 @@ def snapshot_on_first_sight(
     # Look up most-recent version (cheap — one row)
     recent = list_versions(db, tenant_id=tenant_id, agent_key=agent_key,
                            limit=1)
+    is_truly_first_sight = not recent
     if recent:
         latest_no = recent[0]["version_no"]
         latest = get_version(db, tenant_id, agent_key, latest_no)
@@ -284,6 +285,32 @@ def snapshot_on_first_sight(
         db, tenant_id=tenant_id, agent_key=agent_key,
         definition=definition, created_by=created_by, note=note,
     )
+
+    # FIRST-SIGHT ANOMALY SIGNAL — fires only when an agent_key
+    # genuinely never existed in this tenant before. Subsequent version
+    # bumps (definition drift, rollback) do NOT trigger this; they have
+    # their own signal kind (`definition_drift`). Operators subscribe
+    # via realtime.subscribe_alerts to get notified when a novel agent
+    # appears in production — closes the gap between "KYA records
+    # everything" and "KYA actively flags newly-appearing identities".
+    # Fail-soft: a Valkey hiccup must NOT prevent the snapshot write.
+    if is_truly_first_sight:
+        try:
+            from .realtime import record_signal
+            record_signal(
+                tenant_id=tenant_id, agent_key=agent_key,
+                signal_kind="agent_first_sight",
+                severity="info",
+                detail={
+                    "first_version_no": version_no,
+                    "definition_hash": new_hash,
+                    "note": note or "",
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "[KYA-VERS] agent_first_sight signal emit failed: %s", exc)
+
     return version_no, True
 
 
