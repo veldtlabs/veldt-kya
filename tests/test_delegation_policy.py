@@ -119,14 +119,23 @@ def test_check_missing_dimension_skipped():
     assert check_delegation(parent, sub) == []
 
 
-def test_check_data_classes_widening_when_parent_unspecified():
-    # Safety default: an unspecified/empty parent data_classes is
-    # treated as "no data access". Sub adding ANY class is widening.
+def test_check_data_classes_absent_in_parent_skips_dimension():
+    # Field MISSING from parent_def → treated as "unknown" and skipped.
+    # Avoids noisy flags against bare-essentials orchestrator defs.
     parent = {"access_level": "read"}
+    sub = {"data_classes": ["pii"]}
+    assert check_delegation(parent, sub) == []
+
+
+def test_check_data_classes_empty_in_parent_still_enforces():
+    # Field present but EXPLICITLY EMPTY → caller is saying "this
+    # principal has zero data access". Sub adding any class IS widening.
+    parent = {"access_level": "read", "data_classes": []}
     sub = {"data_classes": ["pii"]}
     v = check_delegation(parent, sub)
     assert len(v) == 1
     assert v[0]["violation_kind"] == "data_class_widening"
+    assert v[0]["extra"] == ["pii"]
 
 
 def test_check_handles_non_dict_input():
