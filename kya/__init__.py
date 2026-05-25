@@ -330,6 +330,13 @@ from .rogue import (
     record_policy_violation,
     rogue_score,
 )
+from .delegation_policy import (
+    DELEGATION_POLICY_MODES,
+    DelegationPolicyError,
+    check_delegation,
+    enforce_delegation_policy,
+    ensure_delegation_violations_table,
+)
 from .storage import init_storage
 from .telemetry import (
     disable_telemetry,
@@ -573,4 +580,13 @@ __all__ = [
     # depending on the platform's db.database.SessionLocal.
     "set_session_factory",
     "has_session_factory",
+    # Delegation-policy enforcement (principal-of-least-privilege chain
+    # for sub-agents). Honored automatically by record_invocation when
+    # principal_kind=="agent". Mode via env KYA_DELEGATION_POLICY:
+    # "observe" (default), "flag", or "block".
+    "DELEGATION_POLICY_MODES",
+    "DelegationPolicyError",
+    "check_delegation",
+    "enforce_delegation_policy",
+    "ensure_delegation_violations_table",
 ]
