@@ -100,6 +100,13 @@ ALLOWED_SIGNAL_KINDS = frozenset(
         "injection_attempt",
         "definition_drift",
         "policy_violation",
+        # A previously-unseen agent_key was just snapshotted (v1 written).
+        # Emitted from kya.versioning.snapshot_on_first_sight when the
+        # write is genuinely new — NOT on idempotent re-calls. Lets
+        # operators detect novel agents appearing in production
+        # (rogue dev, supply-chain injection, drift from registration
+        # workflow) without polling agent_versions.
+        "agent_first_sight",
     }
 )
 
