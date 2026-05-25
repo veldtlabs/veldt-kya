@@ -146,8 +146,17 @@ def _check_access_level(parent_def: dict, sub_def: dict) -> dict | None:
 
 
 def _check_data_classes(parent_def: dict, sub_def: dict) -> dict | None:
-    p = set(parent_def.get("data_classes") or [])
-    s = set(sub_def.get("data_classes") or [])
+    # Distinguish "field absent" (unknown — skip dimension) from
+    # "field present but empty" (explicit zero-access — enforce subset).
+    # This avoids noisy flags against bare-essentials orchestrator defs
+    # while still catching real widening when callers opt in to declaring
+    # data_classes explicitly.
+    parent_raw = parent_def.get("data_classes")
+    sub_raw = sub_def.get("data_classes")
+    if parent_raw is None:
+        return None
+    p = set(parent_raw)
+    s = set(sub_raw or [])
     if not p and not s:
         return None
     extra = s - p
