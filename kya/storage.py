@@ -62,6 +62,9 @@ _TABLE_SETUP_PLAN = [
     ("kya_inbound_recommendations", "kya.inbound", "ensure_inbound_table"),
     # ── Economic governance: per-tenant cost budgets + cost-event ledger ──
     ("kya_tenant_cost_budgets+events", "kya.tenant_budget", "ensure_tables"),
+    # ── Delegation-policy enforcement (sub-agent capability ceiling) ──
+    ("kya_delegation_violations", "kya.delegation_policy",
+     "ensure_delegation_violations_table"),
 ]
 
 
