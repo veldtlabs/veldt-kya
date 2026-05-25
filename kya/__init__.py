@@ -337,6 +337,13 @@ from .delegation_policy import (
     enforce_delegation_policy,
     ensure_delegation_violations_table,
 )
+from .delegation_analytics import (
+    DEFAULT_SPIKE_THRESHOLD,
+    DEFAULT_STABLE_DAYS_TO_PROMOTE,
+    DEFAULT_WINDOW_DAYS,
+    VALID_RECOMMENDATIONS,
+    delegation_readiness_report,
+)
 from .policy_config import (
     DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
     InvalidDelegationModeError,
@@ -602,4 +609,13 @@ __all__ = [
     "active_delegation_mode",
     "DEFAULT_DELEGATION_MODE",
     "InvalidDelegationModeError",
+    # Readiness report — operator-facing aggregation over the
+    # violations table with deterministic recommendations. Surfaces
+    # only items needing review (noise suppression for high-volume
+    # tenants); each recommendation carries rule_id + rationale.
+    "delegation_readiness_report",
+    "VALID_RECOMMENDATIONS",
+    "DEFAULT_WINDOW_DAYS",
+    "DEFAULT_STABLE_DAYS_TO_PROMOTE",
+    "DEFAULT_SPIKE_THRESHOLD",
 ]
