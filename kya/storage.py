@@ -60,6 +60,8 @@ _TABLE_SETUP_PLAN = [
     ("kya_redteam_targets+secrets", "kya_redteam.targets", "ensure_tables"),
     # ── Inbound recommendations (cross-tenant feedback loop) ──
     ("kya_inbound_recommendations", "kya.inbound", "ensure_inbound_table"),
+    # ── Economic governance: per-tenant cost budgets + cost-event ledger ──
+    ("kya_tenant_cost_budgets+events", "kya.tenant_budget", "ensure_tables"),
 ]
 
 

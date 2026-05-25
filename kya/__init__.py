@@ -342,6 +342,7 @@ from .versioning import (
     list_versions,
     rollback_to,
     snapshot_agent,
+    snapshot_on_first_sight,
 )
 
 __all__ = [
@@ -368,6 +369,7 @@ __all__ = [
     # versioning + unified storage setup
     "ensure_table",
     "snapshot_agent",
+    "snapshot_on_first_sight",
     "list_versions",
     "get_version",
     "rollback_to",
