@@ -108,7 +108,12 @@ kya_agent_aliases = Table(
 )
 
 
-# 2. kya_user_trust — per-tenant user trust score
+# 2. kya_user_trust — per-tenant user trust score.
+# Phase 4b adds idp_subject / idp_issuer / idp_kind / federated_id —
+# optional pointers to the upstream Identity Provider's view of the
+# same user. Populated by bind_user_to_idp() or directly via the
+# users.py API. All nullable; existing deployments pick them up via
+# additive ALTER (kya/users.py ensure_user_trust_table).
 kya_user_trust = Table(
     "kya_user_trust",
     _LEGACY_MD,
@@ -117,6 +122,10 @@ kya_user_trust = Table(
     Column("user_id", uuid_or_string(), nullable=False),
     Column("trust_score", BigInteger, nullable=False, default=50),
     Column("signal_counts", json_or_jsonb(), nullable=False, default=dict),
+    Column("idp_subject", String(255), nullable=True),
+    Column("idp_issuer", String(255), nullable=True),
+    Column("idp_kind", String(50), nullable=True),
+    Column("federated_id", String(500), nullable=True),
     Column("last_signal_at", DateTime(timezone=True), nullable=True),
     Column("last_clean_at", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True),
@@ -125,6 +134,9 @@ kya_user_trust = Table(
            server_default=func.now(), nullable=False),
     UniqueConstraint("tenant_id", "user_id", name="uq_kya_user_trust_tenant_user"),
     Index("idx_kya_user_trust_tenant_score", "tenant_id", "trust_score"),
+    # Phase 4b NOTE: idp_subject index intentionally omitted —
+    # DuckDB rejects ON CONFLICT DO UPDATE on any indexed column.
+    # Lookups by idp_subject scan; acceptable at typical scale.
 )
 
 
@@ -421,6 +433,255 @@ kya_inbound_recommendations = Table(
 )
 
 
+# 14. kya_tenant_cost_budgets — per-(tenant, scope, scope_key, window)
+#     budget configuration with only-tighten composition.
+kya_tenant_cost_budgets = Table(
+    "kya_tenant_cost_budgets",
+    _LEGACY_MD,
+    autoinc_id("kya_tenant_cost_budgets_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=True),  # NULL = platform default
+    Column("scope", String(20), nullable=False),
+    Column("scope_key", String(200), nullable=False),
+    # 'window' is a reserved word in PG / DuckDB / MySQL (OVER WINDOW
+    # clause). Using 'time_window' avoids dialect-specific escaping.
+    Column("time_window", String(10), nullable=False),
+    Column("threshold_usd", Numeric(12, 4), nullable=False),
+    Column("hard_refuse", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("forecast_horizon_sec", BigInteger, nullable=False,
+           server_default=text("3600")),
+    Column("created_by", uuid_or_string(), nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Column("updated_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    UniqueConstraint("tenant_id", "scope", "scope_key", "time_window",
+                     name="uq_kya_budgets_tenant_scope_key_window"),
+    Index("idx_kya_budgets_tenant_scope", "tenant_id", "scope"),
+)
+
+
+# 15. kya_budget_changes — audit log for budget set/delete operations.
+#     Mirrors kya_weight_changes; same shape for the same reason
+#     (tenant-mutable config without an append-only audit becomes a
+#     stealth-modification surface).
+kya_budget_changes = Table(
+    "kya_budget_changes",
+    _LEGACY_MD,
+    autoinc_id("kya_budget_changes_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=True),
+    Column("scope", String(20), nullable=False),
+    Column("scope_key", String(200), nullable=False),
+    Column("time_window", String(10), nullable=False),
+    Column("old_threshold_usd", Numeric(12, 4), nullable=True),
+    Column("new_threshold_usd", Numeric(12, 4), nullable=True),
+    Column("old_hard_refuse", Boolean, nullable=True),
+    Column("new_hard_refuse", Boolean, nullable=True),
+    Column("action", String(20), nullable=False),  # "set" / "delete"
+    Column("changed_by", uuid_or_string(), nullable=True),
+    Column("reason", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Index("idx_kya_budget_changes_tenant_created",
+          "tenant_id", "created_at"),
+)
+
+
+# 16. kya_cost_events — append-only cost ledger paired with Valkey
+#     running counters in tenant_budget.py. Analytics-ready: FinOps,
+#     chargeback, cost-of-failure, cache-efficiency, latency/cost ratio
+#     all answerable with a single GROUP BY query.
+#
+# Analytics dimensions (all kept lean — derived columns sit alongside
+# raw inputs so dashboards never need a JOIN to interpret a row):
+#   provider           : openai / anthropic / google / azure / cohere /
+#                        bedrock / vertex / self_hosted / other
+#                        (closed-set, derived from model_used at write
+#                        time if not supplied)
+#   outcome            : success / failure / refused / partial / unknown
+#   cost_center        : org-level chargeback target (string, e.g.
+#                        "platform-eng", "marketing-team")
+#   business_unit      : revenue/cost attribution (string)
+#   environment        : dev / staging / prod / enclave
+#   invocation_id      : FK-shaped link to kya_invocations.id (no FK
+#                        constraint to keep cross-backend portability;
+#                        joins still work)
+#   parent_request_id  : delegation-chain root → child cost attribution
+#   latency_ms         : performance/cost ratio analysis
+#   cached_tokens      : caching efficiency metric (separated from
+#                        input_tokens because Anthropic and OpenAI
+#                        bill cached tokens at a fraction of the rate)
+#   tags               : open-ended dimensions for tenant-specific
+#                        analytics (cost-tracking labels, A/B test IDs)
+kya_cost_events = Table(
+    "kya_cost_events",
+    _LEGACY_MD,
+    autoinc_id("kya_cost_events_id_seq"),
+    # Identity columns
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("agent_key", String(200), nullable=False),
+    Column("principal_kind", String(20), nullable=False),
+    Column("principal_id", String(200), nullable=False),
+    # Cost columns
+    Column("usd_amount", Numeric(12, 6), nullable=False),
+    Column("input_token_cost_usd", Numeric(12, 6), nullable=True),
+    Column("output_token_cost_usd", Numeric(12, 6), nullable=True),
+    # Token columns
+    Column("input_tokens", BigInteger, nullable=True),
+    Column("output_tokens", BigInteger, nullable=True),
+    Column("cached_tokens", BigInteger, nullable=True),
+    # Model + provider columns (analytics)
+    Column("model_used", String(100), nullable=True),
+    Column("provider", String(50), nullable=True),
+    # Attribution columns (chargeback + business reporting)
+    Column("cost_center", String(100), nullable=True),
+    Column("business_unit", String(100), nullable=True),
+    Column("environment", String(20), nullable=True),
+    # Causal-chain linkage (cost ↔ audit)
+    Column("invocation_id", BigInteger, nullable=True),
+    Column("parent_request_id", String(200), nullable=True),
+    # Performance
+    Column("latency_ms", BigInteger, nullable=True),
+    Column("outcome", String(20), nullable=True),
+    # Flexible
+    Column("tags", json_or_jsonb(), nullable=True),
+    Column("request_id", String(200), nullable=True),
+    Column("recorded_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    UniqueConstraint("request_id", name="uq_kya_cost_events_request_id"),
+    # Analytics indexes — each maps to a high-frequency dashboard query.
+    Index("idx_kya_cost_events_tenant_recorded",
+          "tenant_id", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_provider_recorded",
+          "tenant_id", "provider", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_agent_recorded",
+          "tenant_id", "agent_key", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_cost_center_recorded",
+          "tenant_id", "cost_center", "recorded_at"),
+    Index("idx_kya_cost_events_tenant_outcome",
+          "tenant_id", "outcome"),
+    Index("idx_kya_cost_events_invocation",
+          "invocation_id"),
+)
+
+
+# kya_delegation_violations — recorded breaches of the
+# principal-of-least-privilege chain when one agent delegates to another.
+# Mode-aware: env KYA_DELEGATION_POLICY controls whether a detected
+# violation is observed (logged silently to this table), flagged (logged
+# + warning), or blocks the delegation (raises). Either way the row is
+# written so the audit surface is consistent.
+#
+# violation_kind values:
+#   access_escalation   — sub.access_level > parent.access_level
+#   data_class_widening — sub.data_classes ⊄ parent.data_classes
+#   human_loop_relax    — sub.human_loop offers less oversight than parent
+#   tool_widening       — sub.tools includes an admin/write tool the
+#                          parent doesn't have (admin-tool subset check)
+#   trust_low_under_parent — sub-agent score below threshold while parent
+#                            is high-trust (anomalous spawn pattern)
+kya_delegation_violations = Table(
+    "kya_delegation_violations",
+    _LEGACY_MD,
+    autoinc_id("kya_delegation_violations_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("sub_invocation_id", BigInteger, nullable=False),
+    Column("parent_invocation_id", BigInteger, nullable=True),
+    Column("parent_agent_key", String(100), nullable=False),
+    Column("sub_agent_key", String(100), nullable=False),
+    Column("violation_kind", String(40), nullable=False),
+    Column("detail", json_or_jsonb(), nullable=True),
+    Column("mode_active", String(20), nullable=False),
+    Column("blocked", Boolean, nullable=False, default=False),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Index("idx_kya_deleg_viol_tenant_created",
+          "tenant_id", "created_at"),
+    Index("idx_kya_deleg_viol_parent",
+          "parent_agent_key", "created_at"),
+    Index("idx_kya_deleg_viol_kind",
+          "tenant_id", "violation_kind", "created_at"),
+)
+
+
+# kya_delegation_policy_overrides — per-scope mode overrides for
+# delegation policy enforcement. Lets operators target specific
+# agent pairs (or violation kinds, or just an orchestrator's whole
+# spawn surface) with different modes without affecting the global
+# default.
+#
+# Resolution: at enforcement time, all rows matching the (parent,
+# sub, kind) scope are filtered to ACTIVE (effective_at <= now AND
+# (expires_at IS NULL OR expires_at > now)) then ranked by
+# specificity score. NULL = wildcard.
+#
+# Specificity score = count of non-NULL match fields.
+#   (X, Y, Z) > (X, Y, NULL) ~ (X, NULL, Z) ~ (NULL, Y, Z)
+#   > (X, NULL, NULL) ~ (NULL, Y, NULL) ~ (NULL, NULL, Z)
+#   > (NULL, NULL, NULL)
+# Ties broken by created_at DESC (most recent wins).
+#
+# Audit semantics: rows are append-only. Updating an override means
+# inserting a new row (with same scope, new mode, new changed_by).
+# Soft-delete sets expires_at = now() on the row.
+kya_delegation_policy_overrides = Table(
+    "kya_delegation_policy_overrides",
+    _LEGACY_MD,
+    autoinc_id("kya_delegation_policy_overrides_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("parent_agent_key", String(100), nullable=True),
+    Column("sub_agent_key", String(100), nullable=True),
+    Column("violation_kind", String(40), nullable=True),
+    Column("mode", String(20), nullable=False),
+    Column("reason", Text, nullable=True),
+    Column("changed_by", uuid_or_string(), nullable=True),
+    Column("effective_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Index("idx_kya_delpol_ovr_tenant_scope",
+          "tenant_id", "parent_agent_key",
+          "sub_agent_key", "violation_kind"),
+    Index("idx_kya_delpol_ovr_tenant_effective",
+          "tenant_id", "effective_at"),
+)
+
+
+# kya_role_grants — Phase 5b RBAC. Direct (principal → action)
+# grants per-tenant. Single-table model intentionally — operators
+# who want role grouping can wrap a "deploy this role" function
+# that fans out to multiple grant rows. Kept simple here; the
+# resolver (has_action) only does index-backed equality lookups.
+#
+# Wildcard handling: a row with action="kya.*" grants every
+# kya.* action for that principal — a super-user shortcut.
+# No deeper wildcards (no "kya.budget.*") in v1 — keeps the
+# resolver SQL to two equality checks instead of LIKE scans.
+kya_role_grants = Table(
+    "kya_role_grants",
+    _LEGACY_MD,
+    autoinc_id("kya_role_grants_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("principal_kind", String(20), nullable=False),
+    Column("principal_id", String(200), nullable=False),
+    Column("action", String(80), nullable=False),
+    Column("granted_by", uuid_or_string(), nullable=True),
+    Column("reason", Text, nullable=True),
+    Column("effective_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    UniqueConstraint("tenant_id", "principal_kind", "principal_id",
+                     "action",
+                     name="uq_kya_role_grants_principal_action"),
+    Index("idx_kya_role_grants_tenant_principal",
+          "tenant_id", "principal_kind", "principal_id"),
+    Index("idx_kya_role_grants_tenant_action",
+          "tenant_id", "action"),
+)
+
+
 # Convenience list — every legacy table for batch create_all().
 ALL_LEGACY_TABLES = [
     kya_agent_aliases,
@@ -436,4 +697,9 @@ ALL_LEGACY_TABLES = [
     kya_redteam_targets,
     kya_redteam_target_secrets,
     kya_inbound_recommendations,
+    kya_tenant_cost_budgets,
+    kya_budget_changes,
+    kya_cost_events,
+    kya_delegation_violations,
+    kya_delegation_policy_overrides,
 ]

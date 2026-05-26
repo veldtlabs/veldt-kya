@@ -33,6 +33,18 @@ htmlcov/
 .kya_test/*.db
 .kya_test/openclaw_repo/
 
+# Benchmark results — never commit
+# Numbers go stale every dep/version/hardware change; they're
+# environment-specific; they shouldn't be cited as defensible KYA
+# performance characteristics. The benchmark SCRIPT
+# (examples/benchmark_kya_latency.py) ships in the repo so anyone
+# can re-run; the measurement OUTPUTS stay local.
+docs/BENCHMARKS.md
+docs/FIDDLER_VS_KYA.md
+benchmark_results/
+*.benchmark.json
+*.benchmark.csv
+
 # Secrets — never commit
 *.priv
 *.pem

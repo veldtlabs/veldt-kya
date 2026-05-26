@@ -89,6 +89,17 @@ SIGNAL_DELTAS = {
     # Severity-between data_leak (-10) and oos_tool (-3); these are real but
     # not always the worst kind of signal.
     "policy_violation": -7,
+    # Phase 4a.1 — rate limit hit. Light penalty: not always abusive
+    # (legitimate burst from a backed-up queue can trigger), but
+    # repeated hits suggest misconfiguration or abuse.
+    "rate_limit_exceeded": -2,
+    # Phase 4a.1 — payload over the size cap. Stronger penalty: this
+    # is either a buggy agent emitting unbounded payloads, or an
+    # attacker trying to bloat the audit chain.
+    "payload_too_large": -4,
+    # Phase 5a — nonce replay attempt. Strong abuse signal — a legit
+    # client never replays nonces. Trust hit close to data_leak.
+    "replay_detected": -8,
     # Synthetic "clean run" — small upward bump for cooperative usage
     "clean_invocation": +1,
 }
@@ -156,10 +167,41 @@ CREATE INDEX IF NOT EXISTS idx_kya_user_trust_tenant_score
 
 
 def ensure_user_trust_table(db) -> None:
-    """Idempotent — dialect-aware via _legacy_tables.create_legacy_tables."""
+    """Idempotent — dialect-aware via _legacy_tables.create_legacy_tables.
+
+    Also applies additive Phase 4b migrations (IdP binding columns)
+    so existing deployments pick up idp_subject/idp_issuer/idp_kind/
+    federated_id columns without dropping the table.
+    """
     from ._legacy_tables import create_legacy_tables, kya_user_trust
+    from ._migrations import apply_migrations
 
     create_legacy_tables(db, [kya_user_trust])
+    # Phase 4b: additive ALTERs for existing deployments. IF NOT
+    # EXISTS guards on every statement so re-runs are no-ops.
+    dialect = db.get_bind().dialect.name
+    qual = "prov_schema." if dialect == "postgresql" else ""
+    table = f"{qual}kya_user_trust"
+    migrations = [
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"idp_subject VARCHAR(255);",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"idp_issuer VARCHAR(255);",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"idp_kind VARCHAR(50);",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"federated_id VARCHAR(500);",
+    ]
+    # Dialect-specific index — PG/MySQL/SQLite get fast indexed
+    # lookups; DuckDB scans (its UPDATE-on-indexed-column rejection
+    # makes the indexed path incompatible with ON CONFLICT DO UPDATE).
+    if dialect != "duckdb":
+        migrations.append(
+            f"CREATE INDEX IF NOT EXISTS "
+            f"idx_kya_user_trust_tenant_idp_subject "
+            f"ON {table} (tenant_id, idp_subject);"
+        )
+    apply_migrations(db, "kya_user_trust", migrations)
     db.commit()
 
 
@@ -297,7 +339,23 @@ def _upsert_with_delta(
         return int(result[0]) if result else STARTING_TRUST
 
     # Non-PG: read-modify-write.
+    # Schema resolution must honor schema_translate_map — Table.schema
+    # alone returns "prov_schema" even on dialects where the session's
+    # execution_options have remapped it to None. Raw text() doesn't
+    # apply that translation, so we apply it manually here. Mirrors the
+    # same pattern in _dialect_helpers._duckdb_upsert_raw. Without this
+    # fix, record_user_signal on MySQL/SQLite/DuckDB tries to query
+    # `prov_schema.kya_user_trust` which doesn't exist on those backends.
     schema = kya_user_trust.schema
+    try:
+        bind = db.get_bind() if hasattr(db, "get_bind") else db.bind
+        exec_opts = getattr(bind, "_execution_options", None) or {}
+        translate = (exec_opts.get("schema_translate_map") or {}
+                     if exec_opts else {})
+        if schema in translate:
+            schema = translate[schema]
+    except Exception:
+        pass
     table_ref = f"{schema}.kya_user_trust" if schema else "kya_user_trust"
     row = db.execute(
         text(

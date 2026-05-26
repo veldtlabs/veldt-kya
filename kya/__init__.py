@@ -259,10 +259,50 @@ from ._session_factory import (
 from ._session_factory import (
     set_session_factory,
 )
+from ._valkey import (
+    get_valkey,
+    register_valkey_factory,
+    reset_valkey_cache,
+)
+from .audit_export import (
+    EXPORT_SCHEMA_VERSION,
+    AuditExportError,
+    SignatureVerificationFailed,
+    signed_export,
+    verify_signed_export,
+)
+from .auth import (
+    bind_principal_from_token,
+    claims_to_kya_principal,
+    reset_jwks_cache,
+    verify_jwt,
+)
 from .autoinstrument import (
     autoinstrument,
     deinstrument,
     patched_sdks,
+)
+from .delegation_analytics import (
+    DEFAULT_SPIKE_THRESHOLD,
+    DEFAULT_STABLE_DAYS_TO_PROMOTE,
+    DEFAULT_WINDOW_DAYS,
+    VALID_RECOMMENDATIONS,
+    delegation_readiness_report,
+)
+from .delegation_overrides import (
+    InvalidOverrideError,
+    delete_delegation_override,
+    ensure_delegation_overrides_table,
+    list_delegation_overrides,
+    resolve_effective_mode,
+    set_delegation_override,
+)
+from .delegation_policy import (
+    DELEGATION_POLICY_MODES,
+    DelegationPolicyError,
+    check_delegation,
+    enforce_delegation_policy,
+    ensure_delegation_violations_table,
 )
 from .dualwrite import (
     ALLOWED_TABLES as DUAL_WRITE_ALLOWED_TABLES,
@@ -281,6 +321,15 @@ from .evidence import (
     prune_expired_evidence,
     record_evidence,
     verify_chain,
+)
+from .external_id import (
+    IDP_KINDS,
+    InvalidIdpKindError,
+    bind_principal_to_idp,
+    bind_user_to_idp,
+    list_principals_by_idp_kind,
+    lookup_principal_by_idp,
+    lookup_user_by_idp,
 )
 from .format_adapter import (
     SupportedFramework,
@@ -302,6 +351,19 @@ from .inbound import (
 from .inbound import (
     fetch_now as fetch_inbound_now,
 )
+from .payload_caps import (
+    DEFAULT_MAX_PAYLOAD_BYTES,
+    PayloadTooLargeError,
+    check_payload_size,
+)
+from .policy_config import (
+    DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
+)
+from .policy_config import (
+    InvalidDelegationModeError,
+    active_delegation_mode,
+    configure_delegation_policy,
+)
 from .quality import (
     QualityReport,
     get_quality_signals,
@@ -310,6 +372,28 @@ from .quality import (
     record_injection_attempt,
     record_qa_irrelevance,
 )
+from .rate_limit import (
+    RateLimitExceededError,
+    maybe_rate_limit,
+    reset_rate_limit_state,
+)
+from .rbac import (
+    ACTIONS as RBAC_ACTIONS,
+)
+from .rbac import (
+    RBAC_MODES,
+    AccessDeniedError,
+    InvalidActionError,
+    InvalidRbacModeError,
+    active_rbac_mode,
+    configure_rbac,
+    ensure_rbac_table,
+    grant_action,
+    has_action,
+    list_grants,
+    require_action,
+    revoke_action,
+)
 from .realtime import (
     ALLOWED_SIGNAL_KINDS,
     WINDOWS,
@@ -317,6 +401,13 @@ from .realtime import (
     get_window_counts,
     record_signal,
     subscribe_alerts,
+)
+from .replay_protection import (
+    ReplayDetectedError,
+    generate_nonce,
+    is_valid_nonce,
+    reset_replay_state,
+    verify_request_nonce,
 )
 from .rogue import (
     Anomaly,
@@ -330,11 +421,43 @@ from .rogue import (
     record_policy_violation,
     rogue_score,
 )
+from .spiffe import (
+    SpiffeIdFormatError,
+    SpiffeVerificationError,
+    _reset_spiffe_warned_state,
+    bind_principal_from_svid,
+    bind_spiffe_id_to_principal,
+    is_allowed_trust_domain,
+    is_valid_spiffe_id,
+    lookup_principal_by_spiffe_id,
+    parse_spiffe_id,
+    verify_jwt_svid,
+)
 from .storage import init_storage
 from .telemetry import (
     disable_telemetry,
     enable_telemetry,
     telemetry_status,
+)
+from .tenant_budget import (
+    budget_status,
+    current_spend,
+    delete_budget,
+    forecast_spend,
+    get_budget,
+    get_forecaster,
+    list_budgets,
+    list_changes,
+    record_cost_event,
+    set_budget,
+    set_forecaster,
+    should_refuse,
+)
+from .tenant_budget import (
+    ensure_tables as ensure_budget_tables,
+)
+from .tenant_budget import (
+    health_check as budget_health_check,
 )
 from .versioning import (
     ensure_table,
@@ -342,6 +465,7 @@ from .versioning import (
     list_versions,
     rollback_to,
     snapshot_agent,
+    snapshot_on_first_sight,
 )
 
 __all__ = [
@@ -368,6 +492,7 @@ __all__ = [
     # versioning + unified storage setup
     "ensure_table",
     "snapshot_agent",
+    "snapshot_on_first_sight",
     "list_versions",
     "get_version",
     "rollback_to",
@@ -571,4 +696,137 @@ __all__ = [
     # depending on the platform's db.database.SessionLocal.
     "set_session_factory",
     "has_session_factory",
+    # Delegation-policy enforcement (principal-of-least-privilege chain
+    # for sub-agents). Honored automatically by record_invocation when
+    # principal_kind=="agent". Mode via env KYA_DELEGATION_POLICY:
+    # "observe" (default), "flag", or "block".
+    "DELEGATION_POLICY_MODES",
+    "DelegationPolicyError",
+    "check_delegation",
+    "enforce_delegation_policy",
+    "ensure_delegation_violations_table",
+    # One-line startup configurator for the delegation-policy mode.
+    # configure_delegation_policy("observe") is the safe default; flip
+    # to "flag" then "block" as the violations surface stabilizes.
+    "configure_delegation_policy",
+    "active_delegation_mode",
+    "DEFAULT_DELEGATION_MODE",
+    "InvalidDelegationModeError",
+    # Readiness report — operator-facing aggregation over the
+    # violations table with deterministic recommendations. Surfaces
+    # only items needing review (noise suppression for high-volume
+    # tenants); each recommendation carries rule_id + rationale.
+    "delegation_readiness_report",
+    "VALID_RECOMMENDATIONS",
+    "DEFAULT_WINDOW_DAYS",
+    "DEFAULT_STABLE_DAYS_TO_PROMOTE",
+    "DEFAULT_SPIKE_THRESHOLD",
+    # Phase 2 — per-scope delegation policy overrides. Operators
+    # target specific agent pairs / violation kinds with different
+    # modes; resolution is specificity-ordered (most-specific wins,
+    # ties broken by created_at DESC). Falls back to global env.
+    "set_delegation_override",
+    "delete_delegation_override",
+    "list_delegation_overrides",
+    "resolve_effective_mode",
+    "ensure_delegation_overrides_table",
+    "InvalidOverrideError",
+    # Phase 4b — external-ID binding for principals + users. Adds
+    # idp_subject/idp_issuer/idp_kind/federated_id columns + lookup
+    # helpers so KYA trust records can be linked back to the
+    # upstream IdP user (Okta/Auth0/Keycloak/Google/Entra/Cognito/
+    # SPIFFE). Independent of Phase 4a — caller can supply the
+    # claims from any source.
+    "bind_principal_to_idp",
+    "bind_user_to_idp",
+    "lookup_principal_by_idp",
+    "lookup_user_by_idp",
+    "list_principals_by_idp_kind",
+    "IDP_KINDS",
+    "InvalidIdpKindError",
+    # Phase 4a — JWT introspection + claim extraction. Decodes
+    # OIDC/OAuth bearer tokens against a JWKS endpoint, returns
+    # claims dict, can auto-populate Phase 4b's external_id columns
+    # via bind_principal_from_token(). Optional PyJWT dependency.
+    "verify_jwt",
+    "claims_to_kya_principal",
+    "bind_principal_from_token",
+    "reset_jwks_cache",
+    # Phase 4a.1 — KYA-semantic rate limiting + payload size caps
+    # on write primitives. Both OFF by default; operators opt in
+    # via KYA_RATE_LIMIT_DEFAULT_RPS / KYA_MAX_<PRIM>_PAYLOAD_BYTES.
+    # Used internally by record_invocation / record_evidence /
+    # record_cost_event today; record_principal_signal /
+    # set_delegation_override / set_budget will follow in future
+    # commits as the surface stabilizes.
+    "maybe_rate_limit",
+    "RateLimitExceededError",
+    "reset_rate_limit_state",
+    "check_payload_size",
+    "PayloadTooLargeError",
+    "DEFAULT_MAX_PAYLOAD_BYTES",
+    # Phase 5a — replay protection (Valkey-backed nonce table with
+    # TTL). Off-by-default. Operators opt in via
+    # KYA_REPLAY_PROTECTION=on. Each (tenant, principal, nonce)
+    # combination is uniquely reserved for KYA_REPLAY_MAX_AGE_SECONDS
+    # (default 300). Two-axis check: nonce uniqueness AND timestamp
+    # freshness — both required to defeat replay attacks.
+    "verify_request_nonce",
+    "generate_nonce",
+    "is_valid_nonce",
+    "reset_replay_state",
+    "ReplayDetectedError",
+    # Phase 5b — RBAC tied to KYA-specific actions. Off by default
+    # via KYA_RBAC_ENFORCEMENT=off; flip to "flag" then "block"
+    # for staged rollout. ACTIONS is the closed set of valid
+    # action strings — extending requires a code change so typos
+    # in grants are caught at insert time.
+    "grant_action",
+    "revoke_action",
+    "list_grants",
+    "has_action",
+    "require_action",
+    "configure_rbac",
+    "active_rbac_mode",
+    "ensure_rbac_table",
+    "RBAC_ACTIONS",
+    "RBAC_MODES",
+    "AccessDeniedError",
+    "InvalidActionError",
+    "InvalidRbacModeError",
+    # Phase 5d — SDK-friendly Valkey accessor. Without redis-py
+    # installed and KYA_VALKEY_URL / REDIS_URL set, every hardening
+    # feature degrades to fail-open silently. With them, hardening
+    # actually works for PyPI-installed standalone deployments.
+    "get_valkey",
+    "register_valkey_factory",
+    "reset_valkey_cache",
+    # Phase 5c — Signed audit-trail export. Composes the existing
+    # HMAC-chained evidence with a customer-owned Ed25519 signature.
+    # Auditors verify OFFLINE with only the export + public key —
+    # no live KYA access needed. signed_export() produces, the
+    # verify_signed_export() verifies; both are pure and stateless.
+    "signed_export",
+    "verify_signed_export",
+    "EXPORT_SCHEMA_VERSION",
+    "AuditExportError",
+    "SignatureVerificationFailed",
+    # Economic Control (tenant_budget primitive — was shipped in
+    # the budget Phase 1 commit but not re-exported at the top
+    # level; users were forced to import from kya.tenant_budget).
+    # Exposed here so the public API is "from kya import X".
+    "record_cost_event",
+    "set_budget",
+    "get_budget",
+    "list_budgets",
+    "delete_budget",
+    "list_changes",
+    "current_spend",
+    "forecast_spend",
+    "should_refuse",
+    "budget_status",
+    "budget_health_check",
+    "ensure_budget_tables",
+    "set_forecaster",
+    "get_forecaster",
 ]
