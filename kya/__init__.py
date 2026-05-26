@@ -344,6 +344,14 @@ from .delegation_analytics import (
     VALID_RECOMMENDATIONS,
     delegation_readiness_report,
 )
+from .delegation_overrides import (
+    InvalidOverrideError,
+    delete_delegation_override,
+    ensure_delegation_overrides_table,
+    list_delegation_overrides,
+    resolve_effective_mode,
+    set_delegation_override,
+)
 from .policy_config import (
     DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
     InvalidDelegationModeError,
@@ -618,4 +626,14 @@ __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "DEFAULT_STABLE_DAYS_TO_PROMOTE",
     "DEFAULT_SPIKE_THRESHOLD",
+    # Phase 2 — per-scope delegation policy overrides. Operators
+    # target specific agent pairs / violation kinds with different
+    # modes; resolution is specificity-ordered (most-specific wins,
+    # ties broken by created_at DESC). Falls back to global env.
+    "set_delegation_override",
+    "delete_delegation_override",
+    "list_delegation_overrides",
+    "resolve_effective_mode",
+    "ensure_delegation_overrides_table",
+    "InvalidOverrideError",
 ]
