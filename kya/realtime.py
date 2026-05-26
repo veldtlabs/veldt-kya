@@ -68,13 +68,26 @@ WINDOWS = {
 
 
 def _get_redis():
-    """Lazy import — KYA standalone shouldn't require Veldt's db module."""
+    """Resolve a Valkey/Redis client. Tries `db.redis.get_redis`
+    first (Veldt platform shim — backward compat); falls back to
+    `kya._valkey.get_valkey` (SDK env-based accessor) when running
+    standalone via `pip install veldt-kya`.
+
+    Returns None when neither path produces a working client —
+    realtime burst detection then degrades to no-op.
+    """
     try:
         from db.redis import get_redis
-
         return get_redis()
+    except (ImportError, ModuleNotFoundError):
+        pass
     except Exception as exc:
-        logger.debug("[KYA-RT] redis import failed: %s", exc)
+        logger.debug("[KYA-RT] db.redis raised: %s", exc)
+    try:
+        from ._valkey import get_valkey
+        return get_valkey()
+    except Exception as exc:
+        logger.debug("[KYA-RT] SDK valkey accessor failed: %s", exc)
         return None
 
 
@@ -100,6 +113,21 @@ ALLOWED_SIGNAL_KINDS = frozenset(
         "injection_attempt",
         "definition_drift",
         "policy_violation",
+        # A previously-unseen agent_key was just snapshotted (v1 written).
+        # Emitted from kya.versioning.snapshot_on_first_sight when the
+        # write is genuinely new — NOT on idempotent re-calls. Lets
+        # operators detect novel agents appearing in production
+        # (rogue dev, supply-chain injection, drift from registration
+        # workflow) without polling agent_versions.
+        "agent_first_sight",
+        # Phase 4a.1 + 5a — KYA-semantic hardening violations. Each
+        # carries enough detail in the alert payload for operators
+        # to triage: which principal, which primitive, what the limit
+        # was, why it fired. Burst-detection windows surface repeated
+        # violations from the same principal as a stronger signal.
+        "rate_limit_exceeded",
+        "payload_too_large",
+        "replay_detected",
     }
 )
 

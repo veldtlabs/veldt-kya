@@ -226,6 +226,26 @@ if _HAS_SQLALCHEMY:
         actor_human_id: Mapped[str | None] = mapped_column(Text, nullable=True)
         attributes: Mapped[dict] = mapped_column(_JsonType, nullable=False, default=dict)
 
+        # Phase 4b — IdP binding fields. Optional structured pointers
+        # from KYA's internal principal_id to the upstream Identity
+        # Provider's view of the same principal. Lets dashboards link
+        # a KYA trust score back to the Okta/Auth0/Keycloak/SPIFFE
+        # user record without parsing the `attributes` JSON blob.
+        # All NULL by default; populated by bind_principal_to_idp()
+        # or directly by record_principal_signal(idp_subject=...).
+        idp_subject: Mapped[str | None] = mapped_column(
+            String(255), nullable=True
+        )
+        idp_issuer: Mapped[str | None] = mapped_column(
+            String(255), nullable=True
+        )
+        idp_kind: Mapped[str | None] = mapped_column(
+            String(50), nullable=True
+        )
+        federated_id: Mapped[str | None] = mapped_column(
+            String(500), nullable=True
+        )
+
         # Event-time of the most-recent signal / clean event.
         last_signal_at: Mapped[datetime | None] = mapped_column(
             DateTime(timezone=True), nullable=True
@@ -253,6 +273,18 @@ if _HAS_SQLALCHEMY:
                 "principal_kind",
                 "trust_score",
             ),
+            # Phase 4b NOTE: we deliberately do NOT add an index on
+            # (tenant_id, idp_subject). DuckDB has a documented
+            # limitation where any column included in any index
+            # (unique OR non-unique) cannot be assigned in an
+            # ON CONFLICT DO UPDATE statement — and our DuckDB-
+            # compatible bind path requires that operation. Without
+            # the index, lookup_principal_by_idp does a full table
+            # scan; acceptable at typical KYA scale (thousands of
+            # principals per tenant). Add a dialect-specific index
+            # later when DuckDB's index/UPDATE interaction relaxes,
+            # OR when a customer's principal count makes the scan
+            # expensive enough to justify a workaround.
         )
 
 
@@ -268,11 +300,54 @@ def ensure_principal_table(db) -> None:
 
     Schema selection is dialect-aware. Uses the session's own connection
     so DDL participates in the same transaction (DuckDB compat).
+
+    Also applies additive migrations (Phase 4b — IdP binding columns)
+    so deployments upgrading from older KYA pick up the new columns
+    without dropping the table.
     """
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[_PrincipalRow.__table__])
+    _apply_idp_binding_migrations(db)
+
+
+def _apply_idp_binding_migrations(db) -> None:
+    """Phase 4b additive ALTER for existing deployments. Idempotent
+    via IF NOT EXISTS guards. SQLite >= 3.35 supports ADD COLUMN IF
+    NOT EXISTS natively; older versions raise UndefinedColumn which
+    apply_migrations swallows + logs."""
+    from ._migrations import apply_migrations
+    dialect = db.get_bind().dialect.name
+    # PG uses the schema configured via KYA_VERSIONS_SCHEMA env (default
+    # 'prov_schema'). Other backends use the default namespace.
+    # Hardcoding 'prov_schema' here would mismatch any deployment that
+    # set KYA_VERSIONS_SCHEMA="" or to a custom name.
+    qual = (f"{_PG_SCHEMA}."
+            if dialect == "postgresql" and _PG_SCHEMA
+            else "")
+    table = f"{qual}kya_principal_trust"
+    migrations = [
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"idp_subject VARCHAR(255);",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"idp_issuer VARCHAR(255);",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"idp_kind VARCHAR(50);",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+        f"federated_id VARCHAR(500);",
+    ]
+    # Dialect-specific index — DuckDB rejects ON CONFLICT DO UPDATE
+    # on any indexed column, so we skip the index there and accept
+    # full-scan lookups (DuckDB is typically used analytical / smaller
+    # working sets). PG / MySQL / SQLite get the indexed-lookup path.
+    if dialect != "duckdb":
+        migrations.append(
+            f"CREATE INDEX IF NOT EXISTS "
+            f"idx_kya_principal_trust_tenant_idp_subject "
+            f"ON {table} (tenant_id, idp_subject);"
+        )
+    apply_migrations(db, "kya_principal_trust", migrations)
 
 
 # ── Dataclass (consumer-facing) ─────────────────────────────────────

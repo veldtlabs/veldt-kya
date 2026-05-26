@@ -60,6 +60,16 @@ _TABLE_SETUP_PLAN = [
     ("kya_redteam_targets+secrets", "kya_redteam.targets", "ensure_tables"),
     # ── Inbound recommendations (cross-tenant feedback loop) ──
     ("kya_inbound_recommendations", "kya.inbound", "ensure_inbound_table"),
+    # ── Economic governance: per-tenant cost budgets + cost-event ledger ──
+    ("kya_tenant_cost_budgets+events", "kya.tenant_budget", "ensure_tables"),
+    # ── Delegation-policy enforcement (sub-agent capability ceiling) ──
+    ("kya_delegation_violations", "kya.delegation_policy",
+     "ensure_delegation_violations_table"),
+    # ── Per-scope delegation-policy mode overrides ──
+    ("kya_delegation_policy_overrides", "kya.delegation_overrides",
+     "ensure_delegation_overrides_table"),
+    # ── Phase 5b RBAC — per-tenant principal→action grants ──
+    ("kya_role_grants", "kya.rbac", "ensure_rbac_table"),
 ]
 
 

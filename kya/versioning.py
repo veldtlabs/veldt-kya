@@ -246,6 +246,208 @@ def snapshot_agent(
     return version_no
 
 
+def snapshot_on_first_sight(
+    db,
+    *,
+    tenant_id: str,
+    agent_key: str,
+    definition: dict,
+    created_by: str | None = None,
+    note: str | None = "auto-snapshot on first sight",
+) -> tuple[int, bool]:
+    """Idempotent ``snapshot_agent`` — appends a new version ONLY when
+    the definition's ``canonical_hash`` differs from the latest known
+    version for this (tenant, agent_key).
+
+    Designed for use inside runtime hooks (kya_hooks/* adapters) where
+    every invocation triggers a "have we seen this definition?" check.
+    Safe to call on every invocation without bloating ``agent_versions``.
+
+    Returns:
+        (version_no, is_new) — the resolved version number and whether
+        this call wrote a new row.
+    """
+    from .integrity import canonical_hash
+
+    new_hash = canonical_hash(definition)
+
+    # Look up most-recent version (cheap — one row)
+    recent = list_versions(db, tenant_id=tenant_id, agent_key=agent_key,
+                           limit=1)
+    is_truly_first_sight = not recent
+    if recent:
+        latest_no = recent[0]["version_no"]
+        latest = get_version(db, tenant_id, agent_key, latest_no)
+        if latest and canonical_hash(latest.get("definition") or {}) == new_hash:
+            return latest_no, False  # already snapshotted — idempotent no-op
+
+    version_no = snapshot_agent(
+        db, tenant_id=tenant_id, agent_key=agent_key,
+        definition=definition, created_by=created_by, note=note,
+    )
+
+    # FIRST-SIGHT ANOMALY SIGNAL — fires only when an agent_key
+    # genuinely never existed in this tenant before. Subsequent version
+    # bumps (definition drift, rollback) do NOT trigger this; they have
+    # their own signal kind (`definition_drift`). Operators subscribe
+    # via realtime.subscribe_alerts to get notified when a novel agent
+    # appears in production — closes the gap between "KYA records
+    # everything" and "KYA actively flags newly-appearing identities".
+    # Fail-soft: a Valkey hiccup must NOT prevent the snapshot write.
+    if is_truly_first_sight:
+        try:
+            from .realtime import record_signal
+            record_signal(
+                tenant_id=tenant_id, agent_key=agent_key,
+                signal_kind="agent_first_sight",
+                severity="info",
+                detail={
+                    "first_version_no": version_no,
+                    "definition_hash": new_hash,
+                    "note": note or "",
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "[KYA-VERS] agent_first_sight signal emit failed: %s", exc)
+
+        # PHASE 3a — risk-tier auto-defaults. When a novel agent
+        # appears, look up its risk bucket and apply a default
+        # delegation-policy override so operators don't have to
+        # manually configure every newly-deployed agent. Today only
+        # `critical` bucket auto-promotes (observe → flag); other
+        # buckets fall through to the global env default.
+        #
+        # The auto-default override is audit-stamped with `created_by`
+        # (the user_id of whoever triggered the snapshot) so the
+        # override row's changed_by field links back to a real
+        # operator/system principal rather than a NULL.
+        #
+        # Disable via env KYA_RISK_TIER_AUTO_DEFAULTS=0. Fail-soft:
+        # any error during scoring or override-write logs DEBUG and
+        # leaves the snapshot in place — the auto-default is best-
+        # effort, never a blocker.
+        _maybe_apply_risk_tier_default(
+            db, tenant_id=tenant_id, agent_key=agent_key,
+            definition=definition, created_by=created_by,
+        )
+
+    return version_no, True
+
+
+# Risk-bucket → auto-default mode mapping. Override-creating mapping
+# only — buckets mapped to None inherit the global env default
+# (i.e., no override row is written). Keeping the table sparse means
+# the override resolver only sees relevant rows.
+_RISK_TIER_DEFAULT_MODE: dict[str, str | None] = {
+    "critical": "flag",
+    "high":     None,   # default observe — no override needed
+    "medium":   None,
+    "low":      None,
+}
+
+
+def _maybe_apply_risk_tier_default(
+    db, *,
+    tenant_id: str,
+    agent_key: str,
+    definition: dict,
+    created_by: str | None = None,
+) -> None:
+    """Best-effort: score the agent, look up the default mode for its
+    risk bucket, and write a delegation-policy override IFF the bucket
+    has a non-None mapping AND no override already exists at that
+    exact scope.
+
+    `created_by` is the user_id / system_id that triggered the
+    snapshot — propagated to the override's `changed_by` field so
+    every auto-default row has an audit pointer to a real principal.
+    Tenant scoping is enforced at every step: scores, lookups, and
+    writes all carry tenant_id.
+
+    Fail-soft on every internal path: score lookups, override writes,
+    even import errors all swallow into DEBUG logs."""
+    import os
+    if os.environ.get("KYA_RISK_TIER_AUTO_DEFAULTS", "1").lower() in (
+            "0", "false", "no", "off"):
+        return
+    try:
+        from .delegation_overrides import (
+            list_delegation_overrides,
+            set_delegation_override,
+        )
+        from .risk import bucket_for, score_agent
+    except Exception as exc:
+        logger.debug("[KYA-VERS] risk-tier import failed: %s", exc)
+        return
+    try:
+        risk_result = score_agent(definition)
+        # AgentRiskScore.score is the int 0-100. Tolerate caller-supplied
+        # ints for direct testing (score_agent monkey-patches return
+        # int in some tests).
+        score_int = (risk_result.score
+                      if hasattr(risk_result, "score")
+                      else int(risk_result))
+        bucket = bucket_for(score_int)
+    except Exception as exc:
+        logger.debug("[KYA-VERS] score_agent failed for %s: %s",
+                     agent_key, exc)
+        return
+    target_mode = _RISK_TIER_DEFAULT_MODE.get(bucket)
+    if target_mode is None:
+        return  # bucket doesn't warrant an override
+    # Don't overwrite ANY operator-set explicit intent. We check two
+    # scopes:
+    #   (a) overrides where parent_agent_key = THIS agent
+    #   (b) tenant-wide wildcard overrides (parent_agent_key IS NULL)
+    # Either signals operator intent. If we wrote our auto-default on
+    # top of a tenant-wide observe override, the most-specific
+    # (per-agent) row would silently win and contradict the
+    # operator's stated tenant policy.
+    try:
+        # list_delegation_overrides(parent_agent_key=X) matches X-only.
+        agent_specific = list_delegation_overrides(
+            db, tenant_id=tenant_id,
+            parent_agent_key=agent_key,
+        )
+        # All overrides for this tenant — we'll filter to wildcard
+        # (parent IS NULL) in Python because list_delegation_overrides
+        # treats None parameter as "no filter", not "match NULLs".
+        all_tenant = list_delegation_overrides(
+            db, tenant_id=tenant_id,
+        )
+        tenant_wide = [o for o in all_tenant
+                       if o.get("parent_agent_key") is None]
+        if agent_specific or tenant_wide:
+            logger.debug(
+                "[KYA-VERS] risk-tier skip: existing %d agent-specific + "
+                "%d tenant-wide override(s) for %s",
+                len(agent_specific), len(tenant_wide), agent_key)
+            return
+    except Exception as exc:
+        logger.debug(
+            "[KYA-VERS] risk-tier existing-check failed: %s", exc)
+        return
+    try:
+        set_delegation_override(
+            db, tenant_id=tenant_id,
+            mode=target_mode,
+            parent_agent_key=agent_key,
+            reason=(f"auto-default: risk_bucket={bucket} "
+                    f"(score={score_int})"),
+            changed_by=created_by,
+        )
+        logger.info(
+            "[KYA-VERS] risk-tier auto-default applied: tenant=%s "
+            "agent=%s bucket=%s -> mode=%s changed_by=%s",
+            tenant_id, agent_key, bucket, target_mode,
+            created_by or "<unset>")
+    except Exception as exc:
+        logger.debug(
+            "[KYA-VERS] risk-tier set_override failed for %s: %s",
+            agent_key, exc)
+
+
 def list_versions(db, tenant_id: str, agent_key: str, limit: int = 50) -> list[dict]:
     """Return versions newest-first, capped at `limit`."""
     _require_sqlalchemy()

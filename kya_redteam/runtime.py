@@ -32,9 +32,35 @@ logger = logging.getLogger(__name__)
 # ── Valkey accessor (cached) ────────────────────────────────────────
 
 def _get_valkey():
+    """Resolve a Valkey/Redis client. Tries two paths:
+
+    1. `db.redis.get_redis` — the Veldt platform's existing shim.
+       Wins when the parent app provides it (backward compat).
+    2. `kya._valkey.get_valkey` — the SDK-friendly env-based
+       accessor (KYA_VALKEY_URL / REDIS_URL). Used when KYA is
+       installed standalone via `pip install veldt-kya`.
+
+    Returns None when neither path produces a working client —
+    hardening features then fail-open per the documented contract.
+    """
+    # Path 1: Veldt platform shim (backward compat)
     try:
         from db.redis import get_redis  # type: ignore
         return get_redis()
+    except (ImportError, ModuleNotFoundError):
+        pass
+    except Exception:
+        # Other errors from db.redis shouldn't fall through —
+        # the platform shim was found but malfunctioning. Log
+        # and degrade gracefully.
+        import logging as _log
+        _log.getLogger(__name__).debug(
+            "[KYA-REDTEAM] db.redis raised non-import error; "
+            "falling through to SDK default accessor")
+    # Path 2: SDK env-based default
+    try:
+        from kya._valkey import get_valkey
+        return get_valkey()
     except Exception:
         return None
 

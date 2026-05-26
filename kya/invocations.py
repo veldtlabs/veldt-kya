@@ -216,6 +216,20 @@ def record_invocation(
         logger.debug("[KYA-INV] unknown outcome=%s -> 'success'", outcome)
         outcome = "success"
 
+    # Phase 4a.1 — rate limit on KYA's write primitive. Off-by-default;
+    # operators opt in via KYA_RATE_LIMIT_DEFAULT_RPS or per-primitive
+    # env. Soft mode: blocks up to 5s waiting for token, then proceeds.
+    # Threads principal info through so security events on denial
+    # get attribution + persistence to kya_principal_trust.
+    try:
+        from .rate_limit import maybe_rate_limit
+        maybe_rate_limit(
+            tenant_id, "record_invocation",
+            principal_kind=principal_kind,
+            principal_id=principal_id, db=db)
+    except Exception as exc:
+        logger.debug("[KYA-INV] rate-limit check raised: %s", exc)
+
     _require_sqlalchemy()
     ensure_invocations_table(db)
 
@@ -249,6 +263,49 @@ def record_invocation(
     db.add(row)
     db.commit()
     db.refresh(row)
+    sub_invocation_id = int(row.id)
+
+    # Delegation-policy enforcement — only fires when the immediate
+    # caller is an agent (principal_kind=="agent"); otherwise no parent
+    # capabilities exist to compare against. Fail-soft on every
+    # internal path EXCEPT "block" mode + genuine violation, which
+    # propagates DelegationPolicyError after persisting the audit row.
+    if principal_kind == "agent" and principal_id:
+        try:
+            from .delegation_policy import (
+                DelegationPolicyError,
+                enforce_delegation_policy,
+            )
+            # Don't pass mode= — let enforce_delegation_policy resolve
+            # per-violation through the overrides table (Phase 2).
+            # Caller can still inject `mode=` via the
+            # enforce_delegation_policy direct API for tests / explicit
+            # overrides, but the record_invocation path picks up
+            # tenant-level overrides automatically.
+            violations = enforce_delegation_policy(
+                db,
+                tenant_id=tenant_id,
+                sub_invocation_id=sub_invocation_id,
+                parent_invocation_id=parent_invocation_id,
+                parent_agent_key=principal_id,
+                sub_agent_key=agent_key,
+            )
+        except DelegationPolicyError:
+            # Mark the invocation as blocked so the audit row reflects
+            # the rejected attempt, then re-raise so the caller can
+            # short-circuit the actual delegation.
+            try:
+                row.outcome = "blocked"
+                db.commit()
+            except Exception:
+                try: db.rollback()
+                except Exception: pass
+            raise
+        except Exception as exc:
+            logger.debug(
+                "[KYA-INV] delegation policy check raised non-policy "
+                "exception (ignored): %s", exc)
+
     try:
         from . import _emit, telemetry
         telemetry.record_event("record_invocation", kind=outcome)
@@ -256,7 +313,7 @@ def record_invocation(
             _emit.emit(
                 "kya_invocations",
                 _emit.safe_row({
-                    "id": int(row.id),
+                    "id": sub_invocation_id,
                     "tenant_id": tenant_id,
                     "agent_key": agent_key,
                     "principal_kind": principal_kind,
@@ -273,7 +330,7 @@ def record_invocation(
             )
     except Exception:
         pass
-    return int(row.id)
+    return sub_invocation_id
 
 
 def _row_to_dict(row: Invocation) -> dict[str, Any]:
