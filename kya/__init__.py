@@ -411,6 +411,18 @@ from .external_id import (
     lookup_principal_by_idp,
     lookup_user_by_idp,
 )
+from .spiffe import (
+    SpiffeIdFormatError,
+    SpiffeVerificationError,
+    _reset_spiffe_warned_state,
+    bind_principal_from_svid,
+    bind_spiffe_id_to_principal,
+    is_allowed_trust_domain,
+    is_valid_spiffe_id,
+    lookup_principal_by_spiffe_id,
+    parse_spiffe_id,
+    verify_jwt_svid,
+)
 from .tenant_budget import (
     budget_status,
     current_spend,
