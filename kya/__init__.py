@@ -352,6 +352,15 @@ from .delegation_overrides import (
     resolve_effective_mode,
     set_delegation_override,
 )
+from .external_id import (
+    IDP_KINDS,
+    InvalidIdpKindError,
+    bind_principal_to_idp,
+    bind_user_to_idp,
+    list_principals_by_idp_kind,
+    lookup_principal_by_idp,
+    lookup_user_by_idp,
+)
 from .policy_config import (
     DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
     InvalidDelegationModeError,
@@ -636,4 +645,17 @@ __all__ = [
     "resolve_effective_mode",
     "ensure_delegation_overrides_table",
     "InvalidOverrideError",
+    # Phase 4b — external-ID binding for principals + users. Adds
+    # idp_subject/idp_issuer/idp_kind/federated_id columns + lookup
+    # helpers so KYA trust records can be linked back to the
+    # upstream IdP user (Okta/Auth0/Keycloak/Google/Entra/Cognito/
+    # SPIFFE). Independent of Phase 4a — caller can supply the
+    # claims from any source.
+    "bind_principal_to_idp",
+    "bind_user_to_idp",
+    "lookup_principal_by_idp",
+    "lookup_user_by_idp",
+    "list_principals_by_idp_kind",
+    "IDP_KINDS",
+    "InvalidIdpKindError",
 ]
