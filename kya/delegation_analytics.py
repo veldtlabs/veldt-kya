@@ -255,14 +255,27 @@ def _resolve_current_mode(
 ) -> str:
     """Resolve the effective mode for a specific pair × kind.
 
-    Phase 1 (this commit): always returns the global env mode — there
-    is no per-agent override table yet. Phase 2 will replace this body
-    with a specificity-ordered lookup against
-    kya_delegation_policy_overrides; the readiness report API doesn't
-    change.
+    Phase 2: consults kya_delegation_policy_overrides via
+    specificity-ordered lookup (most-specific override wins; ties
+    broken by created_at DESC). Falls back to the global env var
+    when no override matches. Fail-soft on any DB / module error —
+    we always degrade to the env value, never raise.
     """
-    from .delegation_policy import _current_mode
-    return _current_mode()
+    try:
+        from .delegation_overrides import resolve_effective_mode
+        mode, _source = resolve_effective_mode(
+            db, tenant_id=tenant_id,
+            parent_agent_key=parent_agent_key,
+            sub_agent_key=sub_agent_key,
+            violation_kind=violation_kind,
+        )
+        return mode
+    except Exception as exc:
+        logger.debug(
+            "[KYA-DELEG-RPT] override resolve failed (%s) — env fallback",
+            exc)
+        from .delegation_policy import _current_mode
+        return _current_mode()
 
 
 # ── Public API ─────────────────────────────────────────────────────

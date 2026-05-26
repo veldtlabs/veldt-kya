@@ -65,6 +65,9 @@ _TABLE_SETUP_PLAN = [
     # ── Delegation-policy enforcement (sub-agent capability ceiling) ──
     ("kya_delegation_violations", "kya.delegation_policy",
      "ensure_delegation_violations_table"),
+    # ── Per-scope delegation-policy mode overrides ──
+    ("kya_delegation_policy_overrides", "kya.delegation_overrides",
+     "ensure_delegation_overrides_table"),
 ]
 
 
