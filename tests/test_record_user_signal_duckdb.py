@@ -106,3 +106,53 @@ def test_record_user_signal_signal_counts_accumulate(duckdb_session):
     counts = row[0]
     assert counts.get("clean_invocation") == 3
     assert counts.get("rogue_pattern_high_severity") == 1
+
+
+# ── record_principal_signal regression (same root cause) ─────────
+
+
+def test_record_principal_signal_first_insert(duckdb_session):
+    """Pre-fix: principal_trust had the same indexed-column issue.
+    Index((tenant_id, principal_kind, trust_score)) made the 2nd
+    call raise 'Duplicate key' on update."""
+    from kya import record_principal_signal
+    score = record_principal_signal(
+        duckdb_session, tenant_id=TENANT, principal_kind="user",
+        principal_id="alice", signal_kind="clean_invocation")
+    assert score == 51
+
+
+def test_record_principal_signal_second_update(duckdb_session):
+    """Same flow as the user-trust 2nd-update test, but for the
+    principal table. Was the canary for the related bug."""
+    from kya import record_principal_signal
+    record_principal_signal(
+        duckdb_session, tenant_id=TENANT, principal_kind="user",
+        principal_id="alice", signal_kind="clean_invocation")
+    score = record_principal_signal(
+        duckdb_session, tenant_id=TENANT, principal_kind="user",
+        principal_id="alice", signal_kind="clean_invocation")
+    assert score == 52
+
+    rows = duckdb_session.execute(text(
+        "SELECT COUNT(*) FROM kya_principal_trust "
+        "WHERE principal_id='alice'"
+    )).scalar()
+    assert rows == 1
+
+
+def test_record_principal_signal_different_kinds_isolated(duckdb_session):
+    """Same principal_id with different principal_kind should
+    produce separate rows."""
+    from kya import record_principal_signal
+    record_principal_signal(
+        duckdb_session, tenant_id=TENANT, principal_kind="user",
+        principal_id="bob", signal_kind="clean_invocation")
+    record_principal_signal(
+        duckdb_session, tenant_id=TENANT, principal_kind="agent",
+        principal_id="bob", signal_kind="clean_invocation")
+    rows = duckdb_session.execute(text(
+        "SELECT COUNT(*) FROM kya_principal_trust "
+        "WHERE principal_id='bob'"
+    )).scalar()
+    assert rows == 2
