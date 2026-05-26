@@ -267,24 +267,16 @@ if _HAS_SQLALCHEMY:
         )
 
         __table_args__ = (
-            Index(
-                "idx_kya_principal_trust_tenant_kind_score",
-                "tenant_id",
-                "principal_kind",
-                "trust_score",
-            ),
-            # Phase 4b NOTE: we deliberately do NOT add an index on
-            # (tenant_id, idp_subject). DuckDB has a documented
-            # limitation where any column included in any index
-            # (unique OR non-unique) cannot be assigned in an
-            # ON CONFLICT DO UPDATE statement — and our DuckDB-
-            # compatible bind path requires that operation. Without
-            # the index, lookup_principal_by_idp does a full table
-            # scan; acceptable at typical KYA scale (thousands of
-            # principals per tenant). Add a dialect-specific index
-            # later when DuckDB's index/UPDATE interaction relaxes,
-            # OR when a customer's principal count makes the scan
-            # expensive enough to justify a workaround.
+            # NOTE: no Index() entries here. DuckDB's ART index
+            # rejects UPDATE on any indexed column (incl. non-unique
+            # indexes), which breaks the SELECT-then-UPDATE path
+            # record_principal_signal uses for the read-modify-write
+            # on trust_score. Indexes that PG/MySQL/SQLite benefit
+            # from -- (tenant_id, principal_kind, trust_score) for
+            # leaderboards, (tenant_id, idp_subject) for Phase 4b
+            # lookups -- are added as dialect-conditional migrations
+            # in _apply_idp_binding_migrations(). Same approach as
+            # kya_user_trust (see kya/users.py + task #42).
         )
 
 
@@ -337,16 +329,22 @@ def _apply_idp_binding_migrations(db) -> None:
         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
         f"federated_id VARCHAR(500);",
     ]
-    # Dialect-specific index — DuckDB rejects ON CONFLICT DO UPDATE
-    # on any indexed column, so we skip the index there and accept
-    # full-scan lookups (DuckDB is typically used analytical / smaller
-    # working sets). PG / MySQL / SQLite get the indexed-lookup path.
+    # Dialect-specific indexes -- DuckDB's ART index rejects UPDATE
+    # on indexed columns (including the read-modify-write on
+    # trust_score), so we skip ALL indexes there and accept full-scan
+    # lookups. PG/MySQL/SQLite get the indexed-lookup paths.
     if dialect != "duckdb":
-        migrations.append(
+        migrations.extend([
+            # Tenant trust-leaderboard query
+            # (rank principals of a kind by score).
+            f"CREATE INDEX IF NOT EXISTS "
+            f"idx_kya_principal_trust_tenant_kind_score "
+            f"ON {table} (tenant_id, principal_kind, trust_score);",
+            # Phase 4b lookup-by-IdP-subject.
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_principal_trust_tenant_idp_subject "
-            f"ON {table} (tenant_id, idp_subject);"
-        )
+            f"ON {table} (tenant_id, idp_subject);",
+        ])
     apply_migrations(db, "kya_principal_trust", migrations)
 
 
