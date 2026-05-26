@@ -352,11 +352,55 @@ from .delegation_overrides import (
     resolve_effective_mode,
     set_delegation_override,
 )
+from ._valkey import (
+    get_valkey,
+    register_valkey_factory,
+    reset_valkey_cache,
+)
+from .audit_export import (
+    EXPORT_SCHEMA_VERSION,
+    AuditExportError,
+    SignatureVerificationFailed,
+    signed_export,
+    verify_signed_export,
+)
 from .auth import (
     bind_principal_from_token,
     claims_to_kya_principal,
     reset_jwks_cache,
     verify_jwt,
+)
+from .payload_caps import (
+    DEFAULT_MAX_PAYLOAD_BYTES,
+    PayloadTooLargeError,
+    check_payload_size,
+)
+from .rate_limit import (
+    RateLimitExceededError,
+    maybe_rate_limit,
+    reset_rate_limit_state,
+)
+from .rbac import (
+    ACTIONS as RBAC_ACTIONS,
+    AccessDeniedError,
+    InvalidActionError,
+    InvalidRbacModeError,
+    RBAC_MODES,
+    active_rbac_mode,
+    configure_rbac,
+    ensure_rbac_table,
+    grant_action,
+    has_action,
+    list_grants,
+    require_action,
+    revoke_action,
+)
+from .replay_protection import (
+    ReplayDetectedError,
+    generate_nonce,
+    is_valid_nonce,
+    reset_replay_state,
+    verify_request_nonce,
 )
 from .external_id import (
     IDP_KINDS,
@@ -692,6 +736,65 @@ __all__ = [
     "claims_to_kya_principal",
     "bind_principal_from_token",
     "reset_jwks_cache",
+    # Phase 4a.1 — KYA-semantic rate limiting + payload size caps
+    # on write primitives. Both OFF by default; operators opt in
+    # via KYA_RATE_LIMIT_DEFAULT_RPS / KYA_MAX_<PRIM>_PAYLOAD_BYTES.
+    # Used internally by record_invocation / record_evidence /
+    # record_cost_event today; record_principal_signal /
+    # set_delegation_override / set_budget will follow in future
+    # commits as the surface stabilizes.
+    "maybe_rate_limit",
+    "RateLimitExceededError",
+    "reset_rate_limit_state",
+    "check_payload_size",
+    "PayloadTooLargeError",
+    "DEFAULT_MAX_PAYLOAD_BYTES",
+    # Phase 5a — replay protection (Valkey-backed nonce table with
+    # TTL). Off-by-default. Operators opt in via
+    # KYA_REPLAY_PROTECTION=on. Each (tenant, principal, nonce)
+    # combination is uniquely reserved for KYA_REPLAY_MAX_AGE_SECONDS
+    # (default 300). Two-axis check: nonce uniqueness AND timestamp
+    # freshness — both required to defeat replay attacks.
+    "verify_request_nonce",
+    "generate_nonce",
+    "is_valid_nonce",
+    "reset_replay_state",
+    "ReplayDetectedError",
+    # Phase 5b — RBAC tied to KYA-specific actions. Off by default
+    # via KYA_RBAC_ENFORCEMENT=off; flip to "flag" then "block"
+    # for staged rollout. ACTIONS is the closed set of valid
+    # action strings — extending requires a code change so typos
+    # in grants are caught at insert time.
+    "grant_action",
+    "revoke_action",
+    "list_grants",
+    "has_action",
+    "require_action",
+    "configure_rbac",
+    "active_rbac_mode",
+    "ensure_rbac_table",
+    "RBAC_ACTIONS",
+    "RBAC_MODES",
+    "AccessDeniedError",
+    "InvalidActionError",
+    "InvalidRbacModeError",
+    # Phase 5d — SDK-friendly Valkey accessor. Without redis-py
+    # installed and KYA_VALKEY_URL / REDIS_URL set, every hardening
+    # feature degrades to fail-open silently. With them, hardening
+    # actually works for PyPI-installed standalone deployments.
+    "get_valkey",
+    "register_valkey_factory",
+    "reset_valkey_cache",
+    # Phase 5c — Signed audit-trail export. Composes the existing
+    # HMAC-chained evidence with a customer-owned Ed25519 signature.
+    # Auditors verify OFFLINE with only the export + public key —
+    # no live KYA access needed. signed_export() produces, the
+    # verify_signed_export() verifies; both are pure and stateless.
+    "signed_export",
+    "verify_signed_export",
+    "EXPORT_SCHEMA_VERSION",
+    "AuditExportError",
+    "SignatureVerificationFailed",
     # Economic Control (tenant_budget primitive — was shipped in
     # the budget Phase 1 commit but not re-exported at the top
     # level; users were forced to import from kya.tenant_budget).
