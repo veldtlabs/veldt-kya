@@ -58,7 +58,6 @@ try:
     from sqlalchemy import (
         JSON,
         DateTime,
-        Index,
         Integer,
         String,
         Text,

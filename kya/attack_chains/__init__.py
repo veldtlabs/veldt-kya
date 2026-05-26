@@ -47,6 +47,12 @@ What this is NOT
 
 from __future__ import annotations
 
+from ._engine import (
+    AttackChainEngine,
+    get_default_engine,
+    reset_default_engine,
+)
+
 # Re-export the public API surface. Implementation details (the
 # underscore-prefixed modules) are internal and may be refactored
 # without breaking callers.
@@ -62,14 +68,9 @@ from ._matchers import (
     match_value,
 )
 from ._state import (
+    InMemoryStateStore,
     PartialMatch,
     StateStore,
-    InMemoryStateStore,
-)
-from ._engine import (
-    AttackChainEngine,
-    get_default_engine,
-    reset_default_engine,
 )
 
 __all__ = [

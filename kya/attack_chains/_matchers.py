@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from typing import Any, Iterable
+from typing import Any
 
 
 class MatcherError(ValueError):
@@ -69,10 +69,8 @@ def field_value(obj: Any, dotted_path: str) -> Any:
         # Read the named key/attribute (segment may be "" if path
         # starts with [N]; treat as "use cur directly")
         if segment != "":
-            if isinstance(cur, dict):
-                cur = cur.get(segment)
-            else:
-                cur = getattr(cur, segment, None)
+            cur = (cur.get(segment) if isinstance(cur, dict)
+                   else getattr(cur, segment, None))
         if cur is None:
             return None
         # Apply any indexers
@@ -218,7 +216,7 @@ def all_match(actual: dict, spec_map: dict[str, Any]) -> bool:
     """
     if not spec_map:
         return True
-    for path, spec in spec_map.items():
-        if not match_value(field_value(actual, path), spec):
-            return False
-    return True
+    return all(
+        match_value(field_value(actual, path), spec)
+        for path, spec in spec_map.items()
+    )
