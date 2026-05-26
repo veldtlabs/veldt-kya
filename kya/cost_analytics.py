@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 try:
     from sqlalchemy import and_, func, select

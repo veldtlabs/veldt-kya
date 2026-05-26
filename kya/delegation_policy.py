@@ -50,7 +50,6 @@ violation — that's the policy contract talking, not an error.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
@@ -438,6 +437,5 @@ def ensure_delegation_violations_table(db) -> None:
     """Idempotent create_all of kya_delegation_violations.
     Shares MetaData with the other legacy tables; portable across
     PG/SQLite/DuckDB/MySQL via the same schema_translate_map flow."""
-    from ._legacy_tables import (create_legacy_tables,
-                                  kya_delegation_violations)
+    from ._legacy_tables import create_legacy_tables, kya_delegation_violations
     create_legacy_tables(db, [kya_delegation_violations])
