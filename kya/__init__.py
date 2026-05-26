@@ -361,6 +361,26 @@ from .external_id import (
     lookup_principal_by_idp,
     lookup_user_by_idp,
 )
+from .tenant_budget import (
+    budget_status,
+    current_spend,
+    delete_budget,
+    forecast_spend,
+    get_budget,
+    get_forecaster,
+    list_budgets,
+    list_changes,
+    record_cost_event,
+    set_budget,
+    set_forecaster,
+    should_refuse,
+)
+from .tenant_budget import (
+    ensure_tables as ensure_budget_tables,
+)
+from .tenant_budget import (
+    health_check as budget_health_check,
+)
 from .policy_config import (
     DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
     InvalidDelegationModeError,
@@ -658,4 +678,22 @@ __all__ = [
     "list_principals_by_idp_kind",
     "IDP_KINDS",
     "InvalidIdpKindError",
+    # Economic Control (tenant_budget primitive — was shipped in
+    # the budget Phase 1 commit but not re-exported at the top
+    # level; users were forced to import from kya.tenant_budget).
+    # Exposed here so the public API is "from kya import X".
+    "record_cost_event",
+    "set_budget",
+    "get_budget",
+    "list_budgets",
+    "delete_budget",
+    "list_changes",
+    "current_spend",
+    "forecast_spend",
+    "should_refuse",
+    "budget_status",
+    "budget_health_check",
+    "ensure_budget_tables",
+    "set_forecaster",
+    "get_forecaster",
 ]
