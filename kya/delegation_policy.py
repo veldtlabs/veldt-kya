@@ -289,12 +289,13 @@ def _persist_violations(
     parent_invocation_id: int | None,
     parent_agent_key: str,
     sub_agent_key: str,
-    violations: list[dict],
-    mode: str,
-    blocked: bool,
+    violations_with_mode: list[tuple[dict, str, bool]],
 ) -> None:
-    """Insert one row per violation. Fail-soft."""
-    if not violations:
+    """Insert one row per violation. Each violation carries its own
+    resolved mode + blocked flag (Phase 2: per-kind overrides can
+    cause different violations in the same delegation to land in
+    different modes). Fail-soft."""
+    if not violations_with_mode:
         return
     try:
         from ._legacy_tables import kya_delegation_violations
@@ -304,7 +305,7 @@ def _persist_violations(
         # Use raw insert via the bound connection so we honor whatever
         # schema_translate_map the caller has on the session.
         conn = db.connection()
-        for v in violations:
+        for v, row_mode, row_blocked in violations_with_mode:
             try:
                 stmt = kya_delegation_violations.insert().values(
                     tenant_id=tenant_id,
@@ -314,8 +315,8 @@ def _persist_violations(
                     sub_agent_key=sub_agent_key,
                     violation_kind=v["violation_kind"],
                     detail=v,
-                    mode_active=mode,
-                    blocked=blocked,
+                    mode_active=row_mode,
+                    blocked=row_blocked,
                 )
                 conn.execute(stmt)
             except Exception as exc:
@@ -349,8 +350,11 @@ def enforce_delegation_policy(
     the latest snapshot from agent_versions. If either snapshot is
     missing, the function logs at DEBUG and returns [] — fail-soft.
     """
-    if mode is None:
-        mode = _current_mode()
+    # Caller-supplied mode forces a single mode for all violations
+    # (back-compat for tests + explicit-override callers). If unset,
+    # we resolve per-violation via the overrides table — a single
+    # delegation can have one kind in observe and another in block.
+    force_mode = mode
 
     if parent_def is None:
         parent_def = _latest_snapshot(db, tenant_id, parent_agent_key)
@@ -367,7 +371,36 @@ def enforce_delegation_policy(
     if not violations:
         return []
 
-    blocked = (mode == "block")
+    # Phase 2 — resolve mode per violation_kind so per-kind overrides
+    # can land different rows in different modes. If force_mode was
+    # given, use it for all rows (test / explicit-override path).
+    try:
+        from .delegation_overrides import resolve_effective_mode
+    except Exception:
+        resolve_effective_mode = None
+
+    violations_with_mode: list[tuple[dict, str, bool]] = []
+    has_block = False
+    flag_modes_seen: set[str] = set()
+    for v in violations:
+        if force_mode is not None:
+            row_mode = force_mode
+        elif resolve_effective_mode is not None:
+            row_mode, _src = resolve_effective_mode(
+                db, tenant_id=tenant_id,
+                parent_agent_key=parent_agent_key,
+                sub_agent_key=sub_agent_key,
+                violation_kind=v["violation_kind"],
+            )
+        else:
+            row_mode = _current_mode()
+        row_blocked = (row_mode == "block")
+        if row_blocked:
+            has_block = True
+        if row_mode == "flag":
+            flag_modes_seen.add(v["violation_kind"])
+        violations_with_mode.append((v, row_mode, row_blocked))
+
     _persist_violations(
         db,
         tenant_id=tenant_id,
@@ -375,19 +408,22 @@ def enforce_delegation_policy(
         parent_invocation_id=parent_invocation_id,
         parent_agent_key=parent_agent_key,
         sub_agent_key=sub_agent_key,
-        violations=violations,
-        mode=mode,
-        blocked=blocked,
+        violations_with_mode=violations_with_mode,
     )
 
-    if mode == "flag":
-        kinds = ", ".join(v["violation_kind"] for v in violations)
+    if flag_modes_seen:
         logger.warning(
-            "[KYA-DELEG] delegation policy violation: parent=%s sub=%s kinds=%s",
-            parent_agent_key, sub_agent_key, kinds)
-    elif mode == "block":
+            "[KYA-DELEG] delegation policy violation: parent=%s sub=%s "
+            "flag_kinds=%s",
+            parent_agent_key, sub_agent_key,
+            ", ".join(sorted(flag_modes_seen)))
+    if has_block:
+        # Any block-mode violation in this delegation raises after
+        # ALL violations have been persisted (so the audit trail is
+        # complete even on the rejected path).
         raise DelegationPolicyError(
-            violations=violations,
+            violations=[v for (v, m, _b) in violations_with_mode
+                         if m == "block"],
             parent_agent_key=parent_agent_key,
             sub_agent_key=sub_agent_key,
         )

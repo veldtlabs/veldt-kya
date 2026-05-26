@@ -260,10 +260,14 @@ def record_invocation(
         try:
             from .delegation_policy import (
                 DelegationPolicyError,
-                _current_mode,
                 enforce_delegation_policy,
             )
-            current_mode = _current_mode()
+            # Don't pass mode= — let enforce_delegation_policy resolve
+            # per-violation through the overrides table (Phase 2).
+            # Caller can still inject `mode=` via the
+            # enforce_delegation_policy direct API for tests / explicit
+            # overrides, but the record_invocation path picks up
+            # tenant-level overrides automatically.
             violations = enforce_delegation_policy(
                 db,
                 tenant_id=tenant_id,
@@ -271,7 +275,6 @@ def record_invocation(
                 parent_invocation_id=parent_invocation_id,
                 parent_agent_key=principal_id,
                 sub_agent_key=agent_key,
-                mode=current_mode,
             )
         except DelegationPolicyError:
             # Mark the invocation as blocked so the audit row reflects
