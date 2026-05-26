@@ -50,7 +50,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

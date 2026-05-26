@@ -259,10 +259,50 @@ from ._session_factory import (
 from ._session_factory import (
     set_session_factory,
 )
+from ._valkey import (
+    get_valkey,
+    register_valkey_factory,
+    reset_valkey_cache,
+)
+from .audit_export import (
+    EXPORT_SCHEMA_VERSION,
+    AuditExportError,
+    SignatureVerificationFailed,
+    signed_export,
+    verify_signed_export,
+)
+from .auth import (
+    bind_principal_from_token,
+    claims_to_kya_principal,
+    reset_jwks_cache,
+    verify_jwt,
+)
 from .autoinstrument import (
     autoinstrument,
     deinstrument,
     patched_sdks,
+)
+from .delegation_analytics import (
+    DEFAULT_SPIKE_THRESHOLD,
+    DEFAULT_STABLE_DAYS_TO_PROMOTE,
+    DEFAULT_WINDOW_DAYS,
+    VALID_RECOMMENDATIONS,
+    delegation_readiness_report,
+)
+from .delegation_overrides import (
+    InvalidOverrideError,
+    delete_delegation_override,
+    ensure_delegation_overrides_table,
+    list_delegation_overrides,
+    resolve_effective_mode,
+    set_delegation_override,
+)
+from .delegation_policy import (
+    DELEGATION_POLICY_MODES,
+    DelegationPolicyError,
+    check_delegation,
+    enforce_delegation_policy,
+    ensure_delegation_violations_table,
 )
 from .dualwrite import (
     ALLOWED_TABLES as DUAL_WRITE_ALLOWED_TABLES,
@@ -281,6 +321,15 @@ from .evidence import (
     prune_expired_evidence,
     record_evidence,
     verify_chain,
+)
+from .external_id import (
+    IDP_KINDS,
+    InvalidIdpKindError,
+    bind_principal_to_idp,
+    bind_user_to_idp,
+    list_principals_by_idp_kind,
+    lookup_principal_by_idp,
+    lookup_user_by_idp,
 )
 from .format_adapter import (
     SupportedFramework,
@@ -302,6 +351,19 @@ from .inbound import (
 from .inbound import (
     fetch_now as fetch_inbound_now,
 )
+from .payload_caps import (
+    DEFAULT_MAX_PAYLOAD_BYTES,
+    PayloadTooLargeError,
+    check_payload_size,
+)
+from .policy_config import (
+    DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
+)
+from .policy_config import (
+    InvalidDelegationModeError,
+    active_delegation_mode,
+    configure_delegation_policy,
+)
 from .quality import (
     QualityReport,
     get_quality_signals,
@@ -310,6 +372,28 @@ from .quality import (
     record_injection_attempt,
     record_qa_irrelevance,
 )
+from .rate_limit import (
+    RateLimitExceededError,
+    maybe_rate_limit,
+    reset_rate_limit_state,
+)
+from .rbac import (
+    ACTIONS as RBAC_ACTIONS,
+)
+from .rbac import (
+    RBAC_MODES,
+    AccessDeniedError,
+    InvalidActionError,
+    InvalidRbacModeError,
+    active_rbac_mode,
+    configure_rbac,
+    ensure_rbac_table,
+    grant_action,
+    has_action,
+    list_grants,
+    require_action,
+    revoke_action,
+)
 from .realtime import (
     ALLOWED_SIGNAL_KINDS,
     WINDOWS,
@@ -317,6 +401,13 @@ from .realtime import (
     get_window_counts,
     record_signal,
     subscribe_alerts,
+)
+from .replay_protection import (
+    ReplayDetectedError,
+    generate_nonce,
+    is_valid_nonce,
+    reset_replay_state,
+    verify_request_nonce,
 )
 from .rogue import (
     Anomaly,
@@ -330,87 +421,6 @@ from .rogue import (
     record_policy_violation,
     rogue_score,
 )
-from .delegation_policy import (
-    DELEGATION_POLICY_MODES,
-    DelegationPolicyError,
-    check_delegation,
-    enforce_delegation_policy,
-    ensure_delegation_violations_table,
-)
-from .delegation_analytics import (
-    DEFAULT_SPIKE_THRESHOLD,
-    DEFAULT_STABLE_DAYS_TO_PROMOTE,
-    DEFAULT_WINDOW_DAYS,
-    VALID_RECOMMENDATIONS,
-    delegation_readiness_report,
-)
-from .delegation_overrides import (
-    InvalidOverrideError,
-    delete_delegation_override,
-    ensure_delegation_overrides_table,
-    list_delegation_overrides,
-    resolve_effective_mode,
-    set_delegation_override,
-)
-from ._valkey import (
-    get_valkey,
-    register_valkey_factory,
-    reset_valkey_cache,
-)
-from .audit_export import (
-    EXPORT_SCHEMA_VERSION,
-    AuditExportError,
-    SignatureVerificationFailed,
-    signed_export,
-    verify_signed_export,
-)
-from .auth import (
-    bind_principal_from_token,
-    claims_to_kya_principal,
-    reset_jwks_cache,
-    verify_jwt,
-)
-from .payload_caps import (
-    DEFAULT_MAX_PAYLOAD_BYTES,
-    PayloadTooLargeError,
-    check_payload_size,
-)
-from .rate_limit import (
-    RateLimitExceededError,
-    maybe_rate_limit,
-    reset_rate_limit_state,
-)
-from .rbac import (
-    ACTIONS as RBAC_ACTIONS,
-    AccessDeniedError,
-    InvalidActionError,
-    InvalidRbacModeError,
-    RBAC_MODES,
-    active_rbac_mode,
-    configure_rbac,
-    ensure_rbac_table,
-    grant_action,
-    has_action,
-    list_grants,
-    require_action,
-    revoke_action,
-)
-from .replay_protection import (
-    ReplayDetectedError,
-    generate_nonce,
-    is_valid_nonce,
-    reset_replay_state,
-    verify_request_nonce,
-)
-from .external_id import (
-    IDP_KINDS,
-    InvalidIdpKindError,
-    bind_principal_to_idp,
-    bind_user_to_idp,
-    list_principals_by_idp_kind,
-    lookup_principal_by_idp,
-    lookup_user_by_idp,
-)
 from .spiffe import (
     SpiffeIdFormatError,
     SpiffeVerificationError,
@@ -422,6 +432,12 @@ from .spiffe import (
     lookup_principal_by_spiffe_id,
     parse_spiffe_id,
     verify_jwt_svid,
+)
+from .storage import init_storage
+from .telemetry import (
+    disable_telemetry,
+    enable_telemetry,
+    telemetry_status,
 )
 from .tenant_budget import (
     budget_status,
@@ -442,18 +458,6 @@ from .tenant_budget import (
 )
 from .tenant_budget import (
     health_check as budget_health_check,
-)
-from .policy_config import (
-    DEFAULT_MODE as DEFAULT_DELEGATION_MODE,
-    InvalidDelegationModeError,
-    active_delegation_mode,
-    configure_delegation_policy,
-)
-from .storage import init_storage
-from .telemetry import (
-    disable_telemetry,
-    enable_telemetry,
-    telemetry_status,
 )
 from .versioning import (
     ensure_table,
