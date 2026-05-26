@@ -1,0 +1,39 @@
+# OAuth token theft -- agent reads a token-bearing file then exfils.
+#
+# Distinct from filesystem_exfiltration in that we look for tokens
+# specifically (kya_evidence's payload.path or payload.target contains
+# auth artifacts). The exfil step matches the same outbound POST shape.
+version: 1
+id: oauth_token_theft
+description: |
+  An agent reads a file containing OAuth tokens / API keys
+  (~/.aws/credentials, ~/.docker/config.json, .npmrc, etc.),
+  then makes an outbound HTTP call within 30 seconds. The
+  combination is a high-signal exfiltration pattern.
+severity: critical
+emits_signal: rogue_oauth_token_theft
+correlate_by: [tenant_id, principal_id]
+window_seconds: 90
+steps:
+  - id: read_credentials
+    evidence_kind: tool_call
+    match:
+      payload.tool: file_read
+      payload.path:
+        - "glob:*/.aws/credentials"
+        - "glob:*/.docker/config.json"
+        - "glob:*/.npmrc"
+        - "glob:*/.netrc"
+        - "glob:*/.kube/config"
+  - id: exfil
+    evidence_kind: tool_call
+    match:
+      payload.tool: http
+      payload.method:
+        - POST
+        - PUT
+    after: read_credentials
+    within_seconds: 30
+metadata:
+  mitre_attack: [T1552.001, T1041]
+  tags: [exfiltration, credentials, oauth]

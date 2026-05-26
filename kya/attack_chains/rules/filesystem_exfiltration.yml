@@ -1,0 +1,34 @@
+# Filesystem exfiltration -- recon followed by outbound POST.
+#
+# Each step is benign in isolation. The chain (read sensitive
+# filesystem path → external POST within 60s) is the signal.
+version: 1
+id: filesystem_exfiltration
+description: |
+  An agent reads a sensitive filesystem location (e.g., /etc/*,
+  ~/.ssh/*, ~/.aws/*), then makes an outbound HTTP POST within
+  60 seconds. Classic exfiltration shape -- the recon plus the
+  external write together indicate intent to leak.
+severity: high
+emits_signal: rogue_filesystem_exfiltration
+correlate_by: [tenant_id, principal_id]
+window_seconds: 120
+steps:
+  - id: recon
+    evidence_kind: tool_call
+    match:
+      payload.tool: file_read
+      payload.path:
+        - "glob:/etc/*"
+        - "glob:*/.ssh/*"
+        - "glob:*/.aws/*"
+  - id: exfil
+    evidence_kind: tool_call
+    match:
+      payload.tool: http
+      payload.method: POST
+    after: recon
+    within_seconds: 60
+metadata:
+  mitre_attack: [T1005, T1041]
+  tags: [exfiltration, filesystem]
