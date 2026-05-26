@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy import text
 
@@ -149,8 +148,9 @@ def bind_principal_to_idp(
         idp_subject=idp_subject)
     try:
         from sqlalchemy import select
+
         from ._dialect_helpers import portable_upsert
-        from .principals import _PrincipalRow, _bind_schema
+        from .principals import _bind_schema, _PrincipalRow
         _bind_schema(db.get_bind())
         # SELECT-first: enforce "no row, no bind" — never create
         # a principal_trust row from this path. Existence verified

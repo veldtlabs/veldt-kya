@@ -314,10 +314,7 @@ def claims_to_kya_principal(claims: dict[str, Any]) -> dict[str, Any]:
     sub = claims.get("sub")
     iss = claims.get("iss")
     idp_kind = _infer_idp_kind(iss)
-    if sub:
-        federated_id = f"{idp_kind}|{iss or ''}|{sub}"
-    else:
-        federated_id = None
+    federated_id = f"{idp_kind}|{iss or ''}|{sub}" if sub else None
     return {
         "idp_subject": sub,
         "idp_issuer": iss,

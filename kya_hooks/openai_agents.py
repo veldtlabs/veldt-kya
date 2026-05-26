@@ -26,7 +26,8 @@ the customer actually calls this function. KYA core has zero SDK deps.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ._snapshot import maybe_snapshot_first_sight
 from .client import KyaClient

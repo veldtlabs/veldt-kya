@@ -187,8 +187,7 @@ def ensure_rbac_table(db) -> None:
     """Idempotent CREATE for kya_role_grants. Shares MetaData
     with the rest of the legacy tables for the schema_translate_map
     cross-backend flow."""
-    from ._legacy_tables import (create_legacy_tables,
-                                  kya_role_grants)
+    from ._legacy_tables import create_legacy_tables, kya_role_grants
     create_legacy_tables(db, [kya_role_grants])
 
 

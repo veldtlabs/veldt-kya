@@ -61,7 +61,6 @@ import base64
 import hashlib
 import json
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -384,11 +383,11 @@ def verify_signed_export(
         public_key_fingerprint : SHA-256[:16] of the key used
     """
     try:
+        from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey,
         )
-        from cryptography.exceptions import InvalidSignature
     except ImportError as exc:
         return {
             "valid": False,
@@ -568,7 +567,7 @@ def _cli_verify(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     try:
-        with open(args.export_path, "r", encoding="utf-8") as f:
+        with open(args.export_path, encoding="utf-8") as f:
             export = json.load(f)
     except FileNotFoundError:
         print(f"ERROR: export file not found: {args.export_path}")
@@ -580,7 +579,7 @@ def _cli_verify(argv: list[str]) -> int:
     pubkey_pem = None
     if args.pubkey_path:
         try:
-            with open(args.pubkey_path, "r", encoding="utf-8") as f:
+            with open(args.pubkey_path, encoding="utf-8") as f:
                 pubkey_pem = f.read()
         except FileNotFoundError:
             print(f"ERROR: pubkey file not found: {args.pubkey_path}")

@@ -94,7 +94,8 @@ def _bump(metric_name: str, doc: str, **labels) -> None:
         pass
 
 try:  # SQLAlchemy is optional at module import; functions error at call time
-    from sqlalchemy import and_, delete as _sa_delete, or_, select
+    from sqlalchemy import and_, or_, select
+    from sqlalchemy import delete as _sa_delete
     _SA_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _SA_AVAILABLE = False

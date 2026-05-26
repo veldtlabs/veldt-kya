@@ -372,11 +372,11 @@ def _maybe_apply_risk_tier_default(
             "0", "false", "no", "off"):
         return
     try:
-        from .risk import bucket_for, score_agent
         from .delegation_overrides import (
             list_delegation_overrides,
             set_delegation_override,
         )
+        from .risk import bucket_for, score_agent
     except Exception as exc:
         logger.debug("[KYA-VERS] risk-tier import failed: %s", exc)
         return
