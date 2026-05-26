@@ -192,15 +192,21 @@ def ensure_user_trust_table(db) -> None:
         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
         f"federated_id VARCHAR(500);",
     ]
-    # Dialect-specific index — PG/MySQL/SQLite get fast indexed
-    # lookups; DuckDB scans (its UPDATE-on-indexed-column rejection
-    # makes the indexed path incompatible with ON CONFLICT DO UPDATE).
+    # Dialect-specific indexes -- PG/MySQL/SQLite get fast indexed
+    # lookups; DuckDB scans (its ART index rejects any UPDATE that
+    # modifies an indexed column, breaking record_user_signal's
+    # UPDATE path).
     if dialect != "duckdb":
-        migrations.append(
+        migrations.extend([
+            # Tenant trust-distribution queries (rank users by score).
+            f"CREATE INDEX IF NOT EXISTS "
+            f"idx_kya_user_trust_tenant_score "
+            f"ON {table} (tenant_id, trust_score);",
+            # Phase 4b lookup-by-IdP-subject (already conditional before).
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_user_trust_tenant_idp_subject "
-            f"ON {table} (tenant_id, idp_subject);"
-        )
+            f"ON {table} (tenant_id, idp_subject);",
+        ])
     apply_migrations(db, "kya_user_trust", migrations)
     db.commit()
 
