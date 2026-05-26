@@ -352,6 +352,12 @@ from .delegation_overrides import (
     resolve_effective_mode,
     set_delegation_override,
 )
+from .auth import (
+    bind_principal_from_token,
+    claims_to_kya_principal,
+    reset_jwks_cache,
+    verify_jwt,
+)
 from .external_id import (
     IDP_KINDS,
     InvalidIdpKindError,
@@ -678,6 +684,14 @@ __all__ = [
     "list_principals_by_idp_kind",
     "IDP_KINDS",
     "InvalidIdpKindError",
+    # Phase 4a — JWT introspection + claim extraction. Decodes
+    # OIDC/OAuth bearer tokens against a JWKS endpoint, returns
+    # claims dict, can auto-populate Phase 4b's external_id columns
+    # via bind_principal_from_token(). Optional PyJWT dependency.
+    "verify_jwt",
+    "claims_to_kya_principal",
+    "bind_principal_from_token",
+    "reset_jwks_cache",
     # Economic Control (tenant_budget primitive — was shipped in
     # the budget Phase 1 commit but not re-exported at the top
     # level; users were forced to import from kya.tenant_budget).
