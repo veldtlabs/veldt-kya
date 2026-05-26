@@ -108,7 +108,12 @@ kya_agent_aliases = Table(
 )
 
 
-# 2. kya_user_trust — per-tenant user trust score
+# 2. kya_user_trust — per-tenant user trust score.
+# Phase 4b adds idp_subject / idp_issuer / idp_kind / federated_id —
+# optional pointers to the upstream Identity Provider's view of the
+# same user. Populated by bind_user_to_idp() or directly via the
+# users.py API. All nullable; existing deployments pick them up via
+# additive ALTER (kya/users.py ensure_user_trust_table).
 kya_user_trust = Table(
     "kya_user_trust",
     _LEGACY_MD,
@@ -117,6 +122,10 @@ kya_user_trust = Table(
     Column("user_id", uuid_or_string(), nullable=False),
     Column("trust_score", BigInteger, nullable=False, default=50),
     Column("signal_counts", json_or_jsonb(), nullable=False, default=dict),
+    Column("idp_subject", String(255), nullable=True),
+    Column("idp_issuer", String(255), nullable=True),
+    Column("idp_kind", String(50), nullable=True),
+    Column("federated_id", String(500), nullable=True),
     Column("last_signal_at", DateTime(timezone=True), nullable=True),
     Column("last_clean_at", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True),
@@ -125,6 +134,9 @@ kya_user_trust = Table(
            server_default=func.now(), nullable=False),
     UniqueConstraint("tenant_id", "user_id", name="uq_kya_user_trust_tenant_user"),
     Index("idx_kya_user_trust_tenant_score", "tenant_id", "trust_score"),
+    # Phase 4b NOTE: idp_subject index intentionally omitted —
+    # DuckDB rejects ON CONFLICT DO UPDATE on any indexed column.
+    # Lookups by idp_subject scan; acceptable at typical scale.
 )
 
 
