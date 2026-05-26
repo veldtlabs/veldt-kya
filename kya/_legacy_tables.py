@@ -647,6 +647,41 @@ kya_delegation_policy_overrides = Table(
 )
 
 
+# kya_role_grants — Phase 5b RBAC. Direct (principal → action)
+# grants per-tenant. Single-table model intentionally — operators
+# who want role grouping can wrap a "deploy this role" function
+# that fans out to multiple grant rows. Kept simple here; the
+# resolver (has_action) only does index-backed equality lookups.
+#
+# Wildcard handling: a row with action="kya.*" grants every
+# kya.* action for that principal — a super-user shortcut.
+# No deeper wildcards (no "kya.budget.*") in v1 — keeps the
+# resolver SQL to two equality checks instead of LIKE scans.
+kya_role_grants = Table(
+    "kya_role_grants",
+    _LEGACY_MD,
+    autoinc_id("kya_role_grants_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("principal_kind", String(20), nullable=False),
+    Column("principal_id", String(200), nullable=False),
+    Column("action", String(80), nullable=False),
+    Column("granted_by", uuid_or_string(), nullable=True),
+    Column("reason", Text, nullable=True),
+    Column("effective_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    UniqueConstraint("tenant_id", "principal_kind", "principal_id",
+                     "action",
+                     name="uq_kya_role_grants_principal_action"),
+    Index("idx_kya_role_grants_tenant_principal",
+          "tenant_id", "principal_kind", "principal_id"),
+    Index("idx_kya_role_grants_tenant_action",
+          "tenant_id", "action"),
+)
+
+
 # Convenience list — every legacy table for batch create_all().
 ALL_LEGACY_TABLES = [
     kya_agent_aliases,
