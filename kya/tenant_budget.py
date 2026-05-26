@@ -545,6 +545,14 @@ def record_cost_event(
     """
     if usd_amount <= 0:
         return 0
+    # Phase 4a.1 — rate limit. Off-by-default; opt in via
+    # KYA_RATE_LIMIT_RPS_RECORD_COST_EVENT etc.
+    try:
+        from .rate_limit import maybe_rate_limit
+        maybe_rate_limit(tenant_id, "record_cost_event")
+    except Exception as exc:
+        logger.debug(
+            "[KYA-COST] rate-limit check raised: %s", exc)
     # principal_kind must be a PRINCIPAL kind, not an enforcement
     # scope. cost_center / business_unit aren't principal types, so a
     # caller passing them here is normalized to "agent".

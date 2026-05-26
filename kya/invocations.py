@@ -216,6 +216,20 @@ def record_invocation(
         logger.debug("[KYA-INV] unknown outcome=%s -> 'success'", outcome)
         outcome = "success"
 
+    # Phase 4a.1 — rate limit on KYA's write primitive. Off-by-default;
+    # operators opt in via KYA_RATE_LIMIT_DEFAULT_RPS or per-primitive
+    # env. Soft mode: blocks up to 5s waiting for token, then proceeds.
+    # Threads principal info through so security events on denial
+    # get attribution + persistence to kya_principal_trust.
+    try:
+        from .rate_limit import maybe_rate_limit
+        maybe_rate_limit(
+            tenant_id, "record_invocation",
+            principal_kind=principal_kind,
+            principal_id=principal_id, db=db)
+    except Exception as exc:
+        logger.debug("[KYA-INV] rate-limit check raised: %s", exc)
+
     _require_sqlalchemy()
     ensure_invocations_table(db)
 
