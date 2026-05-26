@@ -68,6 +68,8 @@ _TABLE_SETUP_PLAN = [
     # ── Per-scope delegation-policy mode overrides ──
     ("kya_delegation_policy_overrides", "kya.delegation_overrides",
      "ensure_delegation_overrides_table"),
+    # ── Phase 5b RBAC — per-tenant principal→action grants ──
+    ("kya_role_grants", "kya.rbac", "ensure_rbac_table"),
 ]
 
 
