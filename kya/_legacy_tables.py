@@ -591,6 +591,50 @@ kya_delegation_violations = Table(
 )
 
 
+# kya_delegation_policy_overrides — per-scope mode overrides for
+# delegation policy enforcement. Lets operators target specific
+# agent pairs (or violation kinds, or just an orchestrator's whole
+# spawn surface) with different modes without affecting the global
+# default.
+#
+# Resolution: at enforcement time, all rows matching the (parent,
+# sub, kind) scope are filtered to ACTIVE (effective_at <= now AND
+# (expires_at IS NULL OR expires_at > now)) then ranked by
+# specificity score. NULL = wildcard.
+#
+# Specificity score = count of non-NULL match fields.
+#   (X, Y, Z) > (X, Y, NULL) ~ (X, NULL, Z) ~ (NULL, Y, Z)
+#   > (X, NULL, NULL) ~ (NULL, Y, NULL) ~ (NULL, NULL, Z)
+#   > (NULL, NULL, NULL)
+# Ties broken by created_at DESC (most recent wins).
+#
+# Audit semantics: rows are append-only. Updating an override means
+# inserting a new row (with same scope, new mode, new changed_by).
+# Soft-delete sets expires_at = now() on the row.
+kya_delegation_policy_overrides = Table(
+    "kya_delegation_policy_overrides",
+    _LEGACY_MD,
+    autoinc_id("kya_delegation_policy_overrides_id_seq"),
+    Column("tenant_id", uuid_or_string(), nullable=False),
+    Column("parent_agent_key", String(100), nullable=True),
+    Column("sub_agent_key", String(100), nullable=True),
+    Column("violation_kind", String(40), nullable=True),
+    Column("mode", String(20), nullable=False),
+    Column("reason", Text, nullable=True),
+    Column("changed_by", uuid_or_string(), nullable=True),
+    Column("effective_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True),
+           server_default=func.now(), nullable=False),
+    Index("idx_kya_delpol_ovr_tenant_scope",
+          "tenant_id", "parent_agent_key",
+          "sub_agent_key", "violation_kind"),
+    Index("idx_kya_delpol_ovr_tenant_effective",
+          "tenant_id", "effective_at"),
+)
+
+
 # Convenience list — every legacy table for batch create_all().
 ALL_LEGACY_TABLES = [
     kya_agent_aliases,
@@ -610,4 +654,5 @@ ALL_LEGACY_TABLES = [
     kya_budget_changes,
     kya_cost_events,
     kya_delegation_violations,
+    kya_delegation_policy_overrides,
 ]
