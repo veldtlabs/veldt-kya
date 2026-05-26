@@ -429,6 +429,37 @@ def record_evidence(
         logger.debug("[KYA-EVIDENCE] unknown kind=%s -> 'system_message'", evidence_kind)
         evidence_kind = "system_message"
 
+    # Phase 4a.1 — payload size cap + rate limit. Both off-by-default;
+    # only fire when operators have set the corresponding env vars.
+    # Cap check is HARD (raises PayloadTooLargeError) because writing
+    # an oversize row corrupts dashboards downstream. Rate limit is
+    # soft (blocks up to 5s) for batch ergonomics — switch to hard
+    # at the HTTP layer if you want 429s. Both modules emit
+    # security events to kya_principal_trust + Valkey when violations
+    # fire — log-only when DB session not threaded through.
+    try:
+        from .payload_caps import check_payload_size
+        check_payload_size(
+            payload, primitive="evidence",
+            tenant_id=tenant_id, db=db,
+            # record_evidence doesn't have direct principal info;
+            # the invocation_id maps to one but we'd need a lookup.
+            # Log-only attribution is acceptable for v1.
+        )
+    except Exception:
+        # PayloadTooLargeError + TypeError propagate; other failures
+        # in the size-check path are caller bugs we want to surface.
+        raise
+    try:
+        from .rate_limit import maybe_rate_limit
+        maybe_rate_limit(
+            tenant_id, "record_evidence", db=db)
+    except Exception as exc:
+        # Fail-soft contract — rate-limit module surfaces its own
+        # errors only in "hard" mode; here we use soft default so
+        # an exception means something unexpected. Log + proceed.
+        logger.debug("[KYA-EVIDENCE] rate-limit check raised: %s", exc)
+
     _require_sqlalchemy()
     init_evidence_table(db)
 

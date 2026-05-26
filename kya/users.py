@@ -89,6 +89,17 @@ SIGNAL_DELTAS = {
     # Severity-between data_leak (-10) and oos_tool (-3); these are real but
     # not always the worst kind of signal.
     "policy_violation": -7,
+    # Phase 4a.1 — rate limit hit. Light penalty: not always abusive
+    # (legitimate burst from a backed-up queue can trigger), but
+    # repeated hits suggest misconfiguration or abuse.
+    "rate_limit_exceeded": -2,
+    # Phase 4a.1 — payload over the size cap. Stronger penalty: this
+    # is either a buggy agent emitting unbounded payloads, or an
+    # attacker trying to bloat the audit chain.
+    "payload_too_large": -4,
+    # Phase 5a — nonce replay attempt. Strong abuse signal — a legit
+    # client never replays nonces. Trust hit close to data_leak.
+    "replay_detected": -8,
     # Synthetic "clean run" — small upward bump for cooperative usage
     "clean_invocation": +1,
 }
