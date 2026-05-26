@@ -56,3 +56,12 @@ KYA_INBOUND_PUBLIC_KEY*
 
 # Distribution
 *.tar.gz
+
+# Local dev TODO -- not committed
+TODO.md
+
+# Fiddler.ai integration tests + run results (use a live API key)
+examples/live_e2e_fiddler*.py
+examples/live_e2e_multiagent_fiddler*.py
+.fiddler_test_results/
+*.fiddler_run.json

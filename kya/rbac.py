@@ -441,6 +441,7 @@ def require_action(
     principal_id: str,
     action: str,
     mode: str | None = None,
+    min_trust: int | None = None,
 ) -> bool:
     """Enforce an action check at the entry of a KYA primitive.
 
@@ -450,6 +451,19 @@ def require_action(
       - "flag"  → check + log WARNING on denial, return True.
                   Lets operators see what WOULD be denied.
       - "block" → check + raise AccessDeniedError on denial.
+
+    Two refusal paths (both honor the mode above):
+
+      1. No grant -- principal lacks the action in `kya_role_grants`.
+      2. Low trust -- when `min_trust` is supplied (or env
+         KYA_RBAC_MIN_TRUST_<ACTION> is set), the principal's
+         current trust_score is fetched and compared. If the score
+         is below the threshold, the call is refused even when a
+         grant exists.
+
+    Trust-based refusal is the wire that closes the
+    "Fiddler/external defender -> trust decay -> next action blocked"
+    loop. Without it, trust signals only ever influence dashboards.
 
     Validation errors (unknown mode, unknown action) raise
     InvalidRbacModeError / InvalidActionError immediately (loud).
@@ -470,16 +484,69 @@ def require_action(
         raise InvalidRbacModeError(
             f"Unknown RBAC mode: {effective_mode!r}")
 
+    # Resolve the trust threshold: explicit kwarg wins over env.
+    # Env key: KYA_RBAC_MIN_TRUST_<ACTION_UPPER_WITH_UNDERSCORES>.
+    # E.g., for action "kya.budget.write", the env is
+    # KYA_RBAC_MIN_TRUST_KYA_BUDGET_WRITE.
+    if min_trust is None:
+        env_key = ("KYA_RBAC_MIN_TRUST_"
+                   + action.upper().replace(".", "_"))
+        env_val = os.environ.get(env_key)
+        if env_val:
+            try:
+                min_trust = int(env_val)
+            except ValueError:
+                logger.warning(
+                    "[KYA-RBAC] %s=%r is not int -- ignoring",
+                    env_key, env_val)
+                min_trust = None
+
+    # Check grant first (cheap query). If missing, this is a refusal
+    # before we even fetch trust.
     granted = has_action(
         db, tenant_id=tenant_id,
         principal_kind=principal_kind,
         principal_id=principal_id,
         action=action)
-    if granted:
+
+    if granted and min_trust is None:
         return True
 
-    # Denial — emit a security event (DRY: same emitter used by
-    # rate_limit, payload_caps, replay_protection)
+    # Determine the precise refusal reason for emission/raising.
+    refusal_reason: str | None = None
+    refusal_detail: dict = {"action": action, "mode": effective_mode}
+
+    if not granted:
+        refusal_reason = "no_grant"
+    else:
+        # Grant exists; fetch trust score for the min_trust check.
+        from .principals import get_principal_trust
+        try:
+            trust = get_principal_trust(
+                db, tenant_id, principal_kind, principal_id)
+            score = (trust.trust_score
+                     if trust is not None else None)
+        except Exception as exc:
+            logger.debug(
+                "[KYA-RBAC] get_principal_trust failed: %s -- "
+                "treating as no trust record (refuse)", exc)
+            score = None
+        refusal_detail["min_trust"] = min_trust
+        refusal_detail["current_trust"] = score
+        if score is None:
+            # No trust row -- a min_trust requirement is unmet by
+            # definition. Refuse.
+            refusal_reason = "no_trust_record"
+        elif score < min_trust:
+            refusal_reason = "trust_below_threshold"
+        else:
+            # Trust is high enough; pass.
+            return True
+
+    refusal_detail["reason"] = refusal_reason
+
+    # Emit a security event (DRY: same emitter used by rate_limit,
+    # payload_caps, replay_protection).
     try:
         from ._security_events import emit_security_event
         emit_security_event(
@@ -487,16 +554,17 @@ def require_action(
             tenant_id=tenant_id, primitive="require_action",
             principal_kind=principal_kind,
             principal_id=principal_id, db=db,
-            detail={"action": action, "mode": effective_mode})
+            detail=refusal_detail)
     except Exception as exc:
         logger.debug(
             "[KYA-RBAC] security-event emit failed: %s", exc)
 
     if effective_mode == "flag":
         logger.warning(
-            "[KYA-RBAC] (flag) denied %s:%s for %s in tenant %s — "
-            "no grant; would block in 'block' mode",
-            principal_kind, principal_id, action, tenant_id)
+            "[KYA-RBAC] (flag) denied %s:%s for %s in tenant %s "
+            "[reason=%s] -- would block in 'block' mode",
+            principal_kind, principal_id, action, tenant_id,
+            refusal_reason)
         return True
     # block mode
     raise AccessDeniedError(
