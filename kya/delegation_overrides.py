@@ -187,16 +187,25 @@ def delete_delegation_override(
     override_id: int,
     reason: str | None = None,
 ) -> bool:
-    """Soft-delete by setting expires_at = NOW(). Audit history
-    preserved. Returns True if the row's expires_at is non-NULL
-    after the update."""
+    """Soft-delete by setting expires_at to a moment SLIGHTLY in the
+    past (NOW - 1 second). Using exactly NOW() races with backends
+    that store DATETIME at second precision (MySQL default): both the
+    write and the next resolver call can round to the same second, so
+    `expires_at > NOW()` evaluates true and the override appears
+    still-active. Subtracting 1 second guarantees the row reads as
+    expired on any backend regardless of clock precision.
+
+    Audit history preserved. Returns True if the row's expires_at
+    is non-NULL after the update."""
+    from datetime import timedelta
     schema = _schema_prefix(db)
     try:
+        expires_marker = datetime.now(timezone.utc) - timedelta(seconds=1)
         db.execute(text(
             f"UPDATE {schema}kya_delegation_policy_overrides "
             f"SET expires_at = :n "
             f"WHERE id = :i AND (expires_at IS NULL OR expires_at > :n)"
-        ), {"n": datetime.now(timezone.utc), "i": override_id})
+        ), {"n": expires_marker, "i": override_id})
         db.commit()
         # Verify by reading back. We just need expires_at to be
         # non-NULL — the value itself doesn't matter for the

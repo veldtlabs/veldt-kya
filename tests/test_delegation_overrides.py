@@ -207,15 +207,21 @@ def test_most_specific_wins_over_wildcard(db):
 
 
 def test_tie_at_same_specificity_last_write_wins(db):
-    # Two parent-only overrides for the same parent
-    set_delegation_override(db, tenant_id=TENANT, mode="observe",
-                              parent_agent_key="P_tie")
-    set_delegation_override(db, tenant_id=TENANT, mode="block",
-                              parent_agent_key="P_tie")
+    # Two parent-only overrides for the same parent. Tie-break: the
+    # one with the higher id (= second insert) wins.
+    id1 = set_delegation_override(db, tenant_id=TENANT, mode="observe",
+                                    parent_agent_key="P_tie")
+    id2 = set_delegation_override(db, tenant_id=TENANT, mode="block",
+                                    parent_agent_key="P_tie")
     mode, source = resolve_effective_mode(
         db, tenant_id=TENANT, parent_agent_key="P_tie",
         sub_agent_key="Any", violation_kind="access_escalation")
-    assert mode == "block"  # last-write wins
+    # Include id1/id2 in the failure message — when this test flakes
+    # (rare PG sequence state issue), seeing the ids points at the
+    # tie-break logic vs. an insert ordering issue.
+    assert mode == "block", (
+        f"expected block (id2={id2} wins over observe at id1={id1}); "
+        f"got {mode} from {source}")
     assert "P_tie" in source
 
 
@@ -341,11 +347,15 @@ def test_per_kind_override_routes_violations_to_different_modes(db,
             principal_kind="agent", principal_id="ParentLooks")
 
     # Both violations should be persisted, but only access_escalation
-    # in block mode; tool_widening in observe
+    # in block mode; tool_widening in observe. Use the dialect-aware
+    # schema prefix so this query works on PG (prov_schema.) AND on
+    # sqlite/duckdb/mysql (default ns).
+    _sp = ("prov_schema."
+           if db.get_bind().dialect.name == "postgresql" else "")
     rows = db.execute(text(
-        "SELECT violation_kind, mode_active, blocked "
-        "FROM kya_delegation_violations "
-        "WHERE sub_agent_key='SubMisbehaves' ORDER BY violation_kind"
+        f"SELECT violation_kind, mode_active, blocked "
+        f"FROM {_sp}kya_delegation_violations "
+        f"WHERE sub_agent_key='SubMisbehaves' ORDER BY violation_kind"
     )).fetchall()
     by_kind = {r[0]: (r[1], r[2]) for r in rows}
     assert by_kind.get("access_escalation") is not None
