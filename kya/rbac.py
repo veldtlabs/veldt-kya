@@ -441,6 +441,7 @@ def require_action(
     principal_id: str,
     action: str,
     mode: str | None = None,
+    min_trust: int | None = None,
 ) -> bool:
     """Enforce an action check at the entry of a KYA primitive.
 
@@ -450,6 +451,17 @@ def require_action(
       - "flag"  → check + log WARNING on denial, return True.
                   Lets operators see what WOULD be denied.
       - "block" → check + raise AccessDeniedError on denial.
+
+    Optional trust gate
+    -------------------
+    When `min_trust` is passed, after the grant check passes the
+    principal's trust score (kya.principals.get_principal_trust)
+    is also verified. If trust < min_trust, AccessDeniedError is
+    raised regardless of RBAC mode -- by passing the kwarg the
+    caller has explicitly opted into trust-gating for THIS call.
+    This lets you decay trust on rogue signals + auto-block
+    privileged actions when trust drops below threshold, without
+    operator intervention.
 
     Validation errors (unknown mode, unknown action) raise
     InvalidRbacModeError / InvalidActionError immediately (loud).
@@ -463,44 +475,105 @@ def require_action(
         raise InvalidActionError(
             f"Unknown action {action!r} — typo? "
             f"Action must be in kya.rbac.ACTIONS")
+    if min_trust is not None and not isinstance(min_trust, int):
+        raise TypeError(
+            f"min_trust must be int or None; got {type(min_trust).__name__}")
+
     effective_mode = mode if mode is not None else active_rbac_mode()
-    if effective_mode == "off":
-        return True
-    if effective_mode not in RBAC_MODES:
-        raise InvalidRbacModeError(
-            f"Unknown RBAC mode: {effective_mode!r}")
 
-    granted = has_action(
-        db, tenant_id=tenant_id,
-        principal_kind=principal_kind,
-        principal_id=principal_id,
-        action=action)
-    if granted:
-        return True
+    # Grant check -- gated by RBAC mode (off skips it entirely).
+    if effective_mode != "off":
+        if effective_mode not in RBAC_MODES:
+            raise InvalidRbacModeError(
+                f"Unknown RBAC mode: {effective_mode!r}")
 
-    # Denial — emit a security event (DRY: same emitter used by
-    # rate_limit, payload_caps, replay_protection)
-    try:
-        from ._security_events import emit_security_event
-        emit_security_event(
-            "rbac_refusal",
-            tenant_id=tenant_id, primitive="require_action",
+        granted = has_action(
+            db, tenant_id=tenant_id,
             principal_kind=principal_kind,
-            principal_id=principal_id, db=db,
-            detail={"action": action, "mode": effective_mode})
-    except Exception as exc:
-        logger.debug(
-            "[KYA-RBAC] security-event emit failed: %s", exc)
+            principal_id=principal_id,
+            action=action)
+        if not granted:
+            # Denial — emit a security event (DRY: same emitter used by
+            # rate_limit, payload_caps, replay_protection)
+            try:
+                from ._security_events import emit_security_event
+                emit_security_event(
+                    "rbac_refusal",
+                    tenant_id=tenant_id, primitive="require_action",
+                    principal_kind=principal_kind,
+                    principal_id=principal_id, db=db,
+                    detail={"action": action, "mode": effective_mode,
+                            "reason": "no_grant"})
+            except Exception as exc:
+                logger.debug(
+                    "[KYA-RBAC] security-event emit failed: %s", exc)
 
-    if effective_mode == "flag":
-        logger.warning(
-            "[KYA-RBAC] (flag) denied %s:%s for %s in tenant %s — "
-            "no grant; would block in 'block' mode",
-            principal_kind, principal_id, action, tenant_id)
-        return True
-    # block mode
-    raise AccessDeniedError(
-        tenant_id, principal_kind, principal_id, action)
+            if effective_mode == "flag":
+                logger.warning(
+                    "[KYA-RBAC] (flag) denied %s:%s for %s in "
+                    "tenant %s — no grant; would block in 'block' "
+                    "mode",
+                    principal_kind, principal_id, action, tenant_id)
+                # Fall through to trust check (flag mode still
+                # enforces min_trust if caller passed it)
+            else:
+                # block mode
+                raise AccessDeniedError(
+                    tenant_id, principal_kind, principal_id, action)
+
+    # Trust gate -- INDEPENDENT of RBAC mode. By passing min_trust
+    # the caller has explicitly opted in for THIS call. The grant
+    # decision answers "may principal X invoke action Y?"; the
+    # trust gate answers "is principal X trustworthy enough RIGHT
+    # NOW to invoke a privileged action?". Different question,
+    # different signal.
+    if min_trust is not None:
+        try:
+            from .principals import get_principal_trust
+            trust = get_principal_trust(
+                db, tenant_id=tenant_id,
+                principal_kind=principal_kind,
+                principal_id=principal_id)
+            trust_score = trust.trust_score if trust else None
+        except Exception as exc:
+            # Trust lookup failed -- DENY-by-default. If the caller
+            # asked for trust-gating and we can't verify, the safer
+            # answer is no.
+            logger.debug(
+                "[KYA-RBAC] trust lookup failed (%s) — denying "
+                "since min_trust=%d was requested",
+                exc, min_trust)
+            trust_score = None
+
+        if trust_score is None or trust_score < min_trust:
+            try:
+                from ._security_events import emit_security_event
+                emit_security_event(
+                    "rbac_refusal",
+                    tenant_id=tenant_id,
+                    primitive="require_action",
+                    principal_kind=principal_kind,
+                    principal_id=principal_id, db=db,
+                    detail={
+                        "action": action,
+                        "reason": ("no_trust_record"
+                                   if trust_score is None
+                                   else "trust_below_threshold"),
+                        "min_trust": min_trust,
+                        "actual_trust": trust_score,
+                    })
+            except Exception as exc:
+                logger.debug(
+                    "[KYA-RBAC] security-event emit failed: %s", exc)
+            logger.info(
+                "[KYA-RBAC] denied %s:%s for %s in tenant %s — "
+                "trust %s < min_trust %d",
+                principal_kind, principal_id, action, tenant_id,
+                trust_score, min_trust)
+            raise AccessDeniedError(
+                tenant_id, principal_kind, principal_id, action)
+
+    return True
 
 
 # ── Internal ───────────────────────────────────────────────────────

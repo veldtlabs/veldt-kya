@@ -140,20 +140,50 @@ def agent_divergence_score(
         tenant_id=tenant_id,
         window_days=window_days,
     )
+    from ._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
+    # Dialect-aware query: PG keeps the single-statement FILTER + now()
+    # interval. Non-PG uses portable CASE + parameterized cutoff (since
+    # FILTER and `now() - interval` syntax are PG-specific).
+    bind = db.get_bind() if hasattr(db, "get_bind") else db
+    dialect = (bind.dialect.name
+               if hasattr(bind, "dialect") else "unknown")
     try:
-        row = db.execute(
-            text("""
-                SELECT
-                    COUNT(*),
-                    COUNT(*) FILTER (WHERE outcome = 'refused'),
-                    COUNT(*) FILTER (WHERE outcome = 'blocked'),
-                    COUNT(*) FILTER (WHERE outcome = 'error')
-                FROM prov_schema.kya_invocations
-                WHERE tenant_id = :tid AND agent_key = :agent
-                  AND started_at >= now() - (:days || ' days')::interval
-            """),
-            {"tid": tenant_id, "agent": agent_key, "days": str(window_days)},
-        ).fetchone()
+        if dialect == "postgresql":
+            row = db.execute(
+                text(f"""
+                    SELECT
+                        COUNT(*),
+                        COUNT(*) FILTER (WHERE outcome = 'refused'),
+                        COUNT(*) FILTER (WHERE outcome = 'blocked'),
+                        COUNT(*) FILTER (WHERE outcome = 'error')
+                    FROM {qual}kya_invocations
+                    WHERE tenant_id = :tid AND agent_key = :agent
+                      AND started_at >= now() - (:days || ' days')::interval
+                """),
+                {"tid": tenant_id, "agent": agent_key,
+                 "days": str(window_days)},
+            ).fetchone()
+        else:
+            # Portable across SQLite / MySQL / DuckDB: compute the
+            # cutoff in Python and use CASE WHEN ... aggregation.
+            from datetime import datetime, timedelta, timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                days=window_days)
+            row = db.execute(
+                text(f"""
+                    SELECT
+                        COUNT(*),
+                        SUM(CASE WHEN outcome = 'refused' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN outcome = 'blocked' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END)
+                    FROM {qual}kya_invocations
+                    WHERE tenant_id = :tid AND agent_key = :agent
+                      AND started_at >= :cutoff
+                """),
+                {"tid": tenant_id, "agent": agent_key,
+                 "cutoff": cutoff},
+            ).fetchone()
     except Exception as exc:
         logger.debug("[KYA-FAULT] divergence query failed: %s", exc)
         report.classification = "insufficient_data"
