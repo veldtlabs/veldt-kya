@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "veldt-kya"
-version = "0.1.1"
+version = "0.1.2"
 description = "KYA — Know Your Agent + Know Your Principal. Open control plane for trust + governance of autonomous systems (LLM agents, multi-agent systems, agentic RAG, autonomous SQL, AutoML, RPA bots, service accounts)."
 readme = "README.md"
 # Apache-2.0 chosen for:
