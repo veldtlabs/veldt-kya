@@ -76,3 +76,4 @@ examples/live_e2e_openclaw_full_orchestration*.py
 # Fiddler + KYA integration validation documentation (live findings,
 # contains specific operational details + sample API responses).
 FIDDLER_KYA_VALIDATION_FINDINGS.md
+live_e2e_min_trust_auto_block*.py

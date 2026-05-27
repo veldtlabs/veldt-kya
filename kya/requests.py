@@ -106,14 +106,16 @@ def summarize_request(db, tenant_id: str, correlation_id: str) -> RequestSummary
     Returns a RequestSummary with empty defaults if no rows match (caller
     can distinguish via total_invocations == 0).
     """
+    from ._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     rows = db.execute(
-        text("""
+        text(f"""
             SELECT id, agent_key, principal_kind, principal_id,
                    mode, outcome, duration_ms,
                    parent_invocation_id,
                    started_at, ended_at
-            FROM prov_schema.kya_invocations
-            WHERE tenant_id = :tid AND correlation_id = (:cid)::uuid
+            FROM {qual}kya_invocations
+            WHERE tenant_id = :tid AND correlation_id = :cid
             ORDER BY started_at ASC
         """),
         {"tid": tenant_id, "cid": correlation_id},
@@ -151,10 +153,17 @@ def summarize_request(db, tenant_id: str, correlation_id: str) -> RequestSummary
             worst_outcome = outcome
         if outcome == "in_progress":
             summary.has_in_progress = True
-        if r[8] and (summary.started_at is None or r[8].isoformat() < summary.started_at):
-            summary.started_at = r[8].isoformat()
-        if r[9] and (summary.ended_at is None or r[9].isoformat() > summary.ended_at):
-            summary.ended_at = r[9].isoformat()
+        # SQLite + MySQL return TIMESTAMP columns as strings; PG
+        # returns datetime objects. Normalize via _iso() so both
+        # shapes work without per-dialect branching.
+        s8 = (r[8].isoformat() if r[8] and hasattr(r[8], "isoformat")
+              else (str(r[8]) if r[8] else None))
+        s9 = (r[9].isoformat() if r[9] and hasattr(r[9], "isoformat")
+              else (str(r[9]) if r[9] else None))
+        if s8 and (summary.started_at is None or s8 < summary.started_at):
+            summary.started_at = s8
+        if s9 and (summary.ended_at is None or s9 > summary.ended_at):
+            summary.ended_at = s9
 
     summary.unique_agents = sorted(agent_set)
     summary.principals = [{"kind": k, "id": i} for (k, i) in sorted(principal_set)]
@@ -184,10 +193,12 @@ def list_recent_requests(
 
     # Pull distinct correlation_ids in the window. This is a small query
     # because correlation_id has an index and we limit results.
+    from ._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     rows = db.execute(
-        text("""
+        text(f"""
             SELECT DISTINCT correlation_id
-            FROM prov_schema.kya_invocations
+            FROM {qual}kya_invocations
             WHERE tenant_id = :tid
               AND correlation_id IS NOT NULL
               AND started_at >= :since

@@ -195,6 +195,24 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
     Idempotent — safe to re-run.
     """
     ensure_table(db)
+    # PG-only: this maintenance migration uses PG-specific ::uuid
+    # and ::jsonb casts throughout. Standalone SDK customers on
+    # SQLite / DuckDB / MySQL don't hit alias rename history that
+    # predates the bridge, so this function is intentionally
+    # PG-gated. Customers on non-PG can rerun the alias resolver
+    # directly via record_principal_signal on the canonical key.
+    bind = db.get_bind() if hasattr(db, "get_bind") else db
+    dialect = bind.dialect.name if hasattr(bind, "dialect") else None
+    if dialect != "postgresql":
+        return {
+            "checked": 0, "migrated": 0,
+            "details": [],
+            "skipped_reason":
+                f"migrate_principals_for_aliases is PG-only "
+                f"(uses ::uuid + ::jsonb casts); current dialect "
+                f"is {dialect!r}. Standalone SDK deployments don't "
+                f"need this maintenance migration.",
+        }
     aliases = db.execute(
         text(
             "SELECT alias, canonical_agent_key FROM prov_schema.kya_agent_aliases "
