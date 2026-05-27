@@ -103,6 +103,57 @@ register_adapter("acme", my_adapter)
 score_agent(normalize_agent_def("acme", proprietary_agent))
 ```
 
+## Runtime: multi-judge orchestration + trust
+
+`score_agent()` is pre-deployment. At runtime, `check_consensus()`
+runs N third-party judges in parallel and routes the verdict into
+per-principal trust:
+
+```python
+from kya.scorer_orchestrator import (
+    check_consensus, register_available_adapters, signals_from_consensus,
+)
+from kya import record_principal_signal, require_action, AccessDeniedError
+
+register_available_adapters()   # auto-wires opt-in judges if installed
+
+r = check_consensus(input_text=user_msg, response=agent_response,
+                    context=rag_context)
+# r.consensus -> BREACH/OK/SPLIT/UNCLEAR
+# r.per_dimension -> input_safety / safety / faithfulness
+# r.judges -> per-judge verdict + score + latency
+
+# Trust decay routed by dimension:
+for signal_kind, dim in signals_from_consensus(r):
+    record_principal_signal(db, tenant_id="t1", principal_kind="agent",
+                            principal_id="my_agent", signal_kind=signal_kind)
+
+# Gate privileged actions on trust:
+try:
+    require_action(db, tenant_id="t1", principal_kind="agent",
+                   principal_id="my_agent", action="kya.budget.write",
+                   min_trust=45)
+except AccessDeniedError:
+    ...   # agent's trust fell below 45 -- auto-block, no operator needed
+```
+
+**6 judges auto-register** from the core install (no extras):
+Fiddler safety + faithfulness, `openai_judge`, `refusal_heuristic`,
+`kya_pyrit` (data-leak), `kya_attack_patterns` (7 categories:
+encoded payloads, exfil paths, indirect injection, PII smuggling,
+role hijack, authority claims, external redirects).
+
+**+2 opt-in judges** via `pip install kya[recommended]`:
+`kya_presidio` (Presidio PII, tunable) + `arize_phoenix` (Phoenix
+hallucination methodology via litellm). Customers plug in their
+own with `register_judge(name, fn)`.
+
+Signal routing is dimension-correct: `input_safety` → `received_attack`
+(-1, agent was attacked but may have refused), `safety` →
+`policy_violation` (-7), `faithfulness` → `hallucination_detected`
+(-5). Phase 4 adds JWT introspection + SPIFFE/OIDC workload
+identity (`kya.auth`).
+
 ## Drift detection
 
 ```python
@@ -145,23 +196,39 @@ equivalents (IRAP, CCCS, C5, ENS, IL5/IL6).
 ## Optional features (extras)
 
 ```
-pip install "veldt-kya[metrics]"    # Prometheus counters
-pip install "veldt-kya[tracing]"    # OpenTelemetry span events
-pip install "veldt-kya[webhooks]"   # Outbound emit (Splunk / Datadog / Lakera / regulator-grade formats)
-pip install "veldt-kya[judge]"      # LiteLLM-backed semantic alignment judge
-pip install "veldt-kya[all]"        # everything above
+pip install "veldt-kya[recommended]"   # multi-judge starter pack
+                                       # (Presidio PII + litellm for
+                                       # arize_phoenix + openai_judge)
+
+pip install "veldt-kya[presidio]"      # Presidio PII detector only
+pip install "veldt-kya[judge]"         # litellm (Phoenix + LLM judges)
+pip install "veldt-kya[all_judges]"    # presidio + litellm + langkit
+
+pip install "veldt-kya[metrics]"       # Prometheus counters
+pip install "veldt-kya[tracing]"       # OpenTelemetry span events
+pip install "veldt-kya[webhooks]"      # Outbound emit (Splunk /
+                                       # Datadog / regulator formats)
+pip install "veldt-kya[attack_chains]" # YAML rule DSL for multi-step
+                                       # attack-chain detection
+pip install "veldt-kya[all]"           # everything
 ```
 
-The core scoring + adapter API is stdlib + SQLAlchemy only.
+Core (`pip install veldt-kya`) is stdlib + SQLAlchemy + requests
+only. The multi-judge orchestrator auto-registers 6 judges from
+the core install; opt-in extras add Presidio + Phoenix without
+changing your code.
 
 ## Roadmap
 
-This is the standalone SDK packaging of the KYA module already running
-in production inside Veldt Decisions. Surfaces still being polished:
+This is the standalone SDK packaging of the KYA module already
+running in production inside Veldt Decisions. Surfaces still being
+polished:
 
 - Lakehouse adapter (Databricks Genie / Snowflake Cortex)
 - Native pytest harness for `[storage]` extra
 - Hosted KYA dashboard for SDK consumers
+- SQL-aware data-policy judge (customers bring this today via
+  `register_judge()`; bundled adapter in a future release)
 
 ## License
 
