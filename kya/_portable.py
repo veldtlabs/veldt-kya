@@ -74,6 +74,39 @@ def schema_args(extra: dict | None = None) -> dict:
     return args
 
 
+def qual_for_raw_sql(db_or_bind) -> str:
+    """Return the schema prefix (with trailing dot, e.g. ``"prov_schema."``)
+    to splice into raw ``text(...)`` SQL on the bound dialect.
+
+    Raw ``text("FROM prov_schema.kya_X")`` does NOT honor SQLAlchemy's
+    ``schema_translate_map`` execution option — that option only
+    rewrites schemas on Table objects. So functions that build raw
+    SQL must qualify the table name dynamically per dialect.
+
+    Use:
+
+        from ._portable import qual_for_raw_sql
+        qual = qual_for_raw_sql(db)         # "prov_schema." on PG; "" elsewhere
+        db.execute(text(f"SELECT ... FROM {qual}kya_user_trust ..."))
+
+    Returns:
+        - "prov_schema." on PostgreSQL when KYA_VERSIONS_SCHEMA is set
+          (or default "prov_schema").
+        - "" on SQLite, MySQL, DuckDB, or when
+          KYA_VERSIONS_SCHEMA="" disables qualification on PG.
+    """
+    # Accept a Session or an Engine/Connection.
+    bind = (
+        db_or_bind.get_bind()
+        if hasattr(db_or_bind, "get_bind") else db_or_bind
+    )
+    dialect = bind.dialect.name if hasattr(bind, "dialect") else None
+    if dialect != "postgresql":
+        return ""
+    schema = dialect_schema_qualifier()
+    return f"{schema}." if schema else ""
+
+
 def portable_bigint():
     """Fresh BigInteger().with_variant(Integer(), 'sqlite') per call.
     Each column should get its own instance — sharing across columns

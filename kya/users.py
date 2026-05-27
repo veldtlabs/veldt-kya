@@ -232,11 +232,13 @@ def ensure_user_trust_table(db) -> None:
 def get_user_trust(db, tenant_id: str, user_id: str) -> UserTrust:
     """Read a single user's trust row. Returns a fresh-default UserTrust
     when the user has never had a signal recorded (no row yet)."""
+    from ._portable import qual_for_raw_sql
     ensure_user_trust_table(db)
+    qual = qual_for_raw_sql(db)
     row = db.execute(
-        text("""
+        text(f"""
             SELECT trust_score, signal_counts, last_signal_at, last_clean_at, updated_at
-            FROM prov_schema.kya_user_trust
+            FROM {qual}kya_user_trust
             WHERE tenant_id = :tid AND user_id = :uid
         """),
         {"tid": tenant_id, "uid": user_id},
@@ -250,33 +252,46 @@ def get_user_trust(db, tenant_id: str, user_id: str) -> UserTrust:
         )
     sc = row[1] if isinstance(row[1], dict) else {}
     score = int(row[0])
+    # SQLite + MySQL return TIMESTAMP columns as strings (not
+    # datetime objects). Handle both shapes so the same code works
+    # across PG (datetime) and SQLite/MySQL (str).
+    def _iso(v):
+        if v is None:
+            return None
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
     return UserTrust(
         user_id=user_id,
         tenant_id=tenant_id,
         trust_score=score,
         bucket=bucket_for_trust(score),
         signal_counts=sc,
-        last_signal_at=row[2].isoformat() if row[2] else None,
-        last_clean_at=row[3].isoformat() if row[3] else None,
-        updated_at=row[4].isoformat() if row[4] else None,
+        last_signal_at=_iso(row[2]),
+        last_clean_at=_iso(row[3]),
+        updated_at=_iso(row[4]),
     )
 
 
 def list_user_trust(db, tenant_id: str, limit: int = 100) -> list[dict]:
     """Tenant-scoped list of users sorted by lowest trust first
     (most-risky surfaced at the top — that's what governance teams want)."""
+    from ._portable import qual_for_raw_sql
     ensure_user_trust_table(db)
+    qual = qual_for_raw_sql(db)
     rows = db.execute(
-        text("""
+        text(f"""
             SELECT user_id, trust_score, signal_counts,
                    last_signal_at, last_clean_at, updated_at
-            FROM prov_schema.kya_user_trust
+            FROM {qual}kya_user_trust
             WHERE tenant_id = :tid
             ORDER BY trust_score ASC, updated_at DESC
             LIMIT :lim
         """),
         {"tid": tenant_id, "lim": limit},
     ).fetchall()
+    def _iso(v):
+        if v is None:
+            return None
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
     out = []
     for r in rows:
         sc = r[2] if isinstance(r[2], dict) else {}
@@ -287,9 +302,9 @@ def list_user_trust(db, tenant_id: str, limit: int = 100) -> list[dict]:
                 "trust_score": score,
                 "bucket": bucket_for_trust(score),
                 "signal_counts": sc,
-                "last_signal_at": r[3].isoformat() if r[3] else None,
-                "last_clean_at": r[4].isoformat() if r[4] else None,
-                "updated_at": r[5].isoformat() if r[5] else None,
+                "last_signal_at": _iso(r[3]),
+                "last_clean_at": _iso(r[4]),
+                "updated_at": _iso(r[5]),
             }
         )
     return out
