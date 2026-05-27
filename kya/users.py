@@ -100,6 +100,21 @@ SIGNAL_DELTAS = {
     # Phase 5a — nonce replay attempt. Strong abuse signal — a legit
     # client never replays nonces. Trust hit close to data_leak.
     "replay_detected": -8,
+    # Multi-judge orchestrator signals (kya.scorer_orchestrator). These
+    # map from per-dimension consensus BREACHes -- see
+    # `_DIMENSION_TO_SIGNAL` in scorer_orchestrator.py.
+    #
+    # received_attack: input safety judges flagged the USER INPUT as
+    # hostile (jailbreak / abuse). The agent may have refused
+    # correctly -- this is NOT necessarily the agent's fault. Light
+    # decay so repeated attack exposure surfaces in analytics + slow
+    # trust drift, without punishing an agent for being attacked.
+    "received_attack": -1,
+    # hallucination_detected: faithfulness judges agreed the response
+    # was ungrounded or misaligned. Real violation against the
+    # responding agent, but softer than policy_violation since "did
+    # not cite context" is less severe than "leaked PII".
+    "hallucination_detected": -5,
     # Synthetic "clean run" — small upward bump for cooperative usage
     "clean_invocation": +1,
 }
@@ -192,15 +207,21 @@ def ensure_user_trust_table(db) -> None:
         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
         f"federated_id VARCHAR(500);",
     ]
-    # Dialect-specific index — PG/MySQL/SQLite get fast indexed
-    # lookups; DuckDB scans (its UPDATE-on-indexed-column rejection
-    # makes the indexed path incompatible with ON CONFLICT DO UPDATE).
+    # Dialect-specific indexes -- PG/MySQL/SQLite get fast indexed
+    # lookups; DuckDB scans (its ART index rejects any UPDATE that
+    # modifies an indexed column, breaking record_user_signal's
+    # UPDATE path).
     if dialect != "duckdb":
-        migrations.append(
+        migrations.extend([
+            # Tenant trust-distribution queries (rank users by score).
+            f"CREATE INDEX IF NOT EXISTS "
+            f"idx_kya_user_trust_tenant_score "
+            f"ON {table} (tenant_id, trust_score);",
+            # Phase 4b lookup-by-IdP-subject (already conditional before).
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_user_trust_tenant_idp_subject "
-            f"ON {table} (tenant_id, idp_subject);"
-        )
+            f"ON {table} (tenant_id, idp_subject);",
+        ])
     apply_migrations(db, "kya_user_trust", migrations)
     db.commit()
 
