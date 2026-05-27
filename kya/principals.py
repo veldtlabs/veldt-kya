@@ -58,7 +58,6 @@ try:
     from sqlalchemy import (
         JSON,
         DateTime,
-        Index,
         Integer,
         String,
         Text,
@@ -267,24 +266,16 @@ if _HAS_SQLALCHEMY:
         )
 
         __table_args__ = (
-            Index(
-                "idx_kya_principal_trust_tenant_kind_score",
-                "tenant_id",
-                "principal_kind",
-                "trust_score",
-            ),
-            # Phase 4b NOTE: we deliberately do NOT add an index on
-            # (tenant_id, idp_subject). DuckDB has a documented
-            # limitation where any column included in any index
-            # (unique OR non-unique) cannot be assigned in an
-            # ON CONFLICT DO UPDATE statement — and our DuckDB-
-            # compatible bind path requires that operation. Without
-            # the index, lookup_principal_by_idp does a full table
-            # scan; acceptable at typical KYA scale (thousands of
-            # principals per tenant). Add a dialect-specific index
-            # later when DuckDB's index/UPDATE interaction relaxes,
-            # OR when a customer's principal count makes the scan
-            # expensive enough to justify a workaround.
+            # Phase 4d fix: the trust_score index and the
+            # idp_subject index are INTENTIONALLY OMITTED from
+            # __table_args__. DuckDB rejects UPDATE on any indexed
+            # column, which would break the ON CONFLICT DO UPDATE
+            # path that record_principal_signal uses. The indexes
+            # get added back conditionally for non-DuckDB dialects
+            # via ALTER TABLE in _apply_idp_binding_migrations()
+            # below. Without the index, DuckDB does a full-scan
+            # lookup; acceptable at typical KYA scale (thousands
+            # of principals per tenant).
         )
 
 
@@ -342,11 +333,18 @@ def _apply_idp_binding_migrations(db) -> None:
     # full-scan lookups (DuckDB is typically used analytical / smaller
     # working sets). PG / MySQL / SQLite get the indexed-lookup path.
     if dialect != "duckdb":
-        migrations.append(
+        migrations.extend([
+            # Tenant trust-distribution queries (rank principals
+            # by score). Phase 4d: lives here (conditional ALTER)
+            # instead of __table_args__ so DuckDB skips it.
+            f"CREATE INDEX IF NOT EXISTS "
+            f"idx_kya_principal_trust_tenant_kind_score "
+            f"ON {table} (tenant_id, principal_kind, trust_score);",
+            # Phase 4b lookup-by-IdP-subject.
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_principal_trust_tenant_idp_subject "
-            f"ON {table} (tenant_id, idp_subject);"
-        )
+            f"ON {table} (tenant_id, idp_subject);",
+        ])
     apply_migrations(db, "kya_principal_trust", migrations)
 
 

@@ -133,10 +133,14 @@ kya_user_trust = Table(
     Column("updated_at", DateTime(timezone=True),
            server_default=func.now(), nullable=False),
     UniqueConstraint("tenant_id", "user_id", name="uq_kya_user_trust_tenant_user"),
-    Index("idx_kya_user_trust_tenant_score", "tenant_id", "trust_score"),
-    # Phase 4b NOTE: idp_subject index intentionally omitted —
-    # DuckDB rejects ON CONFLICT DO UPDATE on any indexed column.
-    # Lookups by idp_subject scan; acceptable at typical scale.
+    # Phase 4d fix: the idx_kya_user_trust_tenant_score index
+    # (trust_score column) and the idp_subject index are
+    # INTENTIONALLY OMITTED from the Table() definition. DuckDB's
+    # ART index rejects UPDATE on any indexed column, which would
+    # break record_user_signal's INSERT ... ON CONFLICT DO UPDATE
+    # path. The indexes are added back conditionally for non-DuckDB
+    # dialects via ALTER TABLE in
+    # kya.users.ensure_user_trust_table().
 )
 
 
