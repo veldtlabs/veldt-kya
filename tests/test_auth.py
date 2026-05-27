@@ -288,12 +288,7 @@ def test_infer_idp_kind():
         ("https://acme.okta.com", "okta"),
         ("https://acme.okta-emea.com", "okta"),
         ("https://acme.us.auth0.com/", "auth0"),
-        # Legacy Keycloak (<= 16) and modern Keycloak (>= 17) URL shapes.
-        # The modern shape dropped the `/auth/` prefix in 2022; the
-        # real-IdP integration test caught the regression where this
-        # was inferred as "custom".
         ("https://keycloak.example.com/auth/realms/main", "keycloak"),
-        ("http://localhost:17080/realms/veldt-kya-test", "keycloak"),
         ("https://accounts.google.com", "google"),
         ("https://login.microsoftonline.com/...", "microsoft"),
         ("https://cognito-idp.us-east-1.amazonaws.com/x", "aws_cognito"),

@@ -79,13 +79,7 @@ def _infer_idp_kind(iss: str | None) -> str:
         return "okta"
     if "auth0.com" in s or "auth0.net" in s:
         return "auth0"
-    # Keycloak issuer paths:
-    #   /auth/realms/<name>   -- legacy (Keycloak <= 16)
-    #   /realms/<name>        -- modern (Keycloak >= 17, default since 2022)
-    # Both shapes detected here so the integration test against a
-    # current Keycloak doesn't fall back to idp_kind="custom".
-    if ("/auth/realms/" in s or "/realms/" in s
-            or "keycloak" in s):
+    if "/auth/realms/" in s or "keycloak" in s:
         return "keycloak"
     if "accounts.google.com" in s or "googleapis.com" in s:
         return "google"

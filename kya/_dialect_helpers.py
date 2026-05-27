@@ -89,39 +89,36 @@ def portable_upsert(
 
 
 def _duckdb_upsert_raw(db, table: Table, values: dict, conflict_cols, update_cols_map: dict):
-    """Portable upsert for DuckDB without the indexed-column restriction.
+    """Build a raw INSERT ... ON CONFLICT ... DO UPDATE for DuckDB.
 
-    DuckDB rejects `INSERT ... ON CONFLICT DO UPDATE SET c = ...`
-    whenever `c` is part of any UNIQUE/PRIMARY-KEY constraint OR a
-    regular index on the table. ``kya_user_trust`` has an index on
-    ``trust_score`` (for tenant trust-distribution queries), which
-    makes the indexed-column rule fatal for the obvious upsert form.
+    DuckDB syntax matches SQLite/PG (``ON CONFLICT (col,...) DO UPDATE
+    SET c = excluded.c``); the issue is purely in duckdb-engine's
+    SQLAlchemy compile path on the SQLite-style insert constructor.
 
-    Sidestep with **two statements** instead of `DO UPDATE`:
-
-      1) ``INSERT ... ON CONFLICT (cols) DO NOTHING``   -- DuckDB-legal
-         (DO NOTHING has no SET clause, so the indexed-column rule
-         doesn't apply)
-      2) ``UPDATE ... WHERE cols = ...``                -- plain UPDATE
-         is fine on indexed columns
-
-    Race semantics: two concurrent calls land like this --
-      tx A: INSERT (creates row), UPDATE (applies its merge)
-      tx B: INSERT no-op (conflict), UPDATE (applies its merge over A)
-    The second UPDATE overwrites the first. This is the same lost-
-    update window the original ON CONFLICT DO UPDATE had on the
-    ``signal_counts`` JSON merge -- both forms are SELECT-then-write
-    when read-modify-write is required (the caller pre-computes the
-    merged value in users.py). For high-contention DuckDB workloads,
-    the caller should also hold an in-process lock around the
-    select-merge-write block (record_principal_signal does this).
-
-    Sequence-backed autoincrement columns aren't auto-filled when
-    going through raw ``text()`` SQL (SA's Core insert handles that
-    via the column's default generator). We resolve them manually.
+    Sequence-backed autoincrement columns aren't auto-filled when going
+    through raw ``text()`` SQL (SA's Core insert handles that via the
+    column's default generator). We resolve them manually here.
     """
     values = dict(values)
-    conflict_cols_list = list(conflict_cols)
+    for col in table.columns:
+        if col.name in values:
+            continue
+        seq = col.default
+        seq_name = getattr(seq, "name", None) if seq is not None else None
+        if seq_name and col.primary_key:
+            values[col.name] = db.execute(
+                text(f"SELECT nextval('{seq_name}')")
+            ).scalar()
+
+    cols = list(values.keys())
+    col_list = ", ".join(cols)
+    placeholders = ", ".join(f":{c}" for c in cols)
+    conflict_list = ", ".join(conflict_cols)
+    if update_cols_map:
+        set_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols_map)
+        upsert_tail = f"ON CONFLICT ({conflict_list}) DO UPDATE SET {set_clause}"
+    else:
+        upsert_tail = f"ON CONFLICT ({conflict_list}) DO NOTHING"
 
     # Schema resolution must honor schema_translate_map — SQLAlchemy's
     # core/dialect insert constructors apply it automatically, but our
@@ -137,58 +134,8 @@ def _duckdb_upsert_raw(db, table: Table, values: dict, conflict_cols, update_col
     except Exception:  # pragma: no cover
         pass
     table_ref = f"{schema}.{table.name}" if schema else table.name
-
-    # Existence pre-check. duckdb-engine reports cursor.rowcount==0
-    # even when an UPDATE matched rows, so the "UPDATE-first then
-    # check rowcount" pattern is unreliable. Read the conflict-key
-    # row state explicitly with one extra SELECT.
-    exists_where = " AND ".join(
-        f"{c} = :where_{c}" for c in conflict_cols_list)
-    exists_params = {f"where_{c}": values[c]
-                     for c in conflict_cols_list}
-    exists = db.execute(
-        text(f"SELECT 1 FROM {table_ref} WHERE {exists_where} LIMIT 1"),
-        exists_params,
-    ).first()
-
-    if exists is not None:
-        # UPDATE path. Plain UPDATE on conflict-keyed rows is
-        # DuckDB-legal even when SET touches indexed columns.
-        if update_cols_map:
-            set_clause = ", ".join(
-                f"{c} = :set_{c}" for c in update_cols_map)
-            params: dict = {f"set_{c}": v
-                            for c, v in update_cols_map.items()}
-            params.update(exists_params)
-            update_sql = (
-                f"UPDATE {table_ref} SET {set_clause} "
-                f"WHERE {exists_where}"
-            )
-            return db.execute(text(update_sql), params)
-        return None  # caller passed no update_cols → no-op upsert
-
-    # INSERT path. Fill autoinc PK at the point of actual insertion
-    # so we don't burn sequence values on UPDATEs. No ON CONFLICT —
-    # the SELECT above proved the row is absent. Concurrent-write
-    # race is left to the caller's in-process lock (precedent: see
-    # record_principal_signal's _get_chain_lock pattern).
-    for col in table.columns:
-        if col.name in values:
-            continue
-        seq = col.default
-        seq_name = getattr(seq, "name", None) if seq is not None else None
-        if seq_name and col.primary_key:
-            values[col.name] = db.execute(
-                text(f"SELECT nextval('{seq_name}')")
-            ).scalar()
-
-    cols = list(values.keys())
-    col_list = ", ".join(cols)
-    placeholders = ", ".join(f":{c}" for c in cols)
-    insert_sql = (
-        f"INSERT INTO {table_ref} ({col_list}) VALUES ({placeholders})"
-    )
-    return db.execute(text(insert_sql), values)
+    sql = f"INSERT INTO {table_ref} ({col_list}) VALUES ({placeholders}) {upsert_tail}"
+    return db.execute(text(sql), values)
 
 
 def insert_returning_id(db, table: Table, values: dict, id_col: str = "id") -> int | None:
