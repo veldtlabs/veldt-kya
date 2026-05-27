@@ -166,10 +166,11 @@ for strangers on the internet.
 - **What:** `pip install veldt-kya[metrics]`, `[tracing]`, `[webhooks]`,
   `[judge]`, `[all]` all resolve and the gated imports actually wake up.
 - **Why:** extras are the contract surface for opt-in features; a
-  broken `[judge]` extra silently disables `llm_judge.py`.
+  broken `[judge]` extra silently disables the LLM-as-judge adapters
+  (`arize_phoenix` + `openai_judge` via litellm) in the orchestrator.
 - **Effort:** 30 min.
 - **Verify:** install each extra into a fresh venv, then
-  `python -c "from kya import llm_judge; llm_judge._available()"` etc.
+  `python -c "import litellm; from kya.scorer_orchestrator import register_phoenix_adapter; register_phoenix_adapter()"` etc.
 - **Done when:** every extra installs cleanly and unlocks the
   capability gate it claims to unlock.
 

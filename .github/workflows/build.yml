@@ -235,15 +235,24 @@ jobs:
               print("webhooks OK:", requests.__version__)
           - extra: judge
             verify: |
-              from kya import llm_judge
-              assert hasattr(llm_judge, "DEFAULT_JUDGE_MODEL")
-              print("judge OK:", llm_judge.DEFAULT_JUDGE_MODEL)
+              # kya.llm_judge was removed in the "KYA = governance,
+              # not detection" cleanup. The [judge] extra now exists
+              # to install litellm, which the multi-judge
+              # orchestrator's arize_phoenix + openai_judge adapters
+              # use via the scorer_orchestrator. Verify litellm is
+              # importable and the orchestrator can register Phoenix.
+              import litellm
+              from kya.scorer_orchestrator import (
+                  register_phoenix_adapter, list_judges)
+              register_phoenix_adapter()
+              assert "arize_phoenix" in list_judges()
+              print("judge OK: litellm + phoenix shim registered")
           - extra: all
             verify: |
               import prometheus_client
               from opentelemetry import trace
               import requests
-              from kya import llm_judge
+              import litellm
               print("all OK")
 
     steps:

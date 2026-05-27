@@ -62,6 +62,17 @@ TODO.md
 
 # Fiddler.ai integration tests + run results (use a live API key)
 examples/live_e2e_fiddler*.py
+examples/live_e2e_fiddler_pure_standalone*.py
 examples/live_e2e_multiagent_fiddler*.py
+examples/live_e2e_multijudge*.py
+examples/live_e2e_multiagent_multijudge*.py
+examples/live_e2e_three_way*.py
+examples/live_e2e_real_openai_plus_fiddler*.py
+examples/live_e2e_openclaw_6agents_complex*.py
+examples/live_e2e_openclaw_full_orchestration*.py
 .fiddler_test_results/
 *.fiddler_run.json
+
+# Fiddler + KYA integration validation documentation (live findings,
+# contains specific operational details + sample API responses).
+FIDDLER_KYA_VALIDATION_FINDINGS.md

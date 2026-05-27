@@ -103,12 +103,13 @@ EXPECTED_API = {
     "summarize_request",
     "list_recent_requests",
     "request_score",
-    # Fault attribution + LLM judge
+    # Fault attribution
     "DivergenceReport",
     "agent_divergence_score",
-    "JudgeResult",
-    "judge_alignment",
-    "judged_divergence",
+    # LLM-as-judge primitives removed in the "KYA = governance,
+    # not detection" cleanup. Customers using these directly should
+    # migrate to kya.scorer_orchestrator.check_consensus() with the
+    # arize_phoenix or openai_judge adapters.
     # Phoenix poll
     "PollResult",
     "poll_phoenix_evals",

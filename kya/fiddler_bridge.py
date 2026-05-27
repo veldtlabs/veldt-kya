@@ -68,6 +68,164 @@ _SAFETY_URL = f"{_FIDDLER_BASE}/ftl-safety"
 DEFAULT_FAITHFULNESS_THRESHOLD = 0.4   # below = potential hallucination
 DEFAULT_SAFETY_THRESHOLD = 0.5         # above ANY dimension = unsafe
 
+
+# ── Refusal detector ──────────────────────────────────────────────
+#
+# Live integration testing surfaced a real false-positive in Fiddler's
+# faithfulness model: a properly-refusing agent ("the context does
+# not provide that information") scores LOW because its response
+# contains few grounded claims. The model can't distinguish:
+#   (a) "I invented something not in the context"   <-- bad
+#   (b) "I correctly said the context doesn't say"  <-- good
+# Both produce low-claim responses.
+#
+# Without compensation, KYA + Fiddler would BLOCK well-behaved RAG
+# agents in production. This detector identifies the refusal pattern
+# and lets verify_jwt_svid downgrade the breach severity.
+
+_REFUSAL_PHRASES = (
+    "context does not provide",
+    "context doesn't provide",
+    "context does not contain",
+    "context doesn't contain",
+    "context does not cover",
+    "context doesn't cover",
+    "i don't have information",
+    "i do not have information",
+    "i don't have enough information",
+    "i do not have enough information",
+    "no information about",
+    "no information regarding",
+    "the provided context",
+    "based on the context provided",
+    "i cannot find",
+    "i can't find",
+    "i am unable to find",
+    "i'm unable to find",
+    "not mentioned in",
+    "is not specified",
+    "isn't specified",
+    "the information is not available",
+)
+
+
+def is_likely_refusal(response_text: str) -> bool:
+    """Return True if the response looks like a legitimate refusal to
+    answer rather than a hallucination or empty response.
+
+    Conservative substring matching against a hand-curated list of
+    refusal phrases. Cheap (no LLM call). For ambiguous cases use
+    `llm_judge_refusal_or_hallucination()` below.
+
+    Edge cases:
+    - Empty or non-str returns False (not a refusal -- could be a
+      tool-call response or a programming error)
+    - Case-insensitive matching
+    - Conservative on the false-negative side: we'd rather miss a
+      refusal (and let Fiddler's BREACH stand) than misclassify a
+      hallucination (and let it pass).
+    """
+    if not isinstance(response_text, str) or not response_text.strip():
+        return False
+    lower = response_text.lower()
+    return any(phrase in lower for phrase in _REFUSAL_PHRASES)
+
+
+# ── LLM-judge second-pass (Bayesian-ish consensus) ─────────────────
+
+
+_LLM_JUDGE_PROMPT = """\
+You are evaluating an AI agent's response to determine whether it is
+a HALLUCINATION (inventing facts not present in the context) or a
+REFUSAL (correctly declining to invent because the context lacks
+the requested information).
+
+CONTEXT (what the agent was given to ground its answer):
+\"\"\"
+{context}
+\"\"\"
+
+AGENT RESPONSE:
+\"\"\"
+{response}
+\"\"\"
+
+Reply with EXACTLY one word on its own line:
+- HALLUCINATION  -- the response asserts facts not supported by the context
+- REFUSAL        -- the response correctly indicates the context lacks the info
+- UNCLEAR        -- you cannot confidently decide
+"""
+
+
+def llm_judge_refusal_or_hallucination(
+    response_text: str,
+    context: str,
+    *,
+    model: str = "gpt-4o-mini",
+    timeout_seconds: float = 8.0,
+) -> str | None:
+    """Use an LLM as a SECOND independent judge to disambiguate
+    refusal-shaped responses from hallucinations.
+
+    Returns one of: 'HALLUCINATION', 'REFUSAL', 'UNCLEAR', or None
+    when the LLM call fails (network, no key, etc.). None means
+    "second-pass unavailable" -- callers should fall back to
+    whatever the primary scorer said.
+
+    Architecturally: this is KYA acting as a META-SCORER. Fiddler
+    is one judge. This LLM is another. If they agree -> high
+    confidence. If they disagree -> the multi-judge consensus is
+    "don't block on a single weak signal."
+    """
+    if not isinstance(response_text, str) or not response_text.strip():
+        return None
+    if not isinstance(context, str) or not context.strip():
+        return None
+
+    # Route through litellm so the second-pass is PROVIDER-AGNOSTIC.
+    # The same code works against OpenAI, Anthropic, Groq, Azure
+    # OpenAI, local Ollama, etc. -- customers swap the model via env:
+    #     KYA_FAITH_JUDGE_MODEL=anthropic/claude-3-haiku
+    #     KYA_FAITH_JUDGE_MODEL=groq/llama-3.3-70b-versatile
+    #     KYA_FAITH_JUDGE_MODEL=gpt-4o-mini  (default)
+    # litellm reads the corresponding provider API key from env
+    # (OPENAI_API_KEY / ANTHROPIC_API_KEY / GROQ_API_KEY / etc.).
+    try:
+        from litellm import completion as litellm_completion
+    except ImportError:
+        logger.debug("[KYA-FIDDLER] litellm not installed -- "
+                     "second-pass unavailable. Install with: "
+                     "pip install kya[judge]")
+        return None
+
+    judge_model = os.environ.get("KYA_FAITH_JUDGE_MODEL", model)
+    try:
+        resp = litellm_completion(
+            model=judge_model,
+            messages=[{
+                "role": "user",
+                "content": _LLM_JUDGE_PROMPT.format(
+                    context=context, response=response_text),
+            }],
+            temperature=0,
+            timeout=timeout_seconds,
+            max_tokens=10,
+        )
+        verdict = resp.choices[0].message.content.strip().upper()
+        # Tolerate punctuation / prose around the keyword.
+        for kw in ("HALLUCINATION", "REFUSAL", "UNCLEAR"):
+            if kw in verdict:
+                return kw
+        return "UNCLEAR"
+    except Exception as exc:
+        # Provider key missing, network error, rate limit, etc. --
+        # we treat ALL of these as "second-pass unavailable" so the
+        # orchestrator's other judges keep working.
+        logger.debug(
+            "[KYA-FIDDLER] llm-judge second-pass failed (%s): %s",
+            judge_model, exc)
+        return None
+
 # The 11 safety dimensions Fiddler scores per request. Names taken
 # VERBATIM from their docs + live API response (verified 2026-05-26).
 # Note `fdl_harassing` (not "harassment") -- the live API returns
@@ -153,6 +311,18 @@ def check_faithfulness(
     breached = (isinstance(score, (int, float))
                 and float(score) < float(threshold))
 
+    # This function is a THIN ADAPTER over Fiddler's faithfulness
+    # API. It returns Fiddler's verdict, no consensus, no overrides.
+    #
+    # The previous in-core intra-call consensus (refusal heuristic +
+    # LLM second-pass) was removed in the "KYA = governance, not
+    # detection" cleanup. False-positive protection now comes from
+    # the multi-judge orchestrator (kya.scorer_orchestrator.
+    # check_consensus), which runs Fiddler alongside arize_phoenix,
+    # openai_judge, refusal_heuristic, etc. and downgrades single-
+    # judge errors via consensus. Customers who want false-positive
+    # protection should use the orchestrator, not this function
+    # directly. See CHANGELOG.
     result = {
         "endpoint": "faithfulness",
         "fdl_faithful_score": score,
@@ -160,11 +330,16 @@ def check_faithfulness(
         "breached": breached,
         "raw": body,
     }
+    # Faithfulness BREACH = the agent's OUTPUT was ungrounded /
+    # misaligned. That's the agent's fault, so emit the dimension-
+    # specific signal `hallucination_detected` (delta -5). See
+    # kya.scorer_orchestrator._DIMENSION_TO_SIGNAL for the routing
+    # table; SIGNAL_DELTAS for the magnitudes.
     _maybe_record(
         result,
         db=db, tenant_id=tenant_id, principal_kind=principal_kind,
         principal_id=principal_id, invocation_id=invocation_id,
-        signal_kind="policy_violation",
+        signal_kind="hallucination_detected",
     )
     return result
 
@@ -240,11 +415,18 @@ def check_safety(
         "scores": {k: body.get(k) for k in _SAFETY_KEYS},
         "raw": body,
     }
+    # Safety BREACH on INPUT means the agent RECEIVED an attack
+    # (jailbreak / abuse / adversarial prompt). The agent may have
+    # refused correctly -- recording heavy `policy_violation` against
+    # the agent here punishes it for being attacked. Emit the lighter
+    # `received_attack` signal (delta -1) so attack exposure is
+    # tracked in analytics without cratering the agent's trust on
+    # the first hostile input it sees.
     _maybe_record(
         result,
         db=db, tenant_id=tenant_id, principal_kind=principal_kind,
         principal_id=principal_id, invocation_id=invocation_id,
-        signal_kind="policy_violation",
+        signal_kind="received_attack",
     )
     return result
 

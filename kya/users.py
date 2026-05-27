@@ -100,6 +100,21 @@ SIGNAL_DELTAS = {
     # Phase 5a — nonce replay attempt. Strong abuse signal — a legit
     # client never replays nonces. Trust hit close to data_leak.
     "replay_detected": -8,
+    # Multi-judge orchestrator signals (kya.scorer_orchestrator). These
+    # map from per-dimension consensus BREACHes -- see
+    # `_DIMENSION_TO_SIGNAL` in scorer_orchestrator.py.
+    #
+    # received_attack: input safety judges flagged the USER INPUT as
+    # hostile (jailbreak / abuse). The agent may have refused
+    # correctly -- this is NOT necessarily the agent's fault. Light
+    # decay so repeated attack exposure surfaces in analytics + slow
+    # trust drift, without punishing an agent for being attacked.
+    "received_attack": -1,
+    # hallucination_detected: faithfulness judges agreed the response
+    # was ungrounded or misaligned. Real violation against the
+    # responding agent, but softer than policy_violation since "did
+    # not cite context" is less severe than "leaked PII".
+    "hallucination_detected": -5,
     # Synthetic "clean run" — small upward bump for cooperative usage
     "clean_invocation": +1,
 }

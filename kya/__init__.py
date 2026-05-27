@@ -156,15 +156,11 @@ from .invocations import (
     record_invocation,
 )
 from .lifecycle import approval_weight, lifecycle_weight, ownership_weight
-from .llm_judge import (
-    VALID_DIVERGENCE_KINDS,
-    JudgeResult,
-    judge_alignment,
-    judged_divergence,
-)
-from .llm_judge import (
-    is_enabled as llm_judge_enabled,
-)
+# kya.llm_judge removed in the "KYA = governance, not detection"
+# cleanup. Customers wanting an LLM-as-judge for faithfulness should
+# use kya.scorer_orchestrator.check_consensus() with the
+# arize_phoenix or openai_judge adapters (both via litellm), or
+# plug in their own via register_judge(). See CHANGELOG.
 from .phoenix_poll import (
     PollResult,
     poll_phoenix_evals,
@@ -657,12 +653,10 @@ __all__ = [
     # Priority 4 — fault attribution heuristic (per-agent divergence)
     "DivergenceReport",
     "agent_divergence_score",
-    # Round 15 — LLM-judge for fault attribution (anti-hallucination guards)
-    "JudgeResult",
-    "VALID_DIVERGENCE_KINDS",
-    "llm_judge_enabled",
-    "judge_alignment",
-    "judged_divergence",
+    # Round 15 — LLM-judge for fault attribution: REMOVED in
+    # "KYA = governance, not detection" cleanup. Use
+    # kya.scorer_orchestrator.check_consensus() with arize_phoenix
+    # or openai_judge adapters instead.
     # Round 16 — Phoenix evaluator polling
     "PollResult",
     "phoenix_poll_enabled",

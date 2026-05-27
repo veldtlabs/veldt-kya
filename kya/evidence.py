@@ -153,6 +153,9 @@ VALID_EVIDENCE_KINDS = {
     "delegation_message",  # agent-to-agent message
     "hil_decision",  # human approval/rejection
     "system_message",  # framework/system context
+    "judge_verdict",  # multi-judge orchestrator per-judge verdict
+                      # (kya.scorer_orchestrator). Carries judge_name,
+                      # dimension, verdict, score, latency, detail.
 }
 
 # Retention defaults per regime (days). Used when caller doesn't supply
