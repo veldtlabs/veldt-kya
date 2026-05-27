@@ -30,7 +30,8 @@ Network errors / timeouts / malformed responses → AttackerCallResult with
 caller-side (the orchestrator might want to back off on a specific scorer
 threshold, not blindly retry).
 
-Reuses the routing logic from kya.llm_judge:
+Provider routing (modeled after the older kya.llm_judge, which was
+removed in the "KYA = governance, not detection" cleanup):
 - Multi-provider via LiteLLM (Anthropic / OpenAI / Groq / OpenRouter / etc.)
 - Fallback chain when the primary model's key is missing
 - OpenRouter routing for native-key absence

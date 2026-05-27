@@ -1,0 +1,32 @@
+# Prompt-injection followed by tool action.
+#
+# An agent receives a prompt that scores high on Fiddler's roleplaying
+# / jailbreaking dimensions (or KYA's llm_judge flags it as injection),
+# then proceeds to execute a sensitive tool call. The chain catches
+# agents that "fall for" injection -- by detecting the suspicious
+# prompt + the resulting tool call within a short window.
+version: 1
+id: prompt_injection_then_action
+description: |
+  External alert flags a prompt as a likely injection attempt
+  (roleplaying / jailbreaking score over threshold), then the
+  agent executes ANY tool call within 30 seconds. The injection
+  may have succeeded -- block any sensitive action.
+severity: high
+emits_signal: rogue_post_injection_action
+correlate_by: [tenant_id, principal_id]
+window_seconds: 60
+steps:
+  - id: injection_detected
+    evidence_kind: external_alert
+    match:
+      payload.source: fiddler.ai
+      payload.endpoint: safety
+      payload.breached: true
+  - id: tool_executed
+    evidence_kind: tool_call
+    after: injection_detected
+    within_seconds: 30
+metadata:
+  mitre_attack: [T1059]
+  tags: [prompt_injection, defense_evasion]

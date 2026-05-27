@@ -1,0 +1,30 @@
+# Arize Phoenix server -- run locally for LLM observability + evals.
+#
+#   docker compose -f docker-compose.phoenix.yml up -d
+#
+# Then visit http://localhost:6006 for the UI. Phoenix's OpenInference
+# tracing endpoint is at http://localhost:6006/v1/traces. The
+# scorer_orchestrator's phoenix adapter calls llm_classify() against
+# this server (or against OpenAI directly via phoenix.evals, when the
+# Python library is also installed).
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: kya-phoenix
+    restart: unless-stopped
+    ports:
+      # Phoenix UI + OTLP endpoint
+      - "6006:6006"
+      # gRPC OTLP receiver
+      - "4317:4317"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+      # If you want to point Phoenix at an LLM for its evals (rather
+      # than running the orchestrator-side LLM eval), set:
+      #   OPENAI_API_KEY: ...
+    volumes:
+      - phoenix-data:/mnt/data
+
+volumes:
+  phoenix-data:

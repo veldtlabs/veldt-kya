@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "veldt-kya"
-version = "0.1.0rc2"
+version = "0.1.0rc3"
 description = "KYA — Know Your Agents. Trust + governance + risk scoring for any autonomous system (LLM agent, lakehouse job, AutoML pipeline, RPA bot)."
 readme = "README.md"
 # Apache-2.0 chosen for:
@@ -57,12 +57,70 @@ metrics  = ["prometheus_client>=0.20"]
 tracing  = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 webhooks = ["requests>=2.31"]
 judge    = ["litellm>=1.55"]
+# attack_chains is the YAML-rule DSL (kya/attack_chains). The loader
+# fails-soft when PyYAML is missing -- programmatic dict-form rules
+# still work. Install this extra for YAML rule files.
+attack_chains = ["pyyaml>=6.0"]
+# Presidio PII detector (opt-in scorer_orchestrator adapter).
+# kya/scorers_presidio.py uses Presidio's pattern-based
+# recognizers DIRECTLY without spaCy/NLP -- so the only runtime
+# dep is presidio-analyzer itself (lightweight). Customers who
+# want NLP-backed person/location detection layer their own
+# adapter on top of presidio-analyzer's full AnalyzerEngine.
+# Version pins cap upper-major to protect against API-breaking
+# upstream releases. Customers can override by `pip install
+# presidio-analyzer==X.Y.Z` outside the extra; the adapter
+# already catches API mismatches at runtime and returns
+# verdict="ERROR" for that judge while the rest keep voting.
+# presidio-analyzer transitively pulls in spaCy (its NLP engine
+# substrate), and spaCy's CLI module imports `click` at module load
+# without declaring it as a hard dep. Pin click explicitly so a fresh
+# `pip install kya[presidio]` doesn't error on import.
+presidio = [
+    "presidio-analyzer>=2.2,<3",
+    "click>=8.1",
+]
+# Recommended starter pack for the multi-judge orchestrator. Each
+# package here is INDEPENDENT -- if one fails to install in a
+# constrained environment, the customer can drop that extra and
+# install the others one at a time:
+#   pip install kya[presidio]   # PII judge only
+#   pip install kya[judge]      # LLM judges only
+# `register_available_adapters()` registers whichever extras the
+# environment has, gracefully skipping the rest.
+recommended = [
+    "presidio-analyzer>=2.2,<3",   # kya_presidio (PII)
+    "click>=8.1",                  # transitive: spaCy CLI needs it
+    # litellm covers ALL the LLM judges in the panel:
+    #   - arize_phoenix       (Phoenix prompt template shim)
+    #   - openai_judge        (faithfulness refusal-vs-hallucination
+    #                          via fiddler_bridge.llm_judge_*;
+    #                          provider-agnostic via
+    #                          KYA_FAITH_JUDGE_MODEL env var)
+    # Customers don't need provider-specific SDKs (openai, anthropic)
+    # -- litellm routes by model string. They just set the
+    # corresponding API key in env (OPENAI_API_KEY /
+    # ANTHROPIC_API_KEY / GROQ_API_KEY / etc.).
+    "litellm>=1.55,<2",
+]
+# Full opt-in panel including frameworks that need installation but
+# no API keys. Does NOT include lakera_guard / nemo_guardrails --
+# those require commercial licenses or hand-written config files
+# that the install can't satisfy automatically.
+all_judges = [
+    "presidio-analyzer>=2.2,<3",
+    "click>=8.1",                  # transitive: spaCy CLI needs it
+    "litellm>=1.55,<2",
+    "langkit",
+]
 all      = [
     "prometheus_client>=0.20",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
     "requests>=2.31",
     "litellm>=1.55",
+    "pyyaml>=6.0",
+    "presidio-analyzer>=2.2",
 ]
 
 [project.urls]
