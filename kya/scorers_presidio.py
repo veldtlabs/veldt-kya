@@ -71,13 +71,28 @@ Examples:
     register_presidio_adapter(
         entities=["CREDIT_CARD", "US_BANK_NUMBER", "IBAN_CODE"])
 
-Lightweight design
-------------------
-We use Presidio's PATTERN-BASED recognizers directly, NOT the
-`AnalyzerEngine` with spaCy NLP. This avoids the ~50MB spaCy model
-dependency. The tradeoff: we catch STRUCTURED PII (SSN, CC, IBAN,
-email, phone, passport, medical license, bank account, IP, ITIN)
-but not free-text names/locations.
+Lightweight design (honest version)
+-----------------------------------
+We use Presidio's PATTERN-BASED recognizers and skip the NLP path
+(`nlp_artifacts=None` on every call). That avoids the spaCy MODEL
+download (~12-50MB depending on model) and the per-call NLP
+processing latency.
+
+What we DON'T avoid: presidio-analyzer's package layout imports
+spaCy at module load -- the `presidio_analyzer` package itself
+pulls in spacy + thinc + spacy-legacy + spacy-loggers transitively
+(~50MB of NLP runtime). There's no way to use Presidio's
+predefined_recognizers without that import chain firing.
+
+So "lightweight" means: no model download, no NLP processing
+latency, no spaCy CONFIG (en_core_web_sm etc.) required. But the
+spaCy PACKAGE has to be installable. The `[presidio]` extra
+includes click explicitly because spaCy's CLI module imports click
+without declaring it as a hard dep (upstream packaging bug).
+
+Tradeoff: we catch STRUCTURED PII (SSN, CC, IBAN, email, phone,
+passport, medical license, bank account, IP, ITIN) but not
+free-text names/locations.
 
 For free-text PERSON/LOCATION detection, customers can register a
 separate adapter on top of Presidio's full AnalyzerEngine.

@@ -10,10 +10,7 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 from kya.input_attack_patterns import scan
-
 
 # ── Encoded payload tests ─────────────────────────────────────────
 
@@ -315,7 +312,8 @@ def test_judge_runs_via_check_consensus():
     and the new judge correctly votes BREACH in the input_safety
     pool."""
     from kya.scorer_orchestrator import (
-        check_consensus, _JUDGES,
+        _JUDGES,
+        check_consensus,
     )
     # Filter to JUST this judge so we don't fire Fiddler / OpenAI
     # in unit tests.

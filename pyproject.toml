@@ -72,7 +72,14 @@ attack_chains = ["pyyaml>=6.0"]
 # presidio-analyzer==X.Y.Z` outside the extra; the adapter
 # already catches API mismatches at runtime and returns
 # verdict="ERROR" for that judge while the rest keep voting.
-presidio = ["presidio-analyzer>=2.2,<3"]
+# presidio-analyzer transitively pulls in spaCy (its NLP engine
+# substrate), and spaCy's CLI module imports `click` at module load
+# without declaring it as a hard dep. Pin click explicitly so a fresh
+# `pip install kya[presidio]` doesn't error on import.
+presidio = [
+    "presidio-analyzer>=2.2,<3",
+    "click>=8.1",
+]
 # Recommended starter pack for the multi-judge orchestrator. Each
 # package here is INDEPENDENT -- if one fails to install in a
 # constrained environment, the customer can drop that extra and
@@ -83,6 +90,7 @@ presidio = ["presidio-analyzer>=2.2,<3"]
 # environment has, gracefully skipping the rest.
 recommended = [
     "presidio-analyzer>=2.2,<3",   # kya_presidio (PII)
+    "click>=8.1",                  # transitive: spaCy CLI needs it
     # litellm covers ALL the LLM judges in the panel:
     #   - arize_phoenix       (Phoenix prompt template shim)
     #   - openai_judge        (faithfulness refusal-vs-hallucination
@@ -101,6 +109,7 @@ recommended = [
 # that the install can't satisfy automatically.
 all_judges = [
     "presidio-analyzer>=2.2,<3",
+    "click>=8.1",                  # transitive: spaCy CLI needs it
     "litellm>=1.55,<2",
     "langkit",
 ]

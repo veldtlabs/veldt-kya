@@ -42,9 +42,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -512,7 +512,11 @@ def register_langkit_adapter() -> None:
 
     NOT registered by default."""
     try:
-        from langkit import extract, response_consistency, sentiment
+        # response_consistency + sentiment imports are availability
+        # probes -- importing them triggers langkit's extractor
+        # registration as a side effect. ruff would flag them as
+        # unused; the import IS the use.
+        from langkit import extract, response_consistency, sentiment  # noqa: F401
         from langkit.injections import init as injections_init
         injections_init()
     except ImportError as exc:
@@ -1057,11 +1061,7 @@ def signals_from_consensus(
     """
     out: list[tuple[str, str]] = []
     for dim, dc in result.per_dimension.items():
-        if dc.consensus == "BREACH":
-            kind = _DIMENSION_TO_SIGNAL.get(dim)
-            if kind:
-                out.append((kind, dim))
-        elif dc.consensus == "SPLIT" and on_split == "treat_as_breach":
+        if dc.consensus == "BREACH" or dc.consensus == "SPLIT" and on_split == "treat_as_breach":
             kind = _DIMENSION_TO_SIGNAL.get(dim)
             if kind:
                 out.append((kind, dim))

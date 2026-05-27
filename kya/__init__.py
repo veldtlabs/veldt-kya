@@ -156,6 +156,7 @@ from .invocations import (
     record_invocation,
 )
 from .lifecycle import approval_weight, lifecycle_weight, ownership_weight
+
 # kya.llm_judge removed in the "KYA = governance, not detection"
 # cleanup. Customers wanting an LLM-as-judge for faithfulness should
 # use kya.scorer_orchestrator.check_consensus() with the

@@ -8,20 +8,19 @@ without OpenAI / Fiddler / Phoenix calls.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import pytest
 
 from kya.scorer_orchestrator import (
+    _DIMENSION_TO_SIGNAL,
+    _JUDGES,
     JudgeResult,
     check_consensus,
     list_judges,
     register_judge,
     signals_from_consensus,
-    _DIMENSION_TO_SIGNAL,
-    _JUDGES,
 )
-
 
 # ── Test infrastructure ───────────────────────────────────────────
 
@@ -309,9 +308,9 @@ def test_register_available_adapters_swallows_unexpected_errors(monkeypatch):
     """If a registrar raises something unexpected, the dx helper
     should NOT take down the rest of the panel. raise_on_error=False
     is the default."""
-    from kya.scorer_orchestrator import register_available_adapters
     # Patch one registrar to blow up
     import kya.scorer_orchestrator as orch
+    from kya.scorer_orchestrator import register_available_adapters
 
     def boom():
         raise ValueError("simulated upstream API drift")
@@ -340,9 +339,10 @@ def test_register_available_adapters_raise_on_error_when_requested(
     """raise_on_error=True surfaces unexpected exceptions to the
     caller so bootstrapping issues fail loudly. The 'expected'
     skips (ImportError, missing key) are still swallowed."""
-    from kya.scorer_orchestrator import register_available_adapters
-    import kya.scorer_orchestrator as orch
     import pytest as _pytest
+
+    import kya.scorer_orchestrator as orch
+    from kya.scorer_orchestrator import register_available_adapters
 
     def boom():
         raise ValueError("simulated upstream API drift")
