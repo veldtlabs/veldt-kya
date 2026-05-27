@@ -19,6 +19,10 @@ notifications (NYDFS, DORA, GDPR, HIPAA).
 Observability tools tell you when an agent is *slow*. KYA tells you when
 an agent is *wrong, drifting, leaking, or quietly going rogue.*
 
+> Framework paper (preprint): [KYA: A Framework-Agnostic Trust Layer for
+> Autonomous Systems with Verifiable Provenance and Hierarchical Policy
+> Composition](https://arxiv.org/abs/2605.25376) — Quadri (2026).
+
 ## Quick start
 
 ```python
@@ -137,16 +141,33 @@ except AccessDeniedError:
     ...   # agent's trust fell below 45 -- auto-block, no operator needed
 ```
 
-**6 judges auto-register** from the core install (no extras):
-Fiddler safety + faithfulness, `openai_judge`, `refusal_heuristic`,
-`kya_pyrit` (data-leak), `kya_attack_patterns` (7 categories:
-encoded payloads, exfil paths, indirect injection, PII smuggling,
-role hijack, authority claims, external redirects).
+The orchestrator's default panel splits into three honest tiers
+so you can tell what works out of the box vs what needs setup:
 
-**+2 opt-in judges** via `pip install kya[recommended]`:
-`kya_presidio` (Presidio PII, tunable) + `arize_phoenix` (Phoenix
-hallucination methodology via litellm). Customers plug in their
-own with `register_judge(name, fn)`.
+**Bundled (no setup, works after `pip install veldt-kya`):**
+`openai_judge` (uses your existing `OPENAI_API_KEY` if set),
+`refusal_heuristic` (substring detection, no API call),
+`kya_pyrit` (output data-leak scanning), `kya_attack_patterns`
+(7 categories: encoded payloads, exfil paths, indirect injection,
+PII smuggling, role hijack, authority claims, external redirects).
+
+**Optional extras (one install command, no external service):**
+`kya_presidio` (PII detector, tunable: entities / threshold /
+min-findings) via `pip install veldt-kya[presidio]`. `arize_phoenix`
+(hallucination-methodology judge via litellm) via
+`pip install veldt-kya[recommended]`.
+
+**BYOC bridges (Bring Your Own Cloud — wraps an existing paid
+account):** `fiddler_safety` and `fiddler_faithfulness` adapt your
+Fiddler Guardrails account into the panel; both require
+`FIDDLER_API_KEY` in env. If you don't have an account these
+judges no-op, the rest of the panel keeps voting, and the
+orchestrator's consensus stays defensible. The same bucket is
+where future commercial-guardrail bridges land — KYA orchestrates
+above the service rather than replacing it.
+
+Customers plug in their own judges (SQL-aware policy engines,
+internal red-team scorers, etc.) via `register_judge(name, fn)`.
 
 Signal routing is dimension-correct: `input_safety` → `received_attack`
 (-1, agent was attacked but may have refused), `safety` →
