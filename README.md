@@ -19,6 +19,10 @@ notifications (NYDFS, DORA, GDPR, HIPAA).
 Observability tools tell you when an agent is *slow*. KYA tells you when
 an agent is *wrong, drifting, leaking, or quietly going rogue.*
 
+> Framework paper (preprint): [KYA: A Framework-Agnostic Trust Layer for
+> Autonomous Systems with Verifiable Provenance and Hierarchical Policy
+> Composition](https://arxiv.org/abs/2605.25376) — Quadri (2026).
+
 ## Quick start
 
 ```python
