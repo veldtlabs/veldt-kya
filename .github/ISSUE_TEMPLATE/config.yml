@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Ask a question / discuss an idea
+    url: https://github.com/veldtlabs/veldt-kya/discussions
+    about: For open-ended questions, design discussions, or "how do I do X with KYA?" — please use Discussions, not Issues.
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/veldtlabs/veldt-kya/security/advisories/new
+    about: Use GitHub Security Advisories (private). Do not open a public issue for vulnerabilities. See SECURITY.md.
+  - name: 📄 Read the paper (arXiv 2605.25376)
+    url: https://arxiv.org/abs/2605.25376
+    about: KYA's primitives, threat model, and limitations are documented in the paper.
+  - name: 📦 Install from PyPI
+    url: https://pypi.org/project/veldt-kya/
+    about: pip install veldt-kya
