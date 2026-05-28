@@ -16,6 +16,7 @@ Thanks for contributing. Fill out the sections below.
 ## Checklist
 
 - [ ] Tests added or updated; `pytest` passes locally
+- [ ] Tested against at least one of: PostgreSQL / MySQL / SQLite / DuckDB
 - [ ] `CHANGELOG.md` entry added under `## Unreleased`
 - [ ] Docs / docstrings updated if public surface changed
 - [ ] No new mandatory runtime deps in `kya` core (new deps belong in optional extras)
