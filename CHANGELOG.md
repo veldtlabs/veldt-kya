@@ -76,3 +76,54 @@ Initial public release on PyPI.
 
 ### License
 Apache-2.0. © 2026 Veldt Labs Inc.
+
+## [0.1.1] — 2026-05-27
+
+### Changed
+- **PyPI package description** — expanded summary to "KYA — Know Your Agent +
+  Know Your Principal. Open control plane for trust + governance of autonomous
+  systems (LLM agents, multi-agent systems, agentic RAG, autonomous SQL,
+  AutoML, RPA bots, service accounts)." Surfaces KYP as the primary
+  differentiator and matches the search terms practitioners actually use.
+- **README judge section** — restructured into three honest buckets so
+  first-time installers have accurate expectations:
+  - *Bundled* (zero setup, works after `pip install veldt-kya`):
+    `openai_judge`, `refusal_heuristic`, `kya_pyrit`, `kya_attack_patterns`.
+  - *Optional extras* (one install command, no external service):
+    `kya_presidio` via `[presidio]`; `arize_phoenix` via `[recommended]`.
+  - *BYOC bridges* (wrap an existing paid account — no-op without credentials):
+    `fiddler_safety` + `fiddler_faithfulness` require `FIDDLER_API_KEY`.
+
+### Added
+- **arXiv preprint link** in README — points to the framework paper
+  "KYA: A Framework-Agnostic Trust Layer for Autonomous Systems with
+  Verifiable Provenance and Hierarchical Policy Composition" (Quadri, 2026,
+  arXiv:2605.25376).
+
+## [0.1.2] — 2026-05-27
+
+### Added
+- **`min_trust` kwarg on `require_action`** — `kya.rbac.require_action(...,
+  min_trust=N)` now gates access on principal trust score in addition to the
+  RBAC grant check. Trust ≥ `min_trust` allows; trust below threshold raises
+  `AccessDeniedError` with reason `"trust_below_threshold"`. Unseen principals
+  default to `STARTING_TRUST` (50). `min_trust=None` is a no-op (backward
+  compatible). Emits distinct security-event reasons so SOC tooling can
+  separate RBAC misses from trust-decay blocks. 14 new test cases; 33/33 rbac
+  tests pass.
+
+### Fixed
+- **Cross-backend `prov_schema` in raw SQL** — several public-API primitives
+  (`get_user_trust`, `list_user_trust`, `summarize_request`,
+  `list_recent_requests`, `agent_divergence_score`,
+  `migrate_principals_for_aliases`) hardcoded `prov_schema.kya_*` in raw
+  `text()` SQL strings that SQLAlchemy's `schema_translate_map` does not
+  rewrite. Introduced `kya._portable.qual_for_raw_sql()` (returns `"prov_schema."` on
+  PostgreSQL, `""` elsewhere) and routed all affected queries through it.
+  Fixes silent breakage on SQLite, DuckDB, and MySQL. `migrate_principals_for_aliases`
+  now returns an explicit `skipped_reason` on non-PostgreSQL backends.
+  10 new cross-backend regression tests; 618 tests pass repo-wide.
+
+[0.1.0]: https://github.com/veldtlabs/veldt-kya/releases/tag/v0.1.0
+[0.1.1]: https://github.com/veldtlabs/veldt-kya/releases/tag/v0.1.1
+[0.1.2]: https://github.com/veldtlabs/veldt-kya/releases/tag/v0.1.2
