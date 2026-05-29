@@ -258,15 +258,26 @@ class AttackChainEngine:
                 self.state_store.delete(rule.id, correlate_key)
             return False
 
-        # Per-step `within_seconds` check vs `after` predecessor.
-        if next_step.after is not None and next_step.within_seconds:
-            after_idx = next(
-                (i for i, s in enumerate(rule.steps)
-                 if s.id == next_step.after),
-                None)
-            if (after_idx is not None
-                    and after_idx < len(existing.steps_ts)):
-                gap = now_ts - existing.steps_ts[after_idx]
+        # Per-step `within_seconds` check vs the `after` predecessors.
+        # ``after`` is now always a tuple (the loader normalises). For
+        # an AND-join (multiple prerequisites), measure from the LATEST
+        # predecessor's completion -- that's the tightest window the
+        # operator could have meant. Empty tuple = no prerequisite,
+        # so the time window is meaningless and we skip it.
+        if next_step.after and next_step.within_seconds:
+            latest_pred_ts: float | None = None
+            for prior_step_id in next_step.after:
+                after_idx = next(
+                    (i for i, s in enumerate(rule.steps)
+                     if s.id == prior_step_id),
+                    None)
+                if (after_idx is not None
+                        and after_idx < len(existing.steps_ts)):
+                    ts = existing.steps_ts[after_idx]
+                    if latest_pred_ts is None or ts > latest_pred_ts:
+                        latest_pred_ts = ts
+            if latest_pred_ts is not None:
+                gap = now_ts - latest_pred_ts
                 if gap > next_step.within_seconds:
                     # Step matched the field spec but the time window
                     # closed -- this is a partial-match abort.
