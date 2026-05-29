@@ -263,6 +263,14 @@ roadmap:
   v1 enforces pairwise parent-child ceilings (the Liang-2025
   topology-attack defense).
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a full history of changes.
+
+- [v0.1.2](https://github.com/veldtlabs/veldt-kya/releases/tag/v0.1.2) — Bugfixes and packaging improvements
+- [v0.1.1](https://github.com/veldtlabs/veldt-kya/releases/tag/v0.1.1) — Post-launch fixes and documentation updates
+- [v0.1.0](https://github.com/veldtlabs/veldt-kya/releases/tag/v0.1.0) — Initial public release on PyPI
+
 ## License
 
 Apache License 2.0 — © 2026 Veldt Labs Inc. See [LICENSE](LICENSE).
