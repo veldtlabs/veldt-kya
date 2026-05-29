@@ -35,7 +35,7 @@ whether actions were *authorized*, *policy-conforming*, *attributable*, and
 
 > Framework paper (preprint): [KYA: A Framework-Agnostic Trust Layer for
 > Autonomous Systems with Verifiable Provenance and Hierarchical Policy
-> Composition](https://arxiv.org/abs/2605.25376) — Quadri (2026).
+> Composition](https://arxiv.org/abs/2605.25376).
 
 ## Quick start
 
