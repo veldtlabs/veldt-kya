@@ -204,7 +204,13 @@ class AttackChainEngine:
         evidence_id: int | None,
     ) -> bool:
         """Try to advance partial-match state for one rule against
-        the current event. Returns True iff a full match fired."""
+        the current event. Returns True iff a full match fired.
+
+        Dispatches on ``rule.mode``: linear rules use the index-
+        ordered chain logic below; DAG rules use
+        :meth:`_advance_rule_dag` which finds *any* ready-and-matching
+        step regardless of declaration order.
+        """
         # Build the correlate key for this event. If ANY field in
         # `correlate_by` resolves to None or "" we can't meaningfully
         # correlate -- skip the rule rather than bucket every
@@ -218,6 +224,10 @@ class AttackChainEngine:
         if any(v is None or v == "" for v in correlate_values):
             return False
         correlate_key = tuple(str(v) for v in correlate_values)
+
+        if rule.mode == "dag":
+            return self._advance_rule_dag(
+                db, rule, event_ctx, now_ts, evidence_id, correlate_key)
 
         existing = self.state_store.get(rule.id, correlate_key)
         if existing is None:
@@ -296,6 +306,113 @@ class AttackChainEngine:
             self._emit(db, rule, correlate_key, evidence_id)
             self.state_store.delete(rule.id, correlate_key)
             return True
+        return False
+
+    def _advance_rule_dag(
+        self,
+        db: Any,
+        rule: AttackChainRule,
+        event_ctx: dict,
+        now_ts: float,
+        evidence_id: int | None,
+        correlate_key: tuple[str, ...],
+    ) -> bool:
+        """DAG-mode advancement.
+
+        A step is **ready** when every entry in its ``after`` tuple is
+        in ``existing.completed_step_ids``. The engine scans rule.steps
+        in declared order and advances the FIRST step that is both
+        ready and matches the event's match spec. Declared order is the
+        natural tie-break when two steps are simultaneously ready --
+        operators control it and it keeps detection deterministic.
+
+        Already-completed steps are skipped (a rule cannot fire the
+        same step twice within one partial match).
+
+        Returns True iff this event completed the last outstanding
+        step and the rule emitted.
+        """
+        existing = self.state_store.get(rule.id, correlate_key)
+        completed_set: set[str] = (
+            set(existing.completed_step_ids) if existing else set()
+        )
+
+        # Find the first step that is BOTH ready and matches.
+        ready_step: StepSpec | None = None
+        for step in rule.steps:
+            if step.id in completed_set:
+                continue
+            if not all(p in completed_set for p in step.after):
+                continue
+            if not self._event_matches_step(event_ctx, step):
+                continue
+            ready_step = step
+            break
+
+        if ready_step is None:
+            # No step advanced. Apply the global window cap for the
+            # existing partial match, same semantic as linear mode.
+            if (existing is not None
+                    and rule.window_seconds is not None
+                    and existing.steps_ts
+                    and now_ts - existing.steps_ts[0]
+                    > rule.window_seconds):
+                self.state_store.delete(rule.id, correlate_key)
+            return False
+
+        # Per-step ``within_seconds`` against the LATEST predecessor's
+        # completion timestamp -- analogous to the linear path but the
+        # predecessor's timestamp is found via the completed_step_ids
+        # ordering (not rule.steps ordering).
+        if (existing is not None and ready_step.after
+                and ready_step.within_seconds):
+            ts_by_id: dict[str, float] = {}
+            for i, sid in enumerate(existing.completed_step_ids):
+                if i < len(existing.steps_ts):
+                    ts_by_id[sid] = existing.steps_ts[i]
+            latest_pred_ts: float | None = None
+            for pid in ready_step.after:
+                t = ts_by_id.get(pid)
+                if t is not None and (
+                        latest_pred_ts is None or t > latest_pred_ts):
+                    latest_pred_ts = t
+            if (latest_pred_ts is not None
+                    and now_ts - latest_pred_ts
+                    > ready_step.within_seconds):
+                # Time window closed for this step. Abort the whole
+                # partial match (same as linear semantics).
+                self.state_store.delete(rule.id, correlate_key)
+                return False
+
+        # Advance: append to completed_step_ids + parallel arrays.
+        if existing is None:
+            pm = PartialMatch(
+                rule_id=rule.id,
+                correlate_key=correlate_key,
+                current_step_idx=1,
+                steps_ts=[now_ts],
+                steps_evidence_ids=(
+                    [evidence_id] if evidence_id is not None else []),
+                completed_step_ids=(ready_step.id,),
+            )
+        else:
+            pm = existing
+            pm.steps_ts.append(now_ts)
+            if evidence_id is not None:
+                pm.steps_evidence_ids.append(evidence_id)
+            pm.completed_step_ids = (
+                *pm.completed_step_ids, ready_step.id,
+            )
+            pm.current_step_idx = len(pm.completed_step_ids)
+
+        # Full match when every declared step is in the completed set.
+        all_step_ids = {s.id for s in rule.steps}
+        if all_step_ids.issubset(set(pm.completed_step_ids)):
+            self._emit(db, rule, correlate_key, evidence_id)
+            self.state_store.delete(rule.id, correlate_key)
+            return True
+
+        self.state_store.update(pm)
         return False
 
     def _event_matches_step(self, event_ctx: dict, step: StepSpec) -> bool:
