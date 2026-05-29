@@ -16,8 +16,10 @@ definition, observes rogue behavior at runtime, and emits regulator-grade
 evidence — model cards (SR 11-7), AIMS bundles (ISO 42001), breach
 notifications (NYDFS, DORA, GDPR, HIPAA).
 
-Observability tools tell you when an agent is *slow*. KYA tells you when
-an agent is *wrong, drifting, leaking, or quietly going rogue.*
+Observability tools tell you when an agent is *slow* or *erroring*. KYA
+tells you whether an agent's actions were *authorized*, *conformed to
+policy*, *drifted* from their approved definition, or *leaked* — and
+produces evidence operators can verify afterward.
 
 > Framework paper (preprint): [KYA: A Framework-Agnostic Trust Layer for
 > Autonomous Systems with Verifiable Provenance and Hierarchical Policy
@@ -73,7 +75,10 @@ SQLite, and DuckDB** — verified by `tests/verify_all_backends_with_data.py`
 ## Bring your own framework
 
 KYA's `normalize_agent_def(framework, raw_def)` adapts foreign agent
-shapes into the canonical schema. Five built-in adapters:
+shapes into the canonical schema. **23 built-in adapters** across the
+major agent frameworks (LangChain, CrewAI, OpenAI Agents, Claude Agent
+SDK, AutoGen, Semantic Kernel, LlamaIndex, Haystack, MCP, Bedrock,
+Vertex, Pydantic AI, Letta, Smol, Strands, Google ADK, and more):
 
 ```python
 from kya import normalize_agent_def, score_agent
@@ -172,8 +177,10 @@ internal red-team scorers, etc.) via `register_judge(name, fn)`.
 Signal routing is dimension-correct: `input_safety` → `received_attack`
 (-1, agent was attacked but may have refused), `safety` →
 `policy_violation` (-7), `faithfulness` → `hallucination_detected`
-(-5). Phase 4 adds JWT introspection + SPIFFE/OIDC workload
-identity (`kya.auth`).
+(-5). Identity bindings ship today via `kya.auth`: JWT introspection,
+SPIFFE workload identity, and OIDC (Keycloak / Okta / Auth0). See
+`examples/live_e2e_jwt_auth.py`, `live_e2e_spiffe.py`, and
+`live_e2e_keycloak_real_idp.py`.
 
 ## Drift detection
 
@@ -242,14 +249,19 @@ changing your code.
 ## Roadmap
 
 This is the standalone SDK packaging of the KYA module already
-running in production inside Veldt Decisions. Surfaces still being
-polished:
+running in production inside Veldt Decisions. Items still on the
+roadmap:
 
 - Lakehouse adapter (Databricks Genie / Snowflake Cortex)
-- Native pytest harness for `[storage]` extra
 - Hosted KYA dashboard for SDK consumers
 - SQL-aware data-policy judge (customers bring this today via
   `register_judge()`; bundled adapter in a future release)
+- Third-party-attestable notarization for the evidence chain
+  (Sigstore / RFC 3161). v1 uses single-key HMAC chains — see
+  §11 of the paper for the limitation.
+- Full DAG-wide topology validation for delegated agent graphs.
+  v1 enforces pairwise parent-child ceilings (the Liang-2025
+  topology-attack defense).
 
 ## License
 
