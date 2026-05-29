@@ -78,3 +78,7 @@ examples/live_e2e_openclaw_full_orchestration*.py
 FIDDLER_KYA_VALIDATION_FINDINGS.md
 live_e2e_min_trust_auto_block*.py
 examples/verify_0_1_2_live_pg*.py
+
+# Business / GTM artifact -- keep local only, never publish.
+KYA_FEATURES_BUSINESS_VALUE.csv
+KYA_FEATURES_BUSINESS_VALUE*.csv
