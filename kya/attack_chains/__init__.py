@@ -75,6 +75,10 @@ from ._state import (
     StateStore,
     ValkeyStateStore,
 )
+from .delegation_correlation import (
+    DEFAULT_MAX_HOPS,
+    correlation_id_for_invocation,
+)
 
 __all__ = [
     # Rules + loader
@@ -96,4 +100,7 @@ __all__ = [
     "get_default_engine",
     "reset_default_engine",
     "resolve_state_store",
+    # Cross-agent / delegation-graph correlation helper
+    "correlation_id_for_invocation",
+    "DEFAULT_MAX_HOPS",
 ]
