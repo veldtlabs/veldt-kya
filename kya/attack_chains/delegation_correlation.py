@@ -61,6 +61,25 @@ def correlation_id_for_invocation(
         invocation_id: starting invocation row id.
         max_hops: safety cap on chain depth.
     """
+    # ── Input validation (fail-soft, return None on bad input) ──
+    # Caller may have a row with NULL invocation_id, a non-numeric
+    # value, or an empty tenant -- none of those are an exception
+    # condition for us; we just have nothing to resolve.
+    if not tenant_id or invocation_id is None:
+        return None
+    try:
+        current_id: int | None = int(invocation_id)
+    except (TypeError, ValueError):
+        logger.debug(
+            "[KYA-CHAINS] correlation_id_for_invocation: invocation_id "
+            "is not numeric (%r); returning None", invocation_id)
+        return None
+    if current_id <= 0:
+        return None
+    if not isinstance(max_hops, int) or max_hops <= 0:
+        return None
+
+    # ── Imports (lazy + fail-soft if optional deps missing) ──
     try:
         from sqlalchemy import text
 
@@ -86,7 +105,6 @@ def correlation_id_for_invocation(
         f"WHERE tenant_id = :t AND id = :i LIMIT 1"
     )
 
-    current_id: int | None = int(invocation_id)
     for _hop in range(max_hops):
         if current_id is None:
             return None

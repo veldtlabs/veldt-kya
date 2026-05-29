@@ -379,6 +379,29 @@ def test_helper_does_not_cross_tenant_boundary(sqlite_db):
         sqlite_db, TENANT, inv_id) is None
 
 
+def test_helper_returns_none_on_invalid_input_without_raising(sqlite_db):
+    """The helper is fail-soft. None / empty / non-numeric inputs MUST
+    return None rather than crash callers (record_evidence sometimes
+    gets passed an invocation row whose id column is null)."""
+    # invocation_id = None
+    assert correlation_id_for_invocation(
+        sqlite_db, TENANT, None) is None
+    # invocation_id non-numeric
+    assert correlation_id_for_invocation(
+        sqlite_db, TENANT, "not-a-number") is None
+    # invocation_id zero or negative
+    assert correlation_id_for_invocation(sqlite_db, TENANT, 0) is None
+    assert correlation_id_for_invocation(sqlite_db, TENANT, -1) is None
+    # empty tenant
+    assert correlation_id_for_invocation(sqlite_db, "", 1) is None
+    assert correlation_id_for_invocation(sqlite_db, None, 1) is None
+    # max_hops invalid
+    assert correlation_id_for_invocation(
+        sqlite_db, TENANT, 1, max_hops=0) is None
+    assert correlation_id_for_invocation(
+        sqlite_db, TENANT, 1, max_hops=-3) is None
+
+
 def test_helper_caps_walk_at_max_hops(sqlite_db):
     """Pathological loop / very-deep chain protection."""
     now = datetime.now(timezone.utc)
