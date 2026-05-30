@@ -138,12 +138,27 @@ class AttackChainEngine:
         payload: dict,
         evidence_id: int | None = None,
         occurred_at_ts: float | None = None,
+        correlation_id: str | None = None,
     ) -> list[str]:
         """Advance any partial matches against this evidence.
 
         Returns the list of rule_ids that FULLY MATCHED (i.e., emitted
         a signal) on this call. Most calls return [] (the common case
         -- evidence doesn't complete a chain).
+
+        Cross-agent correlation
+        -----------------------
+        Pass ``correlation_id`` to make it available to ``correlate_by``
+        as a first-class context field. A rule that declares
+        ``correlate_by: [tenant_id, correlation_id]`` then groups events
+        by *request* rather than by principal, so a single chain can
+        advance across multiple delegated agents that share the same
+        correlation_id. Resolve the correct correlation_id for an
+        evidence event with
+        :func:`kya.attack_chains.correlation_id_for_invocation`, which
+        walks the parent-invocation chain so it works even when an
+        intermediate sub-agent generated a fresh correlation_id of its
+        own.
 
         Fail-soft: any internal error in matching is logged and
         swallowed so the caller's record_evidence path isn't broken
@@ -157,10 +172,12 @@ class AttackChainEngine:
         # Build the correlate-key value tuple ONCE for this event.
         # All rules share the same convention: their `correlate_by`
         # field names are looked up from a synthetic context dict
-        # {tenant_id, principal_id, evidence_kind, payload}.
+        # {tenant_id, principal_id, correlation_id, evidence_kind,
+        # payload}.
         event_ctx = {
             "tenant_id": tenant_id,
             "principal_id": principal_id,
+            "correlation_id": correlation_id,
             "evidence_kind": evidence_kind,
             "payload": payload,
         }
@@ -188,11 +205,19 @@ class AttackChainEngine:
     ) -> bool:
         """Try to advance partial-match state for one rule against
         the current event. Returns True iff a full match fired."""
-        # Build the correlate key for this event.
-        correlate_key = tuple(
-            str(field_value(event_ctx, p) or "")
-            for p in rule.correlate_by
-        )
+        # Build the correlate key for this event. If ANY field in
+        # `correlate_by` resolves to None or "" we can't meaningfully
+        # correlate -- skip the rule rather than bucket every
+        # "missing-key" event into the same empty-string state slot.
+        # That avoids the silent footgun where a cross-agent rule
+        # using `correlation_id` over-aggregates whenever the caller
+        # forgot to propagate the request id.
+        correlate_values = [
+            field_value(event_ctx, p) for p in rule.correlate_by
+        ]
+        if any(v is None or v == "" for v in correlate_values):
+            return False
+        correlate_key = tuple(str(v) for v in correlate_values)
 
         existing = self.state_store.get(rule.id, correlate_key)
         if existing is None:
