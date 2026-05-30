@@ -82,3 +82,4 @@ examples/verify_0_1_2_live_pg*.py
 # Business / GTM artifact -- keep local only, never publish.
 KYA_FEATURES_BUSINESS_VALUE.csv
 KYA_FEATURES_BUSINESS_VALUE*.csv
+  .test_*_live_capture.json

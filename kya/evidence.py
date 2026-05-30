@@ -156,6 +156,17 @@ VALID_EVIDENCE_KINDS = {
     "judge_verdict",  # multi-judge orchestrator per-judge verdict
                       # (kya.scorer_orchestrator). Carries judge_name,
                       # dimension, verdict, score, latency, detail.
+    # Runtime-security evidence (kya.runtime bridge). One kind per
+    # canonical SourceTool so attack-chain rules can match on the
+    # tool without scanning payload fields.
+    "runtime_falco",
+    "runtime_tetragon",
+    "runtime_tracee",
+    "runtime_sysdig",
+    "runtime_osquery",
+    "runtime_auditd",
+    "runtime_k8s_audit",
+    "runtime_ebpf",
 }
 
 # Retention defaults per regime (days). Used when caller doesn't supply
