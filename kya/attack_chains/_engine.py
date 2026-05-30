@@ -36,7 +36,12 @@ from ._loader import (
     load_rules_from_dir,
 )
 from ._matchers import all_match, field_value
-from ._state import InMemoryStateStore, PartialMatch, StateStore
+from ._state import (
+    InMemoryStateStore,
+    PartialMatch,
+    StateStore,
+    ValkeyStateStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +305,77 @@ _DEFAULT_ENGINE: AttackChainEngine | None = None
 _DEFAULT_ENGINE_LOCK_KEY = "_kya_chains_default_engine"
 
 
+def resolve_state_store() -> StateStore:
+    """Pick a StateStore for the default engine based on env.
+
+    Env contract (``KYA_ATTACK_CHAIN_STATE``):
+      * ``auto`` (default) -- use ``ValkeyStateStore`` when a Valkey
+        client is reachable (so multi-worker fleets get cross-process
+        chain detection for free); otherwise fall back to
+        ``InMemoryStateStore``.
+      * ``memory`` -- always use ``InMemoryStateStore`` (per-process).
+      * ``valkey`` -- always use ``ValkeyStateStore`` (fails soft to
+        no-op if no client is configured -- operators who set this
+        MUST also configure ``KYA_VALKEY_URL``).
+
+    Exposed publicly so callers building their own engine can use the
+    same env-driven selection without re-implementing the logic.
+    """
+    raw = os.environ.get("KYA_ATTACK_CHAIN_STATE", "auto")
+    mode = raw.strip().lower()
+    if mode == "memory":
+        return InMemoryStateStore()
+    if mode == "valkey":
+        # Forced Valkey: warn loudly if no client is available so a
+        # misconfigured operator (e.g., set state=valkey but forgot
+        # KYA_VALKEY_URL) sees that chain detection is silently a
+        # no-op until they fix it. Without this warning the store
+        # would still construct and fail-soft on every method.
+        try:
+            from kya._valkey import get_valkey
+            if get_valkey() is None:
+                logger.warning(
+                    "[KYA-CHAINS] KYA_ATTACK_CHAIN_STATE=valkey but "
+                    "no Valkey client is available "
+                    "(KYA_VALKEY_URL/REDIS_URL not set, redis-py not "
+                    "installed, or connection failed). Chain "
+                    "detection will be a no-op until Valkey is "
+                    "reachable. Set KYA_ATTACK_CHAIN_STATE=memory if "
+                    "single-process operation is intended.")
+        except Exception as exc:
+            logger.debug(
+                "[KYA-CHAINS] valkey availability probe raised: %s",
+                exc)
+        return ValkeyStateStore()
+    if mode not in ("auto", ""):
+        # Unknown value -- fall back to auto rather than crash, but
+        # surface the typo so it gets fixed.
+        logger.warning(
+            "[KYA-CHAINS] unknown KYA_ATTACK_CHAIN_STATE=%r; expected "
+            "one of: auto, memory, valkey. Falling back to 'auto'.",
+            raw)
+    # auto: prefer Valkey when reachable.
+    try:
+        from kya._valkey import get_valkey
+        if get_valkey() is not None:
+            logger.info(
+                "[KYA-CHAINS] default state store: ValkeyStateStore "
+                "(cross-process chain detection active)")
+            return ValkeyStateStore()
+    except Exception as exc:
+        logger.debug(
+            "[KYA-CHAINS] valkey probe failed, using in-memory: %s",
+            exc)
+    return InMemoryStateStore()
+
+
 def get_default_engine() -> AttackChainEngine | None:
     """Return the process-wide default engine, building it lazily on
     first call from KYA_ATTACK_CHAIN_RULES_DIR env.
+
+    State-store selection follows :func:`resolve_state_store` -- with
+    a reachable Valkey, chains correlate across workers/processes
+    automatically.
 
     Returns None when no rules dir is configured -- callers (e.g.,
     record_evidence) treat None as "feature disabled, no-op".
@@ -322,7 +395,8 @@ def get_default_engine() -> AttackChainEngine | None:
         return None
     if not rules:
         return None
-    _DEFAULT_ENGINE = AttackChainEngine(rules=rules)
+    _DEFAULT_ENGINE = AttackChainEngine(
+        rules=rules, state_store=resolve_state_store())
     logger.info(
         "[KYA-CHAINS] default engine loaded %d rules from %s",
         len(rules), rules_dir)
