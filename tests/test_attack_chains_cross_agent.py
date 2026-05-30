@@ -379,6 +379,54 @@ def test_helper_does_not_cross_tenant_boundary(sqlite_db):
         sqlite_db, TENANT, inv_id) is None
 
 
+def test_within_seconds_is_actually_enforced_after_after_became_tuple():
+    """Regression guard. When ``after`` was changed from ``str`` to
+    ``tuple[str, ...]`` to support DAG semantics, the engine's
+    ``within_seconds`` check still compared step ids against the
+    whole tuple -- silently disabling the time window. This test
+    proves the per-predecessor lookup works correctly so the time
+    bound is enforced on a real, late step."""
+    rule = load_rule(
+        {
+            "version": 1,
+            "id": "tight_window",
+            "severity": "high",
+            "emits_signal": "rogue_tight",
+            "correlate_by": ["tenant_id", "principal_id"],
+            "steps": [
+                {"id": "s1", "evidence_kind": "tool_call",
+                 "match": {"payload.tool": "file_read"}},
+                {"id": "s2", "evidence_kind": "tool_call",
+                 "match": {"payload.tool": "http_post"},
+                 "after": "s1", "within_seconds": 5},
+            ],
+        },
+        source_label="<test>",
+    )
+    engine, fired = _engine(rule)
+
+    engine.process_evidence(
+        None, tenant_id="t1", principal_id="p1",
+        evidence_kind="tool_call",
+        payload={"tool": "file_read"},
+        occurred_at_ts=100.0,
+    )
+    # Second step arrives 30 seconds later -- WELL outside the 5s
+    # window. The rule MUST NOT fire (and the partial state must be
+    # aborted).
+    m2 = engine.process_evidence(
+        None, tenant_id="t1", principal_id="p1",
+        evidence_kind="tool_call",
+        payload={"tool": "http_post"},
+        occurred_at_ts=130.0,
+    )
+    assert m2 == [], (
+        "within_seconds=5 must reject a step arriving 30s after the "
+        "predecessor -- if this fires, the after-as-tuple migration "
+        "broke time-window enforcement")
+    assert fired == []
+
+
 def test_helper_returns_none_on_invalid_input_without_raising(sqlite_db):
     """The helper is fail-soft. None / empty / non-numeric inputs MUST
     return None rather than crash callers (record_evidence sometimes
