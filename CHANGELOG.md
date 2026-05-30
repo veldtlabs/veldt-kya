@@ -6,9 +6,48 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-- Dedicated `veldt-kya` repo separated from the upstream `veldt-decisions`
-  monorepo (open-core split).
+## [0.1.4] — 2026-05-29
+
+### Added — attack chains
+- **ValkeyStateStore** — cross-process, cross-worker multi-step attack-chain
+  detection. Drops in as a `state_store=` to `AttackChainEngine` so multiple
+  KYA workers share partial-match state without coordination. JSON
+  serialization; ZSET-backed TTL expiry; fail-soft contract; full backward
+  compatibility with `InMemoryStateStore`.
+- **Cross-agent delegation-graph-aware correlation** — `correlate_by` now
+  supports `correlation_id`; `correlation_id_for_invocation` walks the
+  `parent_invocation_id` chain (configurable max-hop) so an attack chain
+  can span multiple cooperating agents on the same delegated task. New
+  example rule: `cross_agent_data_exfiltration.yml`.
+- **DAG step grammar** — rules can declare `mode: "dag"` with multi-parent
+  `after: [step_a, step_b]` to express AND-joins (diamond patterns, fan-in).
+  `within_seconds` measures from the latest predecessor. Linear rules remain
+  the default and behave identically to v0.1.3. New example rule:
+  `delegated_credential_exfil_diamond.yml`.
+- **Sigma → KYA rule adapter** — `load_sigma_rule`, `load_sigma_rules_from_dir`,
+  `translate_sigma_to_kya_dict` translate SigmaHQ-format rules
+  (single-selection + AND-chain conditions, `|contains`, `|startswith`,
+  `|endswith`, `|re`/`|regex`, list values) into KYA `AttackChainRule`s.
+  MITRE technique IDs + tactic names preserved as metadata. Unsupported
+  constructs (OR, NOT, quantifiers, parens, keyword-only) raise
+  `SigmaTranslateError` with named offender so operators can split rules.
+  Configurable `field_prefix` (defaults to `"payload."` matching KYA's
+  evidence convention).
+
+### Added — assessment
+- **Autonomous Systems Trust Assessment orchestrator** — `run_assessment`
+  computes a 5-pillar `AssessmentReport` (RiskScore, Provenance, Lineage,
+  TrustScoring, RBAC) returning structured `Finding` rows with severity,
+  evidence, and remediation hints. Designed for periodic governance
+  reporting against any agent or service-account principal.
+
+### Notes
+- **Zero new database surface across all five features.** All new state
+  lives in the existing tables (kya_attack_partial_matches via the state
+  store, kya_evidence via the chain attach, kya_principal_trust via the
+  scoring update); no migrations required.
+- All five features are independently optional; nothing in this release
+  introduces a hard runtime dependency.
 
 ## [0.1.0] — 2026-05-21
 
