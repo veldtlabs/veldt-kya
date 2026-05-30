@@ -69,6 +69,12 @@ from ._matchers import (
     field_value,
     match_value,
 )
+from ._sigma import (
+    SigmaTranslateError,
+    load_sigma_rule,
+    load_sigma_rules_from_dir,
+    translate_sigma_to_kya_dict,
+)
 from ._state import (
     InMemoryStateStore,
     PartialMatch,
@@ -103,4 +109,9 @@ __all__ = [
     # Cross-agent / delegation-graph correlation helper
     "correlation_id_for_invocation",
     "DEFAULT_MAX_HOPS",
+    # Sigma rule adapter (SigmaHQ interop)
+    "SigmaTranslateError",
+    "translate_sigma_to_kya_dict",
+    "load_sigma_rule",
+    "load_sigma_rules_from_dir",
 ]
