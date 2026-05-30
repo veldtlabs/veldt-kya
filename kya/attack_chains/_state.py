@@ -37,17 +37,38 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PartialMatch:
     """Tracks how far one (rule, correlate_key) tuple has progressed
-    through its step sequence. When `current_step_idx` reaches
-    len(rule.steps), the match is COMPLETE and the engine emits."""
+    through its step graph.
+
+    Two modes share this dataclass:
+
+    * **Linear rules** (``AttackChainRule.mode == "linear"``, default).
+      The engine uses ``current_step_idx`` and treats ``steps_ts[i]``,
+      ``steps_evidence_ids[i]`` as aligned with ``rule.steps[i]``. The
+      match is COMPLETE when ``current_step_idx`` reaches
+      ``len(rule.steps)``. ``completed_step_ids`` is left empty.
+
+    * **DAG rules** (``mode == "dag"``). The engine uses
+      ``completed_step_ids`` -- a tuple of step ids in COMPLETION
+      ORDER (not declaration order). ``steps_ts[i]`` is the timestamp
+      at which ``completed_step_ids[i]`` completed, same for
+      ``steps_evidence_ids[i]``. The match is COMPLETE when every
+      declared step is in ``completed_step_ids``. ``current_step_idx``
+      is kept in lock-step with the count so callers reading either
+      attribute see consistent progress.
+    """
     rule_id: str
     correlate_key: tuple[str, ...]   # tuple of correlate_by values
-    current_step_idx: int            # 0-based; next step to match
+    current_step_idx: int            # 0-based; next step (linear) / count (dag)
     # Per-step ingest timestamps (epoch seconds). steps_ts[i] is when
     # step i was matched. Used for `after` / `within_seconds` checks.
     steps_ts: list[float] = field(default_factory=list)
     # Per-step source-evidence pointer (e.g., evidence row id). Lets
     # downstream consumers walk back through the matching events.
     steps_evidence_ids: list[int] = field(default_factory=list)
+    # DAG-mode bookkeeping: step ids in the order they completed.
+    # For linear rules this stays empty -- their order is implied by
+    # ``current_step_idx``.
+    completed_step_ids: tuple[str, ...] = field(default_factory=tuple)
     # Process-time created/updated for expiry of stale partial matches.
     created_at: float = field(default_factory=time.monotonic)
     updated_at: float = field(default_factory=time.monotonic)
@@ -300,6 +321,9 @@ class ValkeyStateStore(StateStore):
                 "current_step_idx": pm.current_step_idx,
                 "steps_ts": list(pm.steps_ts),
                 "steps_evidence_ids": list(pm.steps_evidence_ids),
+                # DAG bookkeeping; persisted as a list because JSON has
+                # no tuple type. Empty list = linear-mode partial match.
+                "completed_step_ids": list(pm.completed_step_ids),
                 "created_at": pm.created_at,
                 "updated_at": pm.updated_at,
             },
@@ -309,6 +333,10 @@ class ValkeyStateStore(StateStore):
     @staticmethod
     def _loads(raw: str) -> PartialMatch:
         d = json.loads(raw)
+        # ``completed_step_ids`` is the only field that may be missing
+        # on rows written by an older SDK version. Absent => empty
+        # tuple, which is the right default for a linear-mode partial
+        # match (the new field carries no information in that case).
         return PartialMatch(
             rule_id=d["rule_id"],
             correlate_key=tuple(d["correlate_key"]),
@@ -317,6 +345,8 @@ class ValkeyStateStore(StateStore):
             steps_evidence_ids=[
                 int(e) for e in d.get("steps_evidence_ids", [])
             ],
+            completed_step_ids=tuple(
+                d.get("completed_step_ids") or ()),
             created_at=float(d.get("created_at", 0.0)),
             updated_at=float(d.get("updated_at", 0.0)),
         )
