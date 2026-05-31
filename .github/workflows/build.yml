@@ -13,15 +13,10 @@ name: build
 
 on:
   pull_request:
-    paths:
-      - 'kya/**'
-      - 'kya_hooks/**'
-      - 'kya_otlp_bridge/**'
-      - 'kya_redteam/**'
-      - 'tests/**'
-      - 'examples/**'
-      - 'pyproject.toml'
-      - '.github/workflows/build.yml'
+    # No paths filter: branch protection requires these checks, so the
+    # workflow must run on every PR -- including doc-only changes --
+    # or auto-merge gets stuck waiting on a check that never fires.
+    # The job itself is cheap (lint + wheel build + tests, ~5 min).
   push:
     branches: [main, develop]
   workflow_dispatch:
