@@ -762,10 +762,11 @@ def _run_garak_campaign(
                 # Build a synthetic response from garak's hits so the
                 # downstream scoring path is uniform.
                 response_text = "\n".join(hits) if hits else ""
-                # If garak's stub returned no hits, fall through to
-                # native execution so we still test the prompt.
+                # If the garak bridge returned no hits, fall through
+                # to native execution so we still test the prompt.
                 if not response_text:
-                    raise RuntimeError("real-garak returned stub; using native")
+                    raise RuntimeError(
+                        "garak bridge returned no hits; using native")
                 _process_garak_outcome(
                     db, tenant_id=tenant_id, agent_key=agent_key,
                     campaign_id=int(campaign["id"]), run_id=run_id,

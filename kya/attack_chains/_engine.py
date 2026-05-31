@@ -18,8 +18,8 @@ Extension points (the "avoid the redesign trap" surface):
                              trigger_evidence_id, rule) -> None
     Default wraps record_principal_signal. Customers register their
     own (Slack, PagerDuty, security-event sink) without forking KYA.
-  * Custom matchers: register via _matchers (out of scope here)
-  * Custom state stores: subclass StateStore (out of scope here)
+  * Custom matchers: register via _matchers
+  * Custom state stores: subclass StateStore
 """
 
 from __future__ import annotations

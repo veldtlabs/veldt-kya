@@ -42,7 +42,7 @@ KYA targets **Python 3.10+** and runs against PostgreSQL, MySQL, SQLite, and Duc
 - Tests that demonstrate behavior, not just exercise coverage
 - Examples in `examples/` showing how to use new features
 - Docstrings on public functions explaining the *why*, not just the *what*
-- Honest acknowledgment of limitations
+- Honest acknowledgment of scope and trade-offs
 
 ## Things we don't merge
 

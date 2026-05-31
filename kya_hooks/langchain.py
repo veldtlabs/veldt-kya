@@ -68,7 +68,7 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_LANGCHAIN = False
 
-    class BaseCallbackHandler:  # minimal stub so the file imports without LangChain
+    class BaseCallbackHandler:  # fallback so the module imports cleanly when LangChain isn't installed
         pass
 
 

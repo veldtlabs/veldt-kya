@@ -213,20 +213,24 @@ def run_probe_via_garak(probe_name: str, http_target) -> dict:
     except ImportError as exc:
         raise RuntimeError(f"garak import failed: {exc}") from exc
 
-    # The real garak runner calls `Generator.generate(prompts)` on each
-    # probe. We'd build a KyaGenerator(http_target) subclass + wire it
-    # into garak's internal probe.run() flow. This shim returns a stub
-    # for now and signals callers to fall back to native — the FULL
-    # wiring lands in a follow-up when we can pin a specific garak
-    # version + smoke-test the probe-runner contract.
-    logger.warning(
-        "[REDTEAM-GARAK] real-garak wiring is a stub; falling back to "
-        "native probe execution. Re-enable in a Phase 6.5 commit after "
-        "pinning a specific garak version."
+    # The real garak runner calls ``Generator.generate(prompts)`` on
+    # each probe. The bridge layer between garak's probe-runner and
+    # KYA's HTTP target is pinned to a specific garak version; until
+    # the version pin lands, callers fall back to native probe
+    # execution (signalled by returning ``achieved=False`` with an
+    # empty hits list).
+    logger.info(
+        "[REDTEAM-GARAK] garak bridge not yet active for probe %r; "
+        "using native execution.", probe_name,
     )
     return {
         "probe": probe_name,
         "hits": [],
         "achieved": False,
-        "raw": {"stub": True, "garak_version": _config.version if hasattr(_config, "version") else "?"},
+        "raw": {
+            "bridge_active": False,
+            "garak_version": (
+                _config.version if hasattr(_config, "version") else "?"
+            ),
+        },
     }

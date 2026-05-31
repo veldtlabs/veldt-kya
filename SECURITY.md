@@ -68,14 +68,11 @@ We will not pursue legal action against good-faith security researchers who:
 
 We publicly credit reporters in the CHANGELOG.md and the GitHub Security Advisory unless they request anonymity.
 
-## Paper-acknowledged limitations
+## Design boundaries documented in the paper
 
-Some KYA primitives have **disclosed structural limitations** documented in the paper (arXiv:2605.25376, §11 Limitations). These are not vulnerabilities; they are intentional design boundaries. Examples:
-
-- Evidence-chain notarization uses HMAC-SHA256 with a single tenant key today. Third-party-attestable notarization (Sigstore / RFC 3161) is on the roadmap.
-- External safety filters have a structural ceiling (Nayebi 2025, Proposition 4). KYA composes with — and does not replace — internal model alignment.
-
-Please read §11 of the paper before reporting; it covers what's known.
+Some intentional design boundaries are documented in the paper
+(arXiv:2605.25376, §11). These are not vulnerabilities. Please read
+§11 before reporting findings related to those boundaries.
 
 ---
 

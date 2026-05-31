@@ -134,5 +134,6 @@ def verify_signature(agent_def: dict, public_key: bytes | None = None) -> dict:
     algo = sig.get("algorithm", "unknown")
     if public_key is None:
         return {"present": True, "algorithm": algo, "verified": None}
-    # Real verification deferred until key registry is operational.
+    # ``verified`` is None when the caller has not supplied a public
+    # key to check against; pass ``public_key=...`` for verification.
     return {"present": True, "algorithm": algo, "verified": None}

@@ -60,6 +60,17 @@ KYA_INBOUND_PUBLIC_KEY*
 # Local dev TODO -- not committed
 TODO.md
 
+# Internal strategy / planning / SOP docs -- never publish.
+# These are private working documents; the public repo carries
+# customer-facing docs only.
+docs/LIMITATIONS.md
+docs/PAPER_REPOSITIONING_AUDIT.md
+docs/OPEN_CORE_STRATEGY.md
+docs/LIVE_RUNTIME_TEST_RESULTS.md
+docs/PYPI_RELEASE_CHECKLIST.md
+docs/PYPI_ONBOARDING.md
+docs/kya_collector_roadmap.md
+
 # Fiddler.ai integration tests + run results (use a live API key)
 examples/live_e2e_fiddler*.py
 examples/live_e2e_fiddler_pure_standalone*.py

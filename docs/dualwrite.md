@@ -151,7 +151,7 @@ The bundled `Redactor`:
   `subject_email`, `subject_name`, `patient_id`, `customer_id`,
   `session_token`, `api_key`, `bearer`, `authorization`)
 * truncates strings over 200 chars with a marker
-* drops `bytes`/`bytearray` values (replaced with a length-only stub)
+* drops `bytes`/`bytearray` values (replaced with a length-only marker)
 * recurses into nested dicts / lists up to depth 6
 
 The salt is read once at import from `KYA_DUALWRITE_SALT`. If unset, a

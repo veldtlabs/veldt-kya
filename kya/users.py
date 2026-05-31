@@ -326,9 +326,11 @@ def _upsert_with_delta(
         PG       — keeps the single-statement jsonb UPSERT (atomic,
                    no read-modify-write window).
         non-PG   — SELECT current state → mutate in Python → portable
-                   upsert via _dialect_helpers. A small lost-update
-                   window is possible under concurrent writers on
-                   non-PG; document as a non-PG limitation.
+                   upsert via _dialect_helpers. Under concurrent
+                   writers on non-PG backends, callers requiring
+                   strict last-write-wins semantics should serialize
+                   through an application-level lock or use the PG
+                   backend.
 
     Returns the new trust score.
     """

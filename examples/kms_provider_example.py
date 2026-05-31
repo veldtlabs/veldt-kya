@@ -1,9 +1,9 @@
 """Reference KMS-backed signing-key provider for KYA evidence.
 
 Plug-in shape — `KYA_EVIDENCE_KEY_PROVIDER=module:function` resolves to
-a callable returning `(key_bytes, key_id_str)`. The function below shows
-the contract; replace the stub body with real KMS / Vault / sealed-secret
-fetches for production.
+a callable returning `(key_bytes, key_id_str)`. The function below
+demonstrates the contract; replace the example body with real
+KMS / Vault / sealed-secret fetches for production.
 
 Wire-up
 -------
@@ -57,7 +57,7 @@ HashiCorp Vault (Transit secrets engine):
 import base64
 import os
 
-# Example stub — real implementation should fetch from KMS / Vault.
+# Example provider — real implementations fetch from KMS / Vault.
 # DO NOT use this in production; it just demonstrates the contract.
 
 
