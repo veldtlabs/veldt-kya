@@ -18,8 +18,8 @@ Extension points (the "avoid the redesign trap" surface):
                              trigger_evidence_id, rule) -> None
     Default wraps record_principal_signal. Customers register their
     own (Slack, PagerDuty, security-event sink) without forking KYA.
-  * Custom matchers: register via _matchers (out of scope here)
-  * Custom state stores: subclass StateStore (out of scope here)
+  * Custom matchers: register via _matchers
+  * Custom state stores: subclass StateStore
 """
 
 from __future__ import annotations
@@ -36,7 +36,12 @@ from ._loader import (
     load_rules_from_dir,
 )
 from ._matchers import all_match, field_value
-from ._state import InMemoryStateStore, PartialMatch, StateStore
+from ._state import (
+    InMemoryStateStore,
+    PartialMatch,
+    StateStore,
+    ValkeyStateStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +138,27 @@ class AttackChainEngine:
         payload: dict,
         evidence_id: int | None = None,
         occurred_at_ts: float | None = None,
+        correlation_id: str | None = None,
     ) -> list[str]:
         """Advance any partial matches against this evidence.
 
         Returns the list of rule_ids that FULLY MATCHED (i.e., emitted
         a signal) on this call. Most calls return [] (the common case
         -- evidence doesn't complete a chain).
+
+        Cross-agent correlation
+        -----------------------
+        Pass ``correlation_id`` to make it available to ``correlate_by``
+        as a first-class context field. A rule that declares
+        ``correlate_by: [tenant_id, correlation_id]`` then groups events
+        by *request* rather than by principal, so a single chain can
+        advance across multiple delegated agents that share the same
+        correlation_id. Resolve the correct correlation_id for an
+        evidence event with
+        :func:`kya.attack_chains.correlation_id_for_invocation`, which
+        walks the parent-invocation chain so it works even when an
+        intermediate sub-agent generated a fresh correlation_id of its
+        own.
 
         Fail-soft: any internal error in matching is logged and
         swallowed so the caller's record_evidence path isn't broken
@@ -152,10 +172,12 @@ class AttackChainEngine:
         # Build the correlate-key value tuple ONCE for this event.
         # All rules share the same convention: their `correlate_by`
         # field names are looked up from a synthetic context dict
-        # {tenant_id, principal_id, evidence_kind, payload}.
+        # {tenant_id, principal_id, correlation_id, evidence_kind,
+        # payload}.
         event_ctx = {
             "tenant_id": tenant_id,
             "principal_id": principal_id,
+            "correlation_id": correlation_id,
             "evidence_kind": evidence_kind,
             "payload": payload,
         }
@@ -182,12 +204,30 @@ class AttackChainEngine:
         evidence_id: int | None,
     ) -> bool:
         """Try to advance partial-match state for one rule against
-        the current event. Returns True iff a full match fired."""
-        # Build the correlate key for this event.
-        correlate_key = tuple(
-            str(field_value(event_ctx, p) or "")
-            for p in rule.correlate_by
-        )
+        the current event. Returns True iff a full match fired.
+
+        Dispatches on ``rule.mode``: linear rules use the index-
+        ordered chain logic below; DAG rules use
+        :meth:`_advance_rule_dag` which finds *any* ready-and-matching
+        step regardless of declaration order.
+        """
+        # Build the correlate key for this event. If ANY field in
+        # `correlate_by` resolves to None or "" we can't meaningfully
+        # correlate -- skip the rule rather than bucket every
+        # "missing-key" event into the same empty-string state slot.
+        # That avoids the silent footgun where a cross-agent rule
+        # using `correlation_id` over-aggregates whenever the caller
+        # forgot to propagate the request id.
+        correlate_values = [
+            field_value(event_ctx, p) for p in rule.correlate_by
+        ]
+        if any(v is None or v == "" for v in correlate_values):
+            return False
+        correlate_key = tuple(str(v) for v in correlate_values)
+
+        if rule.mode == "dag":
+            return self._advance_rule_dag(
+                db, rule, event_ctx, now_ts, evidence_id, correlate_key)
 
         existing = self.state_store.get(rule.id, correlate_key)
         if existing is None:
@@ -228,15 +268,26 @@ class AttackChainEngine:
                 self.state_store.delete(rule.id, correlate_key)
             return False
 
-        # Per-step `within_seconds` check vs `after` predecessor.
-        if next_step.after is not None and next_step.within_seconds:
-            after_idx = next(
-                (i for i, s in enumerate(rule.steps)
-                 if s.id == next_step.after),
-                None)
-            if (after_idx is not None
-                    and after_idx < len(existing.steps_ts)):
-                gap = now_ts - existing.steps_ts[after_idx]
+        # Per-step `within_seconds` check vs the `after` predecessors.
+        # ``after`` is now always a tuple (the loader normalises). For
+        # an AND-join (multiple prerequisites), measure from the LATEST
+        # predecessor's completion -- that's the tightest window the
+        # operator could have meant. Empty tuple = no prerequisite,
+        # so the time window is meaningless and we skip it.
+        if next_step.after and next_step.within_seconds:
+            latest_pred_ts: float | None = None
+            for prior_step_id in next_step.after:
+                after_idx = next(
+                    (i for i, s in enumerate(rule.steps)
+                     if s.id == prior_step_id),
+                    None)
+                if (after_idx is not None
+                        and after_idx < len(existing.steps_ts)):
+                    ts = existing.steps_ts[after_idx]
+                    if latest_pred_ts is None or ts > latest_pred_ts:
+                        latest_pred_ts = ts
+            if latest_pred_ts is not None:
+                gap = now_ts - latest_pred_ts
                 if gap > next_step.within_seconds:
                     # Step matched the field spec but the time window
                     # closed -- this is a partial-match abort.
@@ -255,6 +306,113 @@ class AttackChainEngine:
             self._emit(db, rule, correlate_key, evidence_id)
             self.state_store.delete(rule.id, correlate_key)
             return True
+        return False
+
+    def _advance_rule_dag(
+        self,
+        db: Any,
+        rule: AttackChainRule,
+        event_ctx: dict,
+        now_ts: float,
+        evidence_id: int | None,
+        correlate_key: tuple[str, ...],
+    ) -> bool:
+        """DAG-mode advancement.
+
+        A step is **ready** when every entry in its ``after`` tuple is
+        in ``existing.completed_step_ids``. The engine scans rule.steps
+        in declared order and advances the FIRST step that is both
+        ready and matches the event's match spec. Declared order is the
+        natural tie-break when two steps are simultaneously ready --
+        operators control it and it keeps detection deterministic.
+
+        Already-completed steps are skipped (a rule cannot fire the
+        same step twice within one partial match).
+
+        Returns True iff this event completed the last outstanding
+        step and the rule emitted.
+        """
+        existing = self.state_store.get(rule.id, correlate_key)
+        completed_set: set[str] = (
+            set(existing.completed_step_ids) if existing else set()
+        )
+
+        # Find the first step that is BOTH ready and matches.
+        ready_step: StepSpec | None = None
+        for step in rule.steps:
+            if step.id in completed_set:
+                continue
+            if not all(p in completed_set for p in step.after):
+                continue
+            if not self._event_matches_step(event_ctx, step):
+                continue
+            ready_step = step
+            break
+
+        if ready_step is None:
+            # No step advanced. Apply the global window cap for the
+            # existing partial match, same semantic as linear mode.
+            if (existing is not None
+                    and rule.window_seconds is not None
+                    and existing.steps_ts
+                    and now_ts - existing.steps_ts[0]
+                    > rule.window_seconds):
+                self.state_store.delete(rule.id, correlate_key)
+            return False
+
+        # Per-step ``within_seconds`` against the LATEST predecessor's
+        # completion timestamp -- analogous to the linear path but the
+        # predecessor's timestamp is found via the completed_step_ids
+        # ordering (not rule.steps ordering).
+        if (existing is not None and ready_step.after
+                and ready_step.within_seconds):
+            ts_by_id: dict[str, float] = {}
+            for i, sid in enumerate(existing.completed_step_ids):
+                if i < len(existing.steps_ts):
+                    ts_by_id[sid] = existing.steps_ts[i]
+            latest_pred_ts: float | None = None
+            for pid in ready_step.after:
+                t = ts_by_id.get(pid)
+                if t is not None and (
+                        latest_pred_ts is None or t > latest_pred_ts):
+                    latest_pred_ts = t
+            if (latest_pred_ts is not None
+                    and now_ts - latest_pred_ts
+                    > ready_step.within_seconds):
+                # Time window closed for this step. Abort the whole
+                # partial match (same as linear semantics).
+                self.state_store.delete(rule.id, correlate_key)
+                return False
+
+        # Advance: append to completed_step_ids + parallel arrays.
+        if existing is None:
+            pm = PartialMatch(
+                rule_id=rule.id,
+                correlate_key=correlate_key,
+                current_step_idx=1,
+                steps_ts=[now_ts],
+                steps_evidence_ids=(
+                    [evidence_id] if evidence_id is not None else []),
+                completed_step_ids=(ready_step.id,),
+            )
+        else:
+            pm = existing
+            pm.steps_ts.append(now_ts)
+            if evidence_id is not None:
+                pm.steps_evidence_ids.append(evidence_id)
+            pm.completed_step_ids = (
+                *pm.completed_step_ids, ready_step.id,
+            )
+            pm.current_step_idx = len(pm.completed_step_ids)
+
+        # Full match when every declared step is in the completed set.
+        all_step_ids = {s.id for s in rule.steps}
+        if all_step_ids.issubset(set(pm.completed_step_ids)):
+            self._emit(db, rule, correlate_key, evidence_id)
+            self.state_store.delete(rule.id, correlate_key)
+            return True
+
+        self.state_store.update(pm)
         return False
 
     def _event_matches_step(self, event_ctx: dict, step: StepSpec) -> bool:
@@ -300,9 +458,77 @@ _DEFAULT_ENGINE: AttackChainEngine | None = None
 _DEFAULT_ENGINE_LOCK_KEY = "_kya_chains_default_engine"
 
 
+def resolve_state_store() -> StateStore:
+    """Pick a StateStore for the default engine based on env.
+
+    Env contract (``KYA_ATTACK_CHAIN_STATE``):
+      * ``auto`` (default) -- use ``ValkeyStateStore`` when a Valkey
+        client is reachable (so multi-worker fleets get cross-process
+        chain detection for free); otherwise fall back to
+        ``InMemoryStateStore``.
+      * ``memory`` -- always use ``InMemoryStateStore`` (per-process).
+      * ``valkey`` -- always use ``ValkeyStateStore`` (fails soft to
+        no-op if no client is configured -- operators who set this
+        MUST also configure ``KYA_VALKEY_URL``).
+
+    Exposed publicly so callers building their own engine can use the
+    same env-driven selection without re-implementing the logic.
+    """
+    raw = os.environ.get("KYA_ATTACK_CHAIN_STATE", "auto")
+    mode = raw.strip().lower()
+    if mode == "memory":
+        return InMemoryStateStore()
+    if mode == "valkey":
+        # Forced Valkey: warn loudly if no client is available so a
+        # misconfigured operator (e.g., set state=valkey but forgot
+        # KYA_VALKEY_URL) sees that chain detection is silently a
+        # no-op until they fix it. Without this warning the store
+        # would still construct and fail-soft on every method.
+        try:
+            from kya._valkey import get_valkey
+            if get_valkey() is None:
+                logger.warning(
+                    "[KYA-CHAINS] KYA_ATTACK_CHAIN_STATE=valkey but "
+                    "no Valkey client is available "
+                    "(KYA_VALKEY_URL/REDIS_URL not set, redis-py not "
+                    "installed, or connection failed). Chain "
+                    "detection will be a no-op until Valkey is "
+                    "reachable. Set KYA_ATTACK_CHAIN_STATE=memory if "
+                    "single-process operation is intended.")
+        except Exception as exc:
+            logger.debug(
+                "[KYA-CHAINS] valkey availability probe raised: %s",
+                exc)
+        return ValkeyStateStore()
+    if mode not in ("auto", ""):
+        # Unknown value -- fall back to auto rather than crash, but
+        # surface the typo so it gets fixed.
+        logger.warning(
+            "[KYA-CHAINS] unknown KYA_ATTACK_CHAIN_STATE=%r; expected "
+            "one of: auto, memory, valkey. Falling back to 'auto'.",
+            raw)
+    # auto: prefer Valkey when reachable.
+    try:
+        from kya._valkey import get_valkey
+        if get_valkey() is not None:
+            logger.info(
+                "[KYA-CHAINS] default state store: ValkeyStateStore "
+                "(cross-process chain detection active)")
+            return ValkeyStateStore()
+    except Exception as exc:
+        logger.debug(
+            "[KYA-CHAINS] valkey probe failed, using in-memory: %s",
+            exc)
+    return InMemoryStateStore()
+
+
 def get_default_engine() -> AttackChainEngine | None:
     """Return the process-wide default engine, building it lazily on
     first call from KYA_ATTACK_CHAIN_RULES_DIR env.
+
+    State-store selection follows :func:`resolve_state_store` -- with
+    a reachable Valkey, chains correlate across workers/processes
+    automatically.
 
     Returns None when no rules dir is configured -- callers (e.g.,
     record_evidence) treat None as "feature disabled, no-op".
@@ -322,7 +548,8 @@ def get_default_engine() -> AttackChainEngine | None:
         return None
     if not rules:
         return None
-    _DEFAULT_ENGINE = AttackChainEngine(rules=rules)
+    _DEFAULT_ENGINE = AttackChainEngine(
+        rules=rules, state_store=resolve_state_store())
     logger.info(
         "[KYA-CHAINS] default engine loaded %d rules from %s",
         len(rules), rules_dir)

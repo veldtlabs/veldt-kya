@@ -36,9 +36,10 @@ What this is NOT
 ----------------
 - Not a streaming framework. Each evidence event is processed
   synchronously inside record_evidence() with a small per-(tenant,
-  principal) state dict. For high-throughput fleets needing
-  cross-process state, swap _state to a Valkey-backed impl later --
-  the engine's interface is unchanged.
+  principal) state. The default ``InMemoryStateStore`` is per-process;
+  for multi-worker / multi-agent fleets that need partial-match state
+  shared across processes, pass ``ValkeyStateStore`` to
+  ``AttackChainEngine(state_store=...)``.
 - Not Sigma. Sigma rules don't have time-window semantics; this DSL
   does. They're related but not interchangeable.
 - Not pre-deployment chain testing -- that's Garak/PyRIT's territory.
@@ -51,6 +52,7 @@ from ._engine import (
     AttackChainEngine,
     get_default_engine,
     reset_default_engine,
+    resolve_state_store,
 )
 
 # Re-export the public API surface. Implementation details (the
@@ -67,10 +69,21 @@ from ._matchers import (
     field_value,
     match_value,
 )
+from ._sigma import (
+    SigmaTranslateError,
+    load_sigma_rule,
+    load_sigma_rules_from_dir,
+    translate_sigma_to_kya_dict,
+)
 from ._state import (
     InMemoryStateStore,
     PartialMatch,
     StateStore,
+    ValkeyStateStore,
+)
+from .delegation_correlation import (
+    DEFAULT_MAX_HOPS,
+    correlation_id_for_invocation,
 )
 
 __all__ = [
@@ -87,8 +100,18 @@ __all__ = [
     "PartialMatch",
     "StateStore",
     "InMemoryStateStore",
+    "ValkeyStateStore",
     # Engine
     "AttackChainEngine",
     "get_default_engine",
     "reset_default_engine",
+    "resolve_state_store",
+    # Cross-agent / delegation-graph correlation helper
+    "correlation_id_for_invocation",
+    "DEFAULT_MAX_HOPS",
+    # Sigma rule adapter (SigmaHQ interop)
+    "SigmaTranslateError",
+    "translate_sigma_to_kya_dict",
+    "load_sigma_rule",
+    "load_sigma_rules_from_dir",
 ]

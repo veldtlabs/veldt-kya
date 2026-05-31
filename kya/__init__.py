@@ -261,6 +261,16 @@ from ._valkey import (
     register_valkey_factory,
     reset_valkey_cache,
 )
+from .assessment import (
+    AssessmentReport,
+    Finding,
+    pillar_authority_mapping,
+    pillar_delegation_analysis,
+    pillar_evidence_chain_review,
+    pillar_provenance_assessment,
+    pillar_trust_scoring,
+    run_assessment,
+)
 from .audit_export import (
     EXPORT_SCHEMA_VERSION,
     AuditExportError,
@@ -806,6 +816,20 @@ __all__ = [
     "EXPORT_SCHEMA_VERSION",
     "AuditExportError",
     "SignatureVerificationFailed",
+    # Autonomous Systems Trust Assessment -- the 30-day productized
+    # assessment offering. run_assessment() orchestrates the five
+    # pillars (trust scoring, authority mapping, delegation analysis,
+    # provenance, evidence chain review) and emits an AssessmentReport
+    # with optional Ed25519-signed evidence artifact. Each pillar is
+    # individually callable; orchestrator fails soft per pillar.
+    "Finding",
+    "AssessmentReport",
+    "run_assessment",
+    "pillar_trust_scoring",
+    "pillar_authority_mapping",
+    "pillar_delegation_analysis",
+    "pillar_provenance_assessment",
+    "pillar_evidence_chain_review",
     # Economic Control (tenant_budget primitive — was shipped in
     # the budget Phase 1 commit but not re-exported at the top
     # level; users were forced to import from kya.tenant_budget).

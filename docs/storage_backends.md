@@ -97,6 +97,6 @@ whatever else listens on OTLP.
 If you want rogue signals tracked across processes (e.g. you have
 N stateless agent runners), wrap the helpers in your own HTTP
 endpoint. KYA does NOT ship that endpoint — you control the
-authentication, the rate limit, the persistence model. See the
-Veldt-internal `POST /api/v1/admin/agents/events/rogue` for one
-reference implementation (in `app/routes/admin_agents.py`).
+authentication, the rate limit, the persistence model. The Veldt
+platform exposes `POST /api/v1/admin/agents/events/rogue` as one such
+endpoint (in `app/routes/admin_agents.py`).

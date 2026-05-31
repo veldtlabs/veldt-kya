@@ -97,6 +97,37 @@ def init_storage(db) -> dict[str, Any]:
         bind = None
         dialect = "unknown"
 
+    # PG-only: when the operator configures a non-default schema
+    # (KYA_PG_SCHEMA or legacy KYA_VERSIONS_SCHEMA), CREATE it if
+    # missing so a standalone ``pip install veldt-kya`` against a
+    # fresh PG works out of the box without the operator remembering
+    # to run CREATE SCHEMA manually. No-op when schema resolves to
+    # None (= default ``public`` schema, always present on PG).
+    if dialect == "postgresql" and bind is not None:
+        try:
+            from ._portable import dialect_schema_qualifier
+            _schema = dialect_schema_qualifier()
+        except Exception:  # noqa: BLE001
+            _schema = None
+        if _schema:
+            try:
+                from sqlalchemy import text as _sa_text
+                with bind.begin() as _conn:
+                    _conn.execute(_sa_text(
+                        f"CREATE SCHEMA IF NOT EXISTS {_schema}"))
+            except Exception as _exc:  # noqa: BLE001
+                # If CREATE fails (RBAC denies CREATE on the database,
+                # name has SQL-illegal characters, ...) downstream
+                # ensure_* calls will also fail and report via the
+                # structured ``skipped`` list. Log loudly so operators
+                # see it even if ensure_* swallows the resulting error.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[KYA-STORAGE] CREATE SCHEMA %s failed: %s "
+                    "-- subsequent table creation will likely fail "
+                    "with 'schema does not exist'.", _schema, _exc,
+                )
+
     def _table_exists(name: str) -> bool:
         """Check the live catalog via the session's own connection — fresh
         engine connections may not see uncommitted DDL (DuckDB enforces

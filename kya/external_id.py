@@ -134,12 +134,10 @@ def bind_principal_to_idp(
     doesn't exist or the write failed. Fail-soft on DB errors.
 
     Implementation note: uses the ORM (select → mutate → commit)
-    rather than raw text() UPDATE. DuckDB has a documented quirk
-    where raw UPDATE on tables with composite primary keys fires a
-    "Duplicate key violates primary key constraint" error (see
-    https://duckdb.org/docs/sql/indexes — known index limitations).
-    The ORM emits a different SQL shape that DuckDB handles
-    correctly. Same code runs on PG/SQLite/MySQL.
+    rather than raw text() UPDATE so the same code path runs across
+    PG, MySQL, SQLite, and DuckDB. DuckDB's index handling treats
+    raw UPDATE on composite-primary-key tables as a constraint
+    violation; the ORM emits the shape DuckDB handles.
     """
     _validate(tenant_id=tenant_id, idp_subject=idp_subject,
               idp_kind=idp_kind)

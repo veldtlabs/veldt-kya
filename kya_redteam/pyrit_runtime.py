@@ -19,8 +19,8 @@ Without the env flag, this module is dormant — the native path handles
 everything. The dispatcher in multi_turn checks `pyrit_available()`
 before reaching into here, so the import cost is paid only when used.
 
-Production caveats (read before enabling)
------------------------------------------
+Operational notes (read before enabling)
+----------------------------------------
 - **PyRIT API drift**: PyRIT moves fast. Pin a specific version in
   requirements.txt and re-verify after each upgrade. This module is
   tested against the public PyRIT API surface as of the commit date;

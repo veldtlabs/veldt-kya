@@ -52,20 +52,19 @@ surviving row whose chain predecessor was removed. That break IS correct
 clean cut, not a tamper. Future rows in the chain still verify among
 themselves.
 
-v1 limitations (roadmap items)
-------------------------------
-- Merkle / third-party anchor: payloads are signed only by the local
-  HMAC. For external verifiability, batch a daily root hash to a notary
-  (Sigstore, RFC 3161 TSA, Solana) — out of v1 scope.
+Operational notes
+-----------------
+- Third-party-attestable notarization (Sigstore, RFC 3161 TSA) can be
+  layered on top of the HMAC chain by batching a daily root hash to
+  the notary of your choice.
 - Payload privacy: rows are stored plaintext. For PII at rest, layer
-  column-level encryption (PG `pgcrypto`, MySQL `AES_ENCRYPT`) at the
-  app boundary, or pre-redact via the `redacted` + `redaction_reason`
-  fields before calling record_evidence().
-- Concurrency: two `record_evidence` calls for the same
-  (tenant, invocation) that race can read the same `prev_hash` and
-  produce a chain fork. Mitigate with serializable isolation, an
-  application-level mutex per invocation, or by sequencing writes
-  through a single ingestion process.
+  column-level encryption (PG ``pgcrypto``, MySQL ``AES_ENCRYPT``) at
+  the app boundary, or pre-redact via the ``redacted`` +
+  ``redaction_reason`` fields before calling record_evidence().
+- Concurrency: record_evidence acquires a per-(tenant, invocation)
+  lock (PG advisory lock, MySQL ``SELECT FOR UPDATE``, in-process
+  mutex for SQLite/DuckDB) so concurrent writers serialize on the
+  chain head.
 
 Public API
 ----------
@@ -156,6 +155,17 @@ VALID_EVIDENCE_KINDS = {
     "judge_verdict",  # multi-judge orchestrator per-judge verdict
                       # (kya.scorer_orchestrator). Carries judge_name,
                       # dimension, verdict, score, latency, detail.
+    # Runtime-security evidence (kya.runtime bridge). One kind per
+    # canonical SourceTool so attack-chain rules can match on the
+    # tool without scanning payload fields.
+    "runtime_falco",
+    "runtime_tetragon",
+    "runtime_tracee",
+    "runtime_sysdig",
+    "runtime_osquery",
+    "runtime_auditd",
+    "runtime_k8s_audit",
+    "runtime_ebpf",
 }
 
 # Retention defaults per regime (days). Used when caller doesn't supply

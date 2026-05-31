@@ -58,11 +58,30 @@ class StepSpec:
     id: str
     evidence_kind: str
     match: dict[str, Any] = field(default_factory=dict)
-    # Optional: must occur AFTER this prior step.
-    after: str | None = None
-    # Optional: within N seconds of the `after` step
-    # (None = no time bound).
+    # Prior steps that must complete before this step can match.
+    #
+    # The canonical in-memory representation is ALWAYS a tuple. The
+    # loader accepts two surface forms and normalises:
+    #   * ``after: "step1"``               -> ``("step1",)``
+    #   * ``after: ["step1", "step2"]``    -> ``("step1", "step2")``
+    #   * ``after: null`` / omitted        -> ``()``
+    #
+    # An empty tuple means "no prerequisites" (the step can fire
+    # from the start). A non-empty tuple means **all** listed steps
+    # must have completed -- AND-join semantics. OR-of-steps is
+    # expressed by writing two rules, not by overloading this field.
+    after: tuple[str, ...] = field(default_factory=tuple)
+    # Optional: within N seconds of the LATEST `after` predecessor
+    # completing (None = no time bound). When there are multiple
+    # `after` entries the engine measures from the most recent one.
     within_seconds: int | None = None
+
+
+# Allowed values for AttackChainRule.mode. "linear" is the historical
+# behaviour (steps fire in declared order); "dag" enables AND-joins
+# across the step graph so a chain can model branch-and-join attack
+# patterns.
+RULE_MODES = frozenset({"linear", "dag"})
 
 
 @dataclass(frozen=True)
@@ -81,6 +100,19 @@ class AttackChainRule:
     emits_signal: str
     correlate_by: tuple[str, ...]
     steps: tuple[StepSpec, ...]
+    # Execution model for the step graph.
+    #   * ``linear`` (default) -- steps must complete in the order
+    #     they were declared; ``after`` is honored as a single
+    #     predecessor; a chain advances index by index.
+    #   * ``dag``              -- each step is ready when ALL of its
+    #     ``after`` entries are in the completed set (AND-join);
+    #     steps may complete in any order; the rule fires when the
+    #     completed set covers every declared step.
+    #
+    # Backward-compatible default keeps every existing rule behaving
+    # exactly as before. Customers opt into DAG semantics per rule
+    # when they need branch-and-join patterns.
+    mode: str = "linear"
     # Global window cap (in addition to per-step `within_seconds`).
     # None = no global cap.
     window_seconds: int | None = None
@@ -178,6 +210,16 @@ def _load_v1(raw: dict, source_label: str) -> AttackChainRule:
             isinstance(window_seconds, int) and window_seconds > 0):
         _bail("window_seconds must be a positive int if present")
 
+    # ``mode`` is optional with a backward-compatible default. Linear
+    # rules behave exactly as they did before this field existed. DAG
+    # rules let any step fire when all of its ``after`` entries are in
+    # the completed set -- enabling branch-and-join attack patterns
+    # (e.g. recon + creds-read in parallel, then exfil joins on both).
+    mode = raw.get("mode", "linear")
+    if mode not in RULE_MODES:
+        _bail(
+            f"mode must be one of {sorted(RULE_MODES)!r}; got {mode!r}")
+
     steps_raw = raw.get("steps")
     if not isinstance(steps_raw, list) or not steps_raw:
         _bail("steps must be a non-empty list")
@@ -209,21 +251,49 @@ def _load_v1(raw: dict, source_label: str) -> AttackChainRule:
             except MatcherError as exc:
                 _bail(f"steps[{sid}].match[{path}]: {exc}")
 
-        after = step.get("after")
-        if after is not None:
-            if not isinstance(after, str):
-                _bail(f"steps[{sid}].after must be a str if present")
-            if after not in seen_step_ids:
-                _bail(f"steps[{sid}].after={after!r} references unknown "
-                      f"prior step (must be declared earlier in `steps`)")
+        # ``after`` accepts three surface forms; we always normalise
+        # to a tuple of step ids. An empty tuple means "no
+        # prerequisite". DAG rules typically use the list form for
+        # AND-joins; linear rules typically use the single-string
+        # form. Both are accepted in either mode.
+        after_raw = step.get("after")
+        if after_raw is None:
+            after: tuple[str, ...] = ()
+        elif isinstance(after_raw, str):
+            after = (after_raw,) if after_raw.strip() else ()
+        elif isinstance(after_raw, (list, tuple)):
+            if not all(isinstance(x, str) and x.strip() for x in after_raw):
+                _bail(
+                    f"steps[{sid}].after list entries must be non-empty "
+                    f"strings; got {after_raw!r}")
+            after = tuple(after_raw)
+        else:
+            _bail(
+                f"steps[{sid}].after must be a string, list of strings, "
+                f"or null; got {type(after_raw).__name__}")
+
+        for prior in after:
+            if prior == sid:
+                _bail(
+                    f"steps[{sid}].after references itself -- a step "
+                    f"cannot be its own prerequisite")
+            if prior not in seen_step_ids:
+                # For ``linear`` rules this preserves the historical
+                # constraint (must be declared earlier). For ``dag``
+                # rules we keep the same constraint -- declaring
+                # predecessors first makes cycle detection trivial.
+                _bail(
+                    f"steps[{sid}].after={prior!r} references unknown "
+                    f"prior step (must be declared earlier in `steps`)")
 
         within = step.get("within_seconds")
         if within is not None and not (
                 isinstance(within, int) and within > 0):
             _bail(f"steps[{sid}].within_seconds must be positive int")
-        if within is not None and after is None:
-            _bail(f"steps[{sid}].within_seconds requires `after` to "
-                  f"define which prior step to measure from")
+        if within is not None and not after:
+            _bail(
+                f"steps[{sid}].within_seconds requires `after` to "
+                f"define which prior step to measure from")
 
         steps.append(StepSpec(
             id=sid, evidence_kind=ekind, match=dict(match_raw),
@@ -242,6 +312,7 @@ def _load_v1(raw: dict, source_label: str) -> AttackChainRule:
         emits_signal=emits,
         correlate_by=correlate_by,
         steps=tuple(steps),
+        mode=mode,
         window_seconds=window_seconds,
         metadata=dict(metadata),
     )

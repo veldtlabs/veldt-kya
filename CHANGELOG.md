@@ -63,8 +63,8 @@ Initial public release on PyPI.
 
 ### Compatibility
 - Python 3.10, 3.11, 3.12
-- PostgreSQL, MySQL, SQLite, DuckDB (with caveats — see
-  `docs/storage_backends.md`)
+- PostgreSQL, MySQL, SQLite, DuckDB (see
+  `docs/storage_backends.md` for backend selection guidance)
 - Optional deps via extras: `[metrics]`, `[tracing]`, `[webhooks]`,
   `[judge]`, `[all]`
 

@@ -1,0 +1,43 @@
+version: 1
+id: cross_agent_data_exfiltration
+description: |
+  Two delegated agents under the same request: one reads sensitive
+  data (recon), another exfiltrates it via outbound HTTP (exfil).
+  Catches the topology-guided multi-agent attack pattern where each
+  step looks benign in isolation but the sequence -- ACROSS agents --
+  is exfiltration.
+
+  ``correlate_by: [tenant_id, correlation_id]`` makes this chain
+  span EVERY agent under one request. The two steps can be performed
+  by different principals; what matters is that they share a
+  correlation_id (KYA propagates this from the parent invocation
+  through the delegation tree). To resolve the correlation_id from
+  an invocation row, call
+  ``kya.attack_chains.correlation_id_for_invocation()``.
+severity: critical
+emits_signal: rogue_cross_agent_data_exfiltration
+correlate_by:
+  - tenant_id
+  - correlation_id
+window_seconds: 600
+steps:
+  - id: recon
+    evidence_kind: tool_call
+    match:
+      payload.tool: file_read
+      payload.path: "glob:/etc/*"
+  - id: exfil
+    evidence_kind: tool_call
+    match:
+      payload.tool: http_post
+    after: recon
+    within_seconds: 300
+metadata:
+  mitre_attack:
+    - T1041   # Exfiltration Over C2 Channel
+    - T1003   # OS Credential Dumping (when target is /etc/shadow)
+  tags:
+    - exfiltration
+    - multi-agent
+    - topology-attack
+    - liang-2025

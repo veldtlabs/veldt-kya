@@ -269,8 +269,7 @@ roadmap:
 - SQL-aware data-policy judge (customers bring this today via
   `register_judge()`; bundled adapter in a future release)
 - Third-party-attestable notarization for the evidence chain
-  (Sigstore / RFC 3161). v1 uses single-key HMAC chains — see
-  §11 of the paper for the limitation.
+  (Sigstore / RFC 3161) layered on top of the existing HMAC chain.
 - Full DAG-wide topology validation for delegated agent graphs.
   v1 enforces pairwise parent-child ceilings (the Liang-2025
   topology-attack defense).

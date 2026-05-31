@@ -261,7 +261,7 @@ The allowlist is *positive* — anything not in it never auto-applies.
 | Customer admin paste-bins a malicious collector URL | Same as CDN compromise — attacker can return only what they sign with a key the SDK trusts; without that key, rejected |
 | Replayed old envelope | `expires_at` is signed; rows past expiry rejected at persist |
 | Replayed envelope across deployments | `external_id` is UNIQUE per row — re-fetches are idempotent ON CONFLICT |
-| Insider at Veldt with TLS cert but NOT signing key | Cannot issue recommendations |
+| Insider at Veldt with TLS cert but NOT signing key | Recommendation issuance requires both the TLS cert AND the signing key |
 | Insider with the signing key | Bleeds — key rotation + KMS/Vault audit is the mitigation; this is by design (no system is safe from a fully-trusted insider) |
 | Auto-apply approves loosening | `set_override` raises `OverrideLoosensError`; the only-tighten rule still gates the final effective value |
 | Unknown scope or malformed payload | Validated before persist; rejected with `unknown_scope:` / `missing_key` reason in counter |
@@ -287,7 +287,7 @@ If `prometheus_client` is installed:
 - Regulated deployments where any inbound config change requires an
   approval committee — keep `auto_apply_allowlist=None` so every change
   hits your ticketing system before applying.
-- Customers that have not yet exercised the in-tenant feedback loop —
-  start there first. Cross-tenant recommendations are aggregated from
-  the same telemetry shape and won't be a useful signal until your own
-  agents are actively producing recordable events.
+- Deployments establishing their first telemetry baseline — start
+  with the in-tenant feedback loop. Cross-tenant recommendations are
+  aggregated from the same telemetry shape and become useful once
+  your own agents are actively producing recordable events.
