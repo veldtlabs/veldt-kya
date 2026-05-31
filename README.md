@@ -1,29 +1,41 @@
 # veldt-kya
 
-**Know Your Agents** — risk scoring, drift detection, rogue-behavior
-observation, and compliance-grade evidence for any autonomous system.
+**KYA (Know Your Agents)** is open-source trust, governance, and evidentiary
+assurance infrastructure for autonomous systems.
 
-```
+It helps organizations answer:
+
+- Who — or what — acted?
+- What authority did they possess?
+- What data and resources could they access?
+- How did authority propagate across humans, AI agents, and services?
+- Did the actions conform to policy?
+- Can the decision be verified afterward?
+
+The challenge is not simply telemetry. It is identity, authority, evidentiary
+provenance, and enforceable behavioral contracts across autonomous systems.
+
+**KYA builds on KYP (Know Your Principal)**, a unified trust model spanning
+human users, AI agents, service accounts, and machine identities. Together they
+provide trust scoring, delegated-authority attribution, policy enforcement,
+evidentiary provenance, drift detection, data-sensitivity controls, and
+compliance-grade evidence chains.
+
+Applicable to LLM agents, multi-agent systems, autonomous workflows, agentic
+RAG, AutoML pipelines, RPA bots, service accounts, and machine identities.
+
+```bash
 pip install veldt-kya
 ```
 
-## What it does
-
-KYA is the trust + governance layer for autonomous systems. It scores any
-agent (LLM, AutoML pipeline, lakehouse auto-SQL, RPA bot, schema-evolution
-job) against a published risk model, detects drift in the agent's
-definition, observes rogue behavior at runtime, and emits regulator-grade
-evidence — model cards (SR 11-7), AIMS bundles (ISO 42001), breach
-notifications (NYDFS, DORA, GDPR, HIPAA).
-
-Observability tools tell you when an agent is *slow* or *erroring*. KYA
-tells you whether an agent's actions were *authorized*, *conformed to
-policy*, *drifted* from their approved definition, or *leaked* — and
-produces evidence operators can verify afterward.
+KYA does not replace observability. Observability helps explain what happened
+operationally — latency, cost, traces, and execution paths. KYA helps determine
+whether actions were *authorized*, *policy-conforming*, *attributable*, and
+*verifiable*.
 
 > Framework paper (preprint): [KYA: A Framework-Agnostic Trust Layer for
 > Autonomous Systems with Verifiable Provenance and Hierarchical Policy
-> Composition](https://arxiv.org/abs/2605.25376) — Quadri (2026).
+> Composition](https://arxiv.org/abs/2605.25376).
 
 ## Quick start
 
@@ -248,12 +260,12 @@ changing your code.
 
 ## Roadmap
 
-This is the standalone SDK packaging of the KYA module already
+This is the standalone packaging of the KYA infrastructure already
 running in production inside Veldt Decisions. Items still on the
 roadmap:
 
 - Lakehouse adapter (Databricks Genie / Snowflake Cortex)
-- Hosted KYA dashboard for SDK consumers
+- Hosted KYA dashboard for self-managed deployments
 - SQL-aware data-policy judge (customers bring this today via
   `register_judge()`; bundled adapter in a future release)
 - Third-party-attestable notarization for the evidence chain
