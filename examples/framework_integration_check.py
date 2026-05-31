@@ -2,9 +2,8 @@
 
 This is a payload-driven integration check — it runs the SDK's
 format_adapter + scoring against authentic payloads captured from each
-framework, not synthetic data. It does NOT call any live API; that
-requires API keys (OpenAI, Anthropic) and is out of scope for an
-automated test.
+framework, not synthetic data. It does NOT call any live API; live-API
+checks live in ``examples/live_*.py`` and require provider API keys.
 
 What this proves:
   1. normalize_agent_def(framework, raw) handles each framework's

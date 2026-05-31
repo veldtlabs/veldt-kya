@@ -20,8 +20,8 @@ Bundled adapters (in this file)
                                hallucination" prompt
   - "refusal_heuristic"     -> substring match (no API call)
 
-Adapter stubs (require external setup; see register_*_adapter())
-----------------------------------------------------------------
+Optional external adapters (register via register_*_adapter())
+--------------------------------------------------------------
   - "lakera_guard"          -> Lakera Guard API (needs LAKERA_API_KEY)
   - "nemo_guardrails"       -> NeMo Guardrails (needs pip install +
                                local config)
@@ -267,9 +267,9 @@ def _judge_kya_pyrit(
     work LLM-free (regex/substring heuristics) so the adapter has no
     runtime dependencies and no LLM call.
 
-    For more sophisticated PyRIT scorers (self_ask_true_false), the
-    caller would need to configure an attacker_model + objective,
-    which is out of scope for this adapter.
+    More sophisticated PyRIT scorers (self_ask_true_false) require an
+    attacker_model + objective; configure those via PyRIT directly and
+    register the resulting scorer through ``register_judge``.
     """
     t0 = time.time()
     if not response:
@@ -402,7 +402,7 @@ register_judge("kya_attack_patterns", _judge_kya_attack_patterns)
 # can register it conditionally.
 
 
-# ── Adapter stubs for external frameworks ──────────────────────────
+# ── Optional external-framework adapters ───────────────────────────
 
 
 def register_lakera_adapter(api_key: str | None = None) -> None:
