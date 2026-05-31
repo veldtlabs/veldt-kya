@@ -55,6 +55,7 @@ from kya import (
     snapshot_agent, record_invocation, record_evidence,
     record_principal_signal, get_principal_trust,
     verify_chain, compliance_summary,
+    require_action, AccessDeniedError,
 )
 
 # 1) Pre-deployment: assess the agent against its declared capabilities
@@ -71,6 +72,7 @@ billing_agent = {
 risk = score_agent(billing_agent)
 
 # 2) At runtime: record what happened
+gate = "ALLOWED"
 with default_session() as db:
     snapshot_agent(db, tenant_id="bank-1",
                    agent_key="billing_agent",
@@ -99,14 +101,25 @@ with default_session() as db:
     )
     db.commit()
 
-    # 3) Audit time: prove nothing was tampered + read live trust
+    # 3) Governance gate: try a privileged action; min_trust=70 fires
+    #    because the agent's trust score has not yet crossed the bar.
+    try:
+        require_action(db, tenant_id="bank-1",
+                       principal_kind="agent",
+                       principal_id="billing_agent",
+                       action="kya.budget.write",
+                       min_trust=70)
+    except AccessDeniedError:
+        gate = "BLOCKED"
+
+    # 4) Audit time: prove nothing was tampered + read live trust
     chain = verify_chain(db, tenant_id="bank-1", invocation_id=inv)
     trust = get_principal_trust(
         db, tenant_id="bank-1",
         principal_kind="agent", principal_id="billing_agent",
     )
 
-# 4) Compliance: what controls apply, what's the retention?
+# 5) Compliance: what controls apply, what's the retention?
 summary = compliance_summary(billing_agent, risk.score)
 
 print(f"Principal:        agent:{trust.principal_id}")
@@ -115,6 +128,8 @@ print(f"Data touched:     {billing_agent['data_classes']}")
 print(f"Trust score:      {trust.trust_score} ({trust.bucket})")
 print(f"Evidence chain:   {'valid' if chain['valid'] else 'broken'}  "
       f"(checked {chain['checked']} rows)")
+print(f"Gate (min=70):    {gate}")
+print(f"Signal ledger:    {trust.signal_counts}")
 print(f"Compliance:       {summary['scope']}")
 print(f"Retention req:    {summary['retention_days']} days")
 ```
@@ -123,15 +138,18 @@ print(f"Retention req:    {summary['retention_days']} days")
 Principal:        agent:billing_agent
 Risk score:       100 (critical)
 Data touched:     ['pii']
-Trust score:      51 (neutral)
+Trust score:      49 (neutral)
 Evidence chain:   valid  (checked 1 rows)
+Gate (min=70):    BLOCKED
+Signal ledger:    {'clean_invocation': 1, 'rbac_refusal': 1}
 Compliance:       ['nydfs_500', 'gdpr']
 Retention req:    2190 days
 ```
 
 One snippet, every primitive: **identity (KYP), authority (risk
-score + governance), evidence (HMAC-chained), provenance
-(verify_chain), and compliance (regime-aware retention + controls).**
+score + min-trust gate), governance (BLOCKED action records its own
+audit signal), evidence (HMAC-chained), provenance (verify_chain),
+and compliance (regime-aware retention + controls).**
 
 The rest of this README breaks each primitive out so you can see
 exactly how it works.
@@ -157,11 +175,16 @@ with default_session() as db:
                    definition={"agent_key": "loan_writer",
                                "tools": ["write_loan"]})
 
-    record_principal_signal(
-        db, tenant_id="bank-1",
-        principal_kind="agent", principal_id="loan_writer",
-        signal_kind="data_leak",
-    )
+    # Signals can come from anywhere: runtime judges, RBAC gates,
+    # kernel-level alerts, manual ops decisions. They all converge
+    # on one principal ledger.
+    for sig in ["clean_invocation", "received_attack", "data_leak"]:
+        new = record_principal_signal(
+            db, tenant_id="bank-1",
+            principal_kind="agent", principal_id="loan_writer",
+            signal_kind=sig,
+        )
+        print(f"  after {sig:<22} -> trust={new}")
     db.commit()
 
     trust = get_principal_trust(
@@ -169,13 +192,21 @@ with default_session() as db:
         principal_kind="agent", principal_id="loan_writer",
     )
 
-print(f"trust={trust.trust_score} ({trust.bucket})  "
-      f"signals={trust.signal_counts}")
+print(f"final  trust={trust.trust_score} ({trust.bucket})")
+print(f"       ledger={trust.signal_counts}")
 ```
 
 ```text
-trust=40 (neutral)  signals={'data_leak': 1}
+  after clean_invocation       -> trust=51
+  after received_attack        -> trust=50
+  after data_leak              -> trust=40
+final  trust=40 (neutral)
+       ledger={'clean_invocation': 1, 'received_attack': 1, 'data_leak': 1}
 ```
+
+The ledger preserves every signal that ever fired on this
+principal — not just the current score. Compliance teams reading
+the audit later can see the full behavioral history.
 
 Built-in signal kinds (with default trust deltas): `clean_invocation`
 (+1), `received_attack` (-1), `governance_block` / `rate_limit_exceeded`
@@ -453,22 +484,35 @@ shell in container" alert flows into the agent's trust ledger and
 attack-chain correlation.
 
 ```python
+from sqlalchemy import text
 from kya import (
     default_session, record_invocation, record_evidence,
     record_principal_signal, get_principal_trust,
 )
 
 with default_session() as db:
+    # One invocation -- the agent's normal work
     inv = record_invocation(
         db, tenant_id="bank-1",
         agent_key="research_agent",
         principal_kind="agent", principal_id="research_agent",
         mode="observed", outcome="success",
+        correlation_id="incident_2026_0531",
     )
 
-    # Falco fires: a shell spawned in the agent's container
+    # Application-layer evidence: the tool call the agent made
     record_evidence(db, tenant_id="bank-1", invocation_id=inv,
-                    evidence_kind="falco_alert",
+                    evidence_kind="tool_call",
+                    payload={"tool": "fetch_url",
+                             "url": "https://internal-corpus.example.com/doc-42"})
+
+    # Kernel-layer evidence: Falco fires on the agent's container.
+    # ``runtime_falco`` is one of KYA's canonical evidence_kinds
+    # for runtime-security sources (runtime_auditd, runtime_tetragon,
+    # runtime_tracee, runtime_osquery, runtime_sysdig, runtime_k8s_audit,
+    # runtime_ebpf).
+    record_evidence(db, tenant_id="bank-1", invocation_id=inv,
+                    evidence_kind="runtime_falco",
                     payload={"rule": "Terminal shell in container",
                              "priority": "critical",
                              "container_id": "ab12c4",
@@ -479,23 +523,42 @@ with default_session() as db:
         db, tenant_id="bank-1",
         principal_kind="agent", principal_id="research_agent",
         signal_kind="policy_violation",
-        attributes={"source": "falco",
-                    "rule": "Terminal shell in container",
-                    "mitre": "T1059"},
+        attributes={"source": "falco", "mitre": "T1059"},
     )
     db.commit()
 
-    rt = get_principal_trust(db, tenant_id="bank-1",
-                             principal_kind="agent",
-                             principal_id="research_agent")
+    # Show the correlation: both layers, one principal, one invocation
+    rows = db.execute(text(
+        "SELECT evidence_kind, "
+        "       coalesce(json_extract(payload,'$.tool'),'-') as tool, "
+        "       coalesce(json_extract(payload,'$.rule'),'-') as rule "
+        "FROM kya_evidence WHERE invocation_id = :i ORDER BY id"
+    ), {"i": inv}).fetchall()
+    trust = get_principal_trust(db, tenant_id="bank-1",
+                                principal_kind="agent",
+                                principal_id="research_agent")
 
-print(f"agent:research_agent  trust={rt.trust_score} ({rt.bucket})  "
-      f"signals={rt.signal_counts}")
+print(f"invocation_id={inv}  correlation_id=incident_2026_0531")
+print(f"principal=agent:research_agent  "
+      f"trust={trust.trust_score} ({trust.bucket})")
+print()
+print(f"  {'evidence_kind':<16}  {'tool':<12}  rule")
+print(f"  {'-'*16}  {'-'*12}  {'-'*30}")
+for r in rows:
+    print(f"  {r[0]:<16}  {r[1]:<12}  {r[2]}")
 ```
 
 ```text
-agent:research_agent  trust=43 (neutral)  signals={'policy_violation': 1}
+invocation_id=1  correlation_id=incident_2026_0531
+principal=agent:research_agent  trust=43 (neutral)
+
+  evidence_kind     tool          rule
+  ----------------  ------------  ------------------------------
+  tool_call         fetch_url     -
+  runtime_falco     -             Terminal shell in container
 ```
+
+Both layers — the agent's `tool_call` and the kernel's `runtime_falco` — land on the **same invocation_id, the same principal, and the same correlation_id**. The kernel-level signal also flows into the principal's trust ledger, so attack-chain rules can correlate the two timelines without a separate join.
 
 Premium runtime parsers for Falco, auditd, Kubernetes audit log,
 Tetragon, osquery, Tracee, Sysdig OSS, and custom eBPF probes — plus
