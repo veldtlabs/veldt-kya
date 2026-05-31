@@ -134,18 +134,6 @@ print(f"Compliance:       {summary['scope']}")
 print(f"Retention req:    {summary['retention_days']} days")
 ```
 
-```text
-Principal:        agent:billing_agent
-Risk score:       100 (critical)
-Data touched:     ['pii']
-Trust score:      49 (neutral)
-Evidence chain:   valid  (checked 1 rows)
-Gate (min=70):    BLOCKED
-Signal ledger:    {'clean_invocation': 1, 'rbac_refusal': 1}
-Compliance:       ['nydfs_500', 'gdpr']
-Retention req:    2190 days
-```
-
 One snippet, every primitive: **identity (KYP), authority (risk
 score + min-trust gate), governance (BLOCKED action records its own
 audit signal), evidence (HMAC-chained), provenance (verify_chain),
@@ -196,14 +184,6 @@ print(f"final  trust={trust.trust_score} ({trust.bucket})")
 print(f"       ledger={trust.signal_counts}")
 ```
 
-```text
-  after clean_invocation       -> trust=51
-  after received_attack        -> trust=50
-  after data_leak              -> trust=40
-final  trust=40 (neutral)
-       ledger={'clean_invocation': 1, 'received_attack': 1, 'data_leak': 1}
-```
-
 The ledger preserves every signal that ever fired on this
 principal — not just the current score. Compliance teams reading
 the audit later can see the full behavioral history.
@@ -213,8 +193,6 @@ Built-in signal kinds (with default trust deltas): `clean_invocation`
 / `rbac_refusal` (-2), `oos_tool` (-3), `payload_too_large` (-4),
 `hallucination_detected` / `injection_attempt` (-5), `policy_violation`
 (-7), `replay_detected` (-8), `data_leak` (-10), `cross_tenant` (-15).
-
----
 
 ## 2. Delegated authority
 
@@ -266,18 +244,10 @@ print(f"parent  (loan_orchestrator): trust={parent.trust_score} "
 print(f"  attribution carried:       {child.attributes}")
 ```
 
-```text
-child   (loan_writer):       trust=30 (risky)  signals={'data_leak': 2}
-parent  (loan_orchestrator): trust=48 (neutral)  signals={'governance_block': 1}
-  attribution carried:       {'delegated_by': 'loan_orchestrator'}
-```
-
 The orchestrator's trust drops too — by less, because the leak was a
 delegate's action, but enough that repeated delegate misbehavior
 will eventually push the orchestrator's trust into the policy-gate
 threshold.
-
----
 
 ## 3. Verifiable provenance — evidence chains
 
@@ -322,16 +292,9 @@ print(f"tampered: valid={bad['valid']}  "
       f"broken_at={bad['broken_at']}  reason={bad['reason']}")
 ```
 
-```text
-intact:   valid=True  checked=3
-tampered: valid=False  broken_at=4  reason=payload_hash mismatch — payload was modified
-```
-
 Mount a real signing key in production via `KYA_EVIDENCE_KEY_PROVIDER`
 (KMS, Vault, or sealed-secret). The chain survives process restart
 and remains independently verifiable by anyone holding the key.
-
----
 
 ## 4. Compliance regimes
 
@@ -356,20 +319,11 @@ print(f"first control:   {summary['required_controls'][0]['id']}  "
 print(f"NYDFS notify:    {REGIME_BREACH_NOTIFY['nydfs_500']}")
 ```
 
-```text
-scope:           ['nydfs_500']
-retention_days:  1825
-first control:   nydfs_500_02  (23 NYCRR §500.02)
-NYDFS notify:    {'window_hours': 72, 'format': 'nydfs_breach', 'authority': 'NYDFS Superintendent (23 NYCRR §500.17)'}
-```
-
 Built-in regimes: GDPR, EU AI Act, HIPAA, SOX, PCI, CCPA, GLBA,
 FERPA, ISO 27001, SOC 2, NYDFS 500, DORA, SR 11-7, ISO 42001,
 EO 14110, AI Bill of Rights — plus federal/defense (ITAR, EAR,
 CMMC, FedRAMP, DFARS, NIST 800-171, NIST 800-53, FIPS 140-2/3) and
 international equivalents (IRAP, CCCS, C5, ENS, IL5/IL6).
-
----
 
 ## 5. Works with the frameworks you already use
 
@@ -427,12 +381,6 @@ for name, canon in [("OpenAI", oa), ("CrewAI", crew), ("Generic", gen)]:
           f"tools={canon.get('tools')}")
 ```
 
-```text
-  OpenAI    score=100 (critical)  tools=['read_billing', 'issue_credit']
-  CrewAI    score=100 (critical)  tools=['read_billing', 'issue_credit']
-  Generic   score=100 (critical)  tools=['read_billing', 'issue_credit']
-```
-
 Same authority. Same trust posture. Same governance outcome. Built-
 in adapters cover **23 frameworks** including LangChain, CrewAI,
 OpenAI Agents, Claude Agent SDK, AutoGen, Semantic Kernel,
@@ -469,12 +417,6 @@ r = score_agent(normalize_agent_def("acme", AcmeAgent(
 )))
 print(f"acme.ticket_router  score={r.score} ({r.bucket})")
 ```
-
-```text
-acme.ticket_router  score=97 (critical)
-```
-
----
 
 ## 6. Runtime security correlation
 
@@ -548,23 +490,11 @@ for r in rows:
     print(f"  {r[0]:<16}  {r[1]:<12}  {r[2]}")
 ```
 
-```text
-invocation_id=1  correlation_id=incident_2026_0531
-principal=agent:research_agent  trust=43 (neutral)
-
-  evidence_kind     tool          rule
-  ----------------  ------------  ------------------------------
-  tool_call         fetch_url     -
-  runtime_falco     -             Terminal shell in container
-```
-
 Both layers — the agent's `tool_call` and the kernel's `runtime_falco` — land on the **same invocation_id, the same principal, and the same correlation_id**. The kernel-level signal also flows into the principal's trust ledger, so attack-chain rules can correlate the two timelines without a separate join.
 
 Production-grade runtime parsers for Falco and more — plus a K8s
 annotation resolver for principal binding — ship in the commercial
 `veldt-kya-pro` overlay.
-
----
 
 ## 7. Drift detection
 
@@ -587,11 +517,6 @@ current = {"agent_key": "billing_agent",
 
 print(f"same def:      drift={detect_drift(declared_hash, declared)}")
 print(f"+ shell_exec:  drift={detect_drift(declared_hash, current)}")
-```
-
-```text
-same def:      drift=False
-+ shell_exec:  drift=True
 ```
 
 ---
@@ -631,10 +556,6 @@ r = check_consensus(
 print(f"consensus={r.consensus}  judges_voted={sum(1 for j in r.judges if j.verdict)}")
 ```
 
-```text
-consensus=OK  judges_voted=8
-```
-
 Default panel splits into three tiers:
 
 **Bundled** (no setup, ships with `pip install veldt-kya`):
@@ -668,23 +589,17 @@ and OIDC (Keycloak / Okta / Auth0). See `examples/live_e2e_jwt_auth.py`,
 
 ## Optional features (extras)
 
-```
-pip install "veldt-kya[recommended]"   # multi-judge starter pack
-                                       # (Presidio PII + litellm for
-                                       # arize_phoenix + openai_judge)
-
-pip install "veldt-kya[presidio]"      # Presidio PII detector only
-pip install "veldt-kya[judge]"         # litellm (Phoenix + LLM judges)
-pip install "veldt-kya[all_judges]"    # presidio + litellm + langkit
-
-pip install "veldt-kya[metrics]"       # Prometheus counters
-pip install "veldt-kya[tracing]"       # OpenTelemetry span events
-pip install "veldt-kya[webhooks]"      # Outbound emit (Splunk /
-                                       # Datadog / regulator formats)
-pip install "veldt-kya[attack_chains]" # YAML rule DSL for multi-step
-                                       # attack-chain detection
-pip install "veldt-kya[all]"           # everything
-```
+| Extra | Install command | What you get |
+| --- | --- | --- |
+| `recommended` | `pip install "veldt-kya[recommended]"` | Multi-judge starter pack (Presidio PII + litellm for arize_phoenix + openai_judge) |
+| `presidio` | `pip install "veldt-kya[presidio]"` | Presidio PII detector only |
+| `judge` | `pip install "veldt-kya[judge]"` | litellm (Phoenix + LLM judges) |
+| `all_judges` | `pip install "veldt-kya[all_judges]"` | presidio + litellm + langkit |
+| `metrics` | `pip install "veldt-kya[metrics]"` | Prometheus counters |
+| `tracing` | `pip install "veldt-kya[tracing]"` | OpenTelemetry span events |
+| `webhooks` | `pip install "veldt-kya[webhooks]"` | Outbound emit (Splunk / Datadog / regulator formats) |
+| `attack_chains` | `pip install "veldt-kya[attack_chains]"` | YAML rule DSL for multi-step attack-chain detection |
+| `all` | `pip install "veldt-kya[all]"` | Everything |
 
 Core (`pip install veldt-kya`) is stdlib + SQLAlchemy + requests
 only. The multi-judge orchestrator auto-registers judges from the
