@@ -31,11 +31,12 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, TextIO
+from typing import Any, TextIO
 
-from ._registry import list_parsers
 from . import ingest as runtime_ingest
+from ._registry import list_parsers
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +86,7 @@ class CollectorStats:
 def iter_stdin(stream: TextIO | None = None) -> Iterable[str]:
     """Yield lines from a text stream (default stdin) until EOF."""
     src = stream if stream is not None else sys.stdin
-    for line in src:
-        yield line
+    yield from src
 
 
 def iter_tail(
@@ -112,7 +112,11 @@ def iter_tail(
     if stop_event is None:
         stop_event = threading.Event()
 
-    f = open(path, "r", encoding="utf-8", errors="replace")
+    # noqa: SIM115 — file lifetime spans the tail loop and crosses
+    # close/reopen on inode change (rotation). A ``with`` block would
+    # require restructuring the loop in a way that complicates the
+    # rotation-handling branch below.
+    f = open(path, encoding="utf-8", errors="replace")  # noqa: SIM115
     try:
         inode = os.fstat(f.fileno()).st_ino
         if not from_start:
@@ -124,8 +128,7 @@ def iter_tail(
                 buf = leftover + chunk
                 lines = buf.split("\n")
                 leftover = lines.pop()  # may be a partial trailing line
-                for line in lines:
-                    yield line
+                yield from lines
                 continue
 
             # No new data -- check for rotation/truncation, then sleep.
@@ -141,7 +144,7 @@ def iter_tail(
                     "[KYA-RUNTIME-CLI] file rotated; reopening %s", path,
                 )
                 f.close()
-                f = open(path, "r", encoding="utf-8", errors="replace")
+                f = open(path, encoding="utf-8", errors="replace")  # noqa: SIM115
                 inode = os.fstat(f.fileno()).st_ino
                 leftover = ""
                 continue

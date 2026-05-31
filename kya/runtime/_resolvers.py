@@ -59,7 +59,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from typing import Callable
+from collections.abc import Callable
 
 from ._canonical import RuntimeEvent
 
@@ -88,7 +88,7 @@ class ExplicitBindingCache:
     chain instances see the same mappings.
     """
 
-    _cache: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+    _cache: OrderedDict[str, tuple[str, str]] = OrderedDict()
     _lock = threading.Lock()
     _max_entries = 10_000
 
@@ -126,7 +126,7 @@ class ExplicitBindingCache:
 
     def __call__(
         self, ev: RuntimeEvent,
-    ) -> "tuple[str, str, str] | None":
+    ) -> tuple[str, str, str] | None:
         cid = ev.container_id
         if not cid:
             return None
@@ -171,8 +171,8 @@ class DockerLabelResolver:
         self.cache_ttl = float(cache_ttl_seconds)
         # cache: container_id -> (expires_at, (tid, pid) | None)
         self._cache: dict[
-            str, "tuple[float, tuple[str, str] | None]"] = {}
-        self._client_ready: "bool | None" = None
+            str, tuple[float, tuple[str, str] | None]] = {}
+        self._client_ready: bool | None = None
         self._client = None
         self._lock = threading.Lock()
 
@@ -200,7 +200,7 @@ class DockerLabelResolver:
             self._client_ready = False
             return None
 
-    def _lookup(self, container_id: str) -> "tuple[str, str] | None":
+    def _lookup(self, container_id: str) -> tuple[str, str] | None:
         client = self._get_client()
         if client is None:
             return None
@@ -218,7 +218,7 @@ class DockerLabelResolver:
 
     def __call__(
         self, ev: RuntimeEvent,
-    ) -> "tuple[str, str, str] | None":
+    ) -> tuple[str, str, str] | None:
         cid = ev.container_id
         if not cid:
             return None
@@ -249,7 +249,7 @@ class K8sAnnotationResolver:
 
     def __call__(
         self, ev: RuntimeEvent,
-    ) -> "tuple[str, str, str] | None":
+    ) -> tuple[str, str, str] | None:
         return None
 
 
@@ -310,7 +310,7 @@ class ContainerNameConventionResolver:
 
     def __call__(
         self, ev: RuntimeEvent,
-    ) -> "tuple[str, str, str] | None":
+    ) -> tuple[str, str, str] | None:
         if self.regex is None or not self.default_tenant:
             return None
         name = self._container_name(ev)
@@ -343,13 +343,13 @@ class ProcessUserResolver:
 
     def __init__(
         self,
-        user_map: "dict[str, tuple[str, str]] | None" = None,
+        user_map: dict[str, tuple[str, str]] | None = None,
     ) -> None:
         self.user_map = dict(user_map or {})
 
     def __call__(
         self, ev: RuntimeEvent,
-    ) -> "tuple[str, str, str] | None":
+    ) -> tuple[str, str, str] | None:
         if not self.user_map or ev.process is None:
             return None
         user = ev.process.user
@@ -377,7 +377,7 @@ class PrincipalResolverChain:
 
     def __call__(
         self, ev: RuntimeEvent,
-    ) -> "tuple[str, str, str] | None":
+    ) -> tuple[str, str, str] | None:
         for r in self.resolvers:
             try:
                 result = r(ev)
@@ -400,7 +400,7 @@ def build_default_resolver_chain(
     container_name_pattern: str | None = None,
     docker_principal_label: str = "io.veldt.principal_id",
     docker_tenant_label: str = "io.veldt.tenant_id",
-    process_user_map: "dict[str, tuple[str, str]] | None" = None,
+    process_user_map: dict[str, tuple[str, str]] | None = None,
 ) -> PrincipalResolverChain:
     """Construct the default chain: explicit cache -> docker label ->
     k8s annotation (stub) -> name convention -> process-user map.

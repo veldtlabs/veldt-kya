@@ -76,6 +76,9 @@ First shipped parser
 """
 from __future__ import annotations
 
+# Auto-register the parsers that ship with KYA. New parsers added in
+# `parsers/__init__.py` get picked up here without touching this file.
+from . import parsers as _bundled_parsers  # noqa: F401 (registration side-effect)
 from ._bridge import (
     RuntimeIngestResult,
     ingest,
@@ -109,10 +112,6 @@ from ._resolvers import (
     build_default_resolver_chain,
     unbind_container,
 )
-
-# Auto-register the parsers that ship with KYA. New parsers added in
-# `parsers/__init__.py` get picked up here without touching this file.
-from . import parsers as _bundled_parsers  # noqa: F401 (registration side-effect)
 
 __all__ = [
     # Canonical types
