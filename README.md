@@ -693,24 +693,6 @@ your code.
 
 ---
 
-## Roadmap
-
-This is the standalone packaging of the KYA infrastructure already
-running in production inside Veldt Decisions. Items still on the
-roadmap:
-
-- Lakehouse adapter (Databricks Genie / Snowflake Cortex)
-- Hosted KYA dashboard for self-managed deployments
-- SQL-aware data-policy judge (customers bring this today via
-  `register_judge()`; bundled adapter in a future release)
-- Third-party-attestable notarization for the evidence chain
-  (Sigstore / RFC 3161) layered on top of the existing HMAC chain
-- Full DAG-wide topology validation for delegated agent graphs.
-  v1 enforces pairwise parent-child ceilings (the Liang-2025
-  topology-attack defense)
-
----
-
 ## License
 
 Apache License 2.0 — © 2026 Veldt Labs Inc. See [LICENSE](LICENSE).
