@@ -162,6 +162,13 @@ exclude = [
     "tests*", "examples*", "scripts*", "docs*",
 ]
 
+[project.scripts]
+# MVP runtime-event collector. Customers `pip install veldt-kya` and
+# can immediately pipe Falco/auditbeat/etc. JSON into it -- no glue
+# code required. Premium production-grade collector with persistent
+# cursor / Kafka transport / health endpoint ships in veldt-kya-pro.
+kya-runtime-collect = "kya.runtime.cli:main"
+
 [tool.setuptools.package-data]
 kya = ["py.typed"]
 
