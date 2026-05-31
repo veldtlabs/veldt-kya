@@ -560,10 +560,9 @@ principal=agent:research_agent  trust=43 (neutral)
 
 Both layers — the agent's `tool_call` and the kernel's `runtime_falco` — land on the **same invocation_id, the same principal, and the same correlation_id**. The kernel-level signal also flows into the principal's trust ledger, so attack-chain rules can correlate the two timelines without a separate join.
 
-Premium runtime parsers for Falco, auditd, Kubernetes audit log,
-Tetragon, osquery, Tracee, Sysdig OSS, and custom eBPF probes — plus
-a K8s annotation resolver for principal binding — ship in the
-commercial `veldt-kya-pro` overlay.
+Production-grade runtime parsers for Falco and more — plus a K8s
+annotation resolver for principal binding — ship in the commercial
+`veldt-kya-pro` overlay.
 
 ---
 
