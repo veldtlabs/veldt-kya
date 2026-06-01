@@ -29,7 +29,12 @@ jobs:
   test:
     name: Python ${{ matrix.python }} · wheel + tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Bumped from 15 to 30 in v0.1.6: PG + MySQL service containers
+    # + the expanded test set (new CI guard scope across 4 packages
+    # + window-filter tests + decisions-schema split coverage) run
+    # ~13-15 min on Actions hosted runners. 15-min cap was tripping
+    # the job into CANCELLED state right at the finish line.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
