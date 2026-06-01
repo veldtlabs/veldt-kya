@@ -35,6 +35,7 @@ Public API
 
 import hashlib
 import json
+import os
 
 # Fields that are part of the "what this agent does" identity. Mutable
 # operational fields (counters, timestamps) are excluded so the hash is
@@ -61,24 +62,84 @@ _HASHED_FIELDS = (
     "compliance_scope",
 )
 
+# Ownership / accountability metadata. NOT in the identity hash by
+# default -- changing the owner does not change what the agent does.
+# Customers in strict-audit regimes can opt in by passing
+# include_ownership=True to canonical_hash() or by setting the env
+# var KYA_HASH_OWNER_FIELDS=true. In that mode, an ownership change
+# triggers a new definition_hash + new fleet_fingerprint, which
+# customers may want to treat as a new approval boundary.
+_OWNERSHIP_FIELDS = (
+    "owner",
+    "on_call",
+    "escalation",
+    "review_status",
+)
 
-def canonical_hash(agent_def: dict) -> str:
+
+def _ownership_enabled(explicit: bool | None) -> bool:
+    """Resolve the ``include_ownership`` flag: explicit kwarg wins;
+    falls back to the ``KYA_HASH_OWNER_FIELDS`` env var; default False.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    raw = os.environ.get("KYA_HASH_OWNER_FIELDS", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def canonical_hash(
+    agent_def: dict,
+    *,
+    include_ownership: bool | None = None,
+) -> str:
     """SHA256 over a canonical JSON serialization of the identity fields.
 
     Two semantically-equal definitions hash identically. Mutating any
     identity field (or adding a new tool) changes the hash.
+
+    By default the hash covers only "what this agent does" -- prompt,
+    tools, data classes, governance mode, delegation permissions,
+    model, etc. Ownership / accountability metadata (``owner``,
+    ``on_call``, ``escalation``, ``review_status``) is NOT in the hash;
+    a re-org that reassigns an owner does not, by default, count as
+    "the agent changed."
+
+    Customers in strict-audit regimes can opt in to ownership-as-identity
+    by either:
+        * ``canonical_hash(defn, include_ownership=True)``
+        * setting the env var ``KYA_HASH_OWNER_FIELDS=true``
+            (the explicit kwarg overrides the env var)
+
+    In that mode, an ownership change treats the agent as a new
+    approval boundary -- ``definition_hash`` changes, downstream
+    ``fleet_fingerprint`` changes, drift detection fires.
     """
-    snapshot = {k: agent_def.get(k) for k in _HASHED_FIELDS if k in agent_def}
+    fields = _HASHED_FIELDS
+    if _ownership_enabled(include_ownership):
+        fields = fields + _OWNERSHIP_FIELDS
+    snapshot = {k: agent_def.get(k) for k in fields if k in agent_def}
     payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def detect_drift(declared_hash: str, agent_def: dict) -> bool:
+def detect_drift(
+    declared_hash: str,
+    agent_def: dict,
+    *,
+    include_ownership: bool | None = None,
+) -> bool:
     """Return True if the declared hash doesn't match the current
-    definition's canonical hash. Caller logs + alerts on True."""
+    definition's canonical hash. Caller logs + alerts on True.
+
+    ``include_ownership`` is passed through to ``canonical_hash`` --
+    callers that opted into ownership-as-identity at sign-time MUST
+    also opt in here, otherwise drift detection would compare
+    incompatible hashes.
+    """
     if not declared_hash:
         return False
-    return canonical_hash(agent_def) != declared_hash
+    return canonical_hash(
+        agent_def, include_ownership=include_ownership) != declared_hash
 
 
 def lineage_chain(agent_def: dict) -> list[str]:

@@ -10,6 +10,30 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dedicated `veldt-kya` repo separated from the upstream `veldt-decisions`
   monorepo (open-core split).
 
+## [0.1.7]
+
+### Added
+- `canonical_hash(agent_def, *, include_ownership=...)` — opt-in flag
+  that folds the ownership / accountability fields (`owner`, `on_call`,
+  `escalation`, `review_status`) into the identity hash. Default `False`:
+  most customers should leave it off, because `tenant_id` is unchanged,
+  prompt / tools / permissions / policies / model are unchanged, and a
+  pure ownership transfer is **operational metadata, not governance**.
+  Opt-in is intended for the small set of regulated programs (defense,
+  intel, highly regulated government) where transferring an agent to a
+  new accountable team is itself a re-approval event.
+- `detect_drift(declared_hash, agent_def, *, include_ownership=...)` —
+  matching kwarg so opt-in customers compare like with like.
+- `KYA_HASH_OWNER_FIELDS` env var — cluster-wide default for the same
+  flag; explicit kwarg overrides it. Lets ops enable strict mode across
+  a deployment without per-call code changes.
+
+### Notes
+- Pure addition; no semantics change at the default. Existing
+  `definition_hash` values continue to match.
+- Required by `veldt-kya-pro>=0.1.6` for its `fleet_fingerprint`
+  strict-mode and the `assert_fingerprint_mode` guardrail.
+
 ## [0.1.6]
 
 ### Changed (BREAKING)
