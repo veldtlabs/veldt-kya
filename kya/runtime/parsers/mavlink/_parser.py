@@ -50,7 +50,6 @@ from ..._canonical import (
     encode_mavlink_sysid,
 )
 
-
 # MAV_CMD enum values we canonicalise. Source:
 # https://mavlink.io/en/messages/common.html#mav_commands
 # Values that don't appear here fall through to a generic
@@ -313,9 +312,12 @@ def _from_command(raw: dict) -> tuple[str, RuntimeSeverity, str] | None:
     else:
         action = _COMMAND_LONG_ACTIONS.get(cmd, "command")
 
+    # ``flight_termination`` is already in _CRITICAL_ACTIONS (see
+    # the frozenset definition above); the redundant elif check
+    # I had earlier was unreachable dead code. Single-check is the
+    # right shape: any action in the critical set bumps severity,
+    # everything else stays at the "high" default set above.
     if action in _CRITICAL_ACTIONS:
-        severity = "critical"
-    elif action == "flight_termination":
         severity = "critical"
 
     msg_text = f"COMMAND id={cmd} ({action})"

@@ -83,7 +83,6 @@ from _sitl_common import (  # noqa: E402
     write_ndjson,
 )
 
-
 # ── Configuration ────────────────────────────────────────────────
 
 
@@ -207,6 +206,7 @@ def run_demo_mission(conn) -> None:
         7. RTL (visible return-to-launch)
     """
     import time as _time  # local
+
     from pymavlink import mavutil  # noqa: PLC0415
 
     sysid = conn.target_system or 1
@@ -233,10 +233,10 @@ def run_demo_mission(conn) -> None:
     waypoints = [
         # (lat_int, lon_int, alt_m) -- ArduPilot Iris default
         # origin is roughly Canberra airport for the SITL world.
-        (int(-353621480),  int(1491600400),  30.0),
-        (int(-353620000),  int(1491600400),  30.0),
-        (int(-353620000),  int(1491603000),  30.0),
-        (int(-353621480),  int(1491603000),  30.0),
+        ((-353621480),  1491600400,  30.0),
+        ((-353620000),  1491600400,  30.0),
+        ((-353620000),  1491603000,  30.0),
+        ((-353621480),  1491603000,  30.0),
     ]
     conn.mav.mission_count_send(sysid, compid, len(waypoints))
     _time.sleep(0.5)

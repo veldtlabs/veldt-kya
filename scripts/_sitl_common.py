@@ -23,10 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-
 # ── Constants ────────────────────────────────────────────────────
-
-
 # Set of MAVLink message types the open-SDK parser canonicalises.
 # Used to mark "_handled" on each captured frame so downstream
 # tests can assert coverage without re-importing the parser.
@@ -40,7 +37,6 @@ from pathlib import Path
 from kya.runtime.parsers.mavlink._parser import (  # noqa: E402, PLC0415
     _HANDLED_MESSAGES as HANDLED_MESSAGE_TYPES,
 )
-
 
 # ── Process control ──────────────────────────────────────────────
 

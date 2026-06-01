@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "mavlink_stability_long_run.py"
 
 
@@ -36,8 +35,11 @@ def test_script_runs_end_to_end():
     except ImportError:
         pytest.skip("psutil not installed -- stability script needs it")
 
-    out = Path(tempfile.NamedTemporaryFile(
-        suffix=".stability.json", delete=False).name)
+    # mkstemp + close avoids the leaked-fd footgun of
+    # NamedTemporaryFile(...).name
+    fd, out_str = tempfile.mkstemp(suffix=".stability.json")
+    os.close(fd)
+    out = Path(out_str)
     env = {
         **os.environ,
         "DURATION_SECONDS": "3",

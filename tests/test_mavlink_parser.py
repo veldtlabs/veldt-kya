@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── Helpers ──────────────────────────────────────────────────────
 
 
@@ -446,6 +445,7 @@ class TestTimestamps:
         collector replaying a .tlog should set _ts explicitly to
         avoid every event landing at the same ingest moment."""
         import time as _time
+
         from kya.runtime.parsers import mavlink
         before = _time.time()
         ev = mavlink.parse({
@@ -478,6 +478,7 @@ class TestTimestamps:
         where time_boot_ms gets divided by 1000 and used as if it
         were a UNIX timestamp."""
         import time as _time
+
         from kya.runtime.parsers import mavlink
         before = _time.time()
         ev = mavlink.parse({

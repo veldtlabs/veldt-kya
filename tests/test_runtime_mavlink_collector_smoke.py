@@ -18,7 +18,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-
 _EXAMPLE = Path(__file__).parent.parent / "examples" / "runtime_mavlink_collector.py"
 
 
@@ -64,8 +63,12 @@ class TestCollectorInstanceIsolation:
         from sqlalchemy.orm import Session
 
         os.environ.pop("KYA_VERSIONS_SCHEMA", None)
-        eng = create_engine(
-            f"sqlite:///{tempfile.NamedTemporaryFile(suffix='.db', delete=False).name}")
+        # mkstemp + immediate close avoids the leaked-fd footgun
+        # of NamedTemporaryFile(...).name (named tempfile object
+        # holds an open fd until gc).
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        eng = create_engine(f"sqlite:///{db_path}")
         db = Session(eng)
         import kya
         kya.init_storage(db)
@@ -103,8 +106,12 @@ class TestCollectorInstanceIsolation:
         from sqlalchemy.orm import Session
 
         os.environ.pop("KYA_VERSIONS_SCHEMA", None)
-        eng = create_engine(
-            f"sqlite:///{tempfile.NamedTemporaryFile(suffix='.db', delete=False).name}")
+        # mkstemp + immediate close avoids the leaked-fd footgun
+        # of NamedTemporaryFile(...).name (named tempfile object
+        # holds an open fd until gc).
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        eng = create_engine(f"sqlite:///{db_path}")
         db = Session(eng)
         import kya
         kya.init_storage(db)
@@ -152,8 +159,12 @@ class TestCollectorInstanceIsolation:
         from sqlalchemy.orm import Session
 
         os.environ.pop("KYA_VERSIONS_SCHEMA", None)
-        eng = create_engine(
-            f"sqlite:///{tempfile.NamedTemporaryFile(suffix='.db', delete=False).name}")
+        # mkstemp + immediate close avoids the leaked-fd footgun
+        # of NamedTemporaryFile(...).name (named tempfile object
+        # holds an open fd until gc).
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        eng = create_engine(f"sqlite:///{db_path}")
         db_main = Session(eng)
         import kya
         kya.init_storage(db_main)
@@ -209,8 +220,12 @@ class TestCollectorInstanceIsolation:
         from sqlalchemy.orm import Session
 
         os.environ.pop("KYA_VERSIONS_SCHEMA", None)
-        eng = create_engine(
-            f"sqlite:///{tempfile.NamedTemporaryFile(suffix='.db', delete=False).name}")
+        # mkstemp + immediate close avoids the leaked-fd footgun
+        # of NamedTemporaryFile(...).name (named tempfile object
+        # holds an open fd until gc).
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        eng = create_engine(f"sqlite:///{db_path}")
         db = Session(eng)
         import kya
         kya.init_storage(db)

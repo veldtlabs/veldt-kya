@@ -232,15 +232,20 @@ def _smoke_test() -> dict:
     ``tests/test_runtime_mavlink_collector_smoke.py`` integration
     can assert without re-implementing the smoke logic.
     """
-    import tempfile
     import os
+    import tempfile
     os.environ.pop("KYA_VERSIONS_SCHEMA", None)
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
+
     import kya
 
-    eng = create_engine(
-        f"sqlite:///{tempfile.NamedTemporaryFile(suffix='.db', delete=False).name}")
+    # mkstemp + immediate close avoids the leaked-fd footgun of
+    # ``NamedTemporaryFile(...).name`` (the named tempfile object
+    # holds an open fd until garbage collection).
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    eng = create_engine(f"sqlite:///{db_path}")
     db = Session(eng)
     kya.init_storage(db)
     db.commit()

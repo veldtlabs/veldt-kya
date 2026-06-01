@@ -37,7 +37,6 @@ Usage:
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -53,7 +52,6 @@ from _sitl_common import (  # noqa: E402
     wait_for_heartbeat,
     write_ndjson,
 )
-
 
 # ── Configuration ────────────────────────────────────────────────
 
@@ -131,6 +129,7 @@ def run_scripted_mission(conn) -> None:
     dropped command via the "required actions" coverage assertion.
     """
     import time as _time  # local; never used at module load
+
     from pymavlink import mavutil  # noqa: PLC0415
 
     sysid = conn.target_system or 1
@@ -166,7 +165,7 @@ def run_scripted_mission(conn) -> None:
         mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
         0, 1,
         0, 0, 0, 0,
-        int(-353621480), int(1491600400), 50.0,  # Canberra-ish + 50m
+        (-353621480), 1491600400, 50.0,  # Canberra-ish + 50m
     )
     _time.sleep(0.5)
 

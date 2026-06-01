@@ -69,7 +69,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _sitl_common import die, env_int  # noqa: E402
 
-
 DURATION_SECONDS = env_int("DURATION_SECONDS", 3600)
 RATE_HZ = env_int("RATE_HZ", 50)
 MEMORY_GROWTH_MB_CAP = env_int("MEMORY_GROWTH_MB_CAP", 100)
@@ -131,9 +130,10 @@ def _sample_process() -> dict:
 def main() -> int:
     # Lazy imports so a syntax error in kya doesn't break
     # script-level env validation.
-    import kya
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
+
+    import kya
 
     # Add examples/ to path so the MavlinkCollector class is
     # importable without packaging it. The collector is currently
@@ -148,8 +148,11 @@ def main() -> int:
     spec.loader.exec_module(collector_mod)
 
     os.environ.pop("KYA_VERSIONS_SCHEMA", None)
-    db_path = tempfile.NamedTemporaryFile(
-        suffix=".stability.db", delete=False).name
+    # mkstemp + immediate close avoids the leaked-fd footgun of
+    # NamedTemporaryFile(...).name (named tempfile object holds an
+    # open fd until gc).
+    fd, db_path = tempfile.mkstemp(suffix=".stability.db")
+    os.close(fd)
     eng = create_engine(f"sqlite:///{db_path}")
     db = Session(eng)
     kya.init_storage(db)
@@ -158,7 +161,7 @@ def main() -> int:
     collector = collector_mod.MavlinkCollector()
     collector.install_principal_resolver()
 
-    print(f"stability profile starting:")
+    print("stability profile starting:")
     print(f"  duration:       {DURATION_SECONDS}s")
     print(f"  rate:           {RATE_HZ} Hz")
     print(f"  sample every:   {SAMPLE_EVERY} frames")

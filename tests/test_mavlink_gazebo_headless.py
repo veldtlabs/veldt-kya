@@ -20,10 +20,9 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "mavlink_gazebo_sitl_capture.py"
 
@@ -318,13 +317,17 @@ class TestDockerDaemonPreflight:
             tmp = Path("/tmp/_sitl_preflight_probe.json")
             tmp.parent.mkdir(parents=True, exist_ok=True)
 
-            with patch("_sitl_common.shutil.which", return_value="/usr/bin/docker"), \
-                 patch("_sitl_common.subprocess.run", return_value=mock_result), \
-                 patch("builtins.__import__"):
-                # __import__ patch keeps pymavlink check happy
-                # without requiring the real package.
-                with pytest.raises(SystemExit) as exc_info:
-                    preflight(tmp)
+            # __import__ patch keeps pymavlink check happy
+            # without requiring the real package.
+            with (
+                patch("_sitl_common.shutil.which",
+                      return_value="/usr/bin/docker"),
+                patch("_sitl_common.subprocess.run",
+                      return_value=mock_result),
+                patch("builtins.__import__"),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                preflight(tmp)
             assert exc_info.value.code == 1
         finally:
             try:

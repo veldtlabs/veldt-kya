@@ -24,7 +24,6 @@ from pathlib import Path
 
 import pytest
 
-
 _DEFAULT_CAPTURE = Path("/tmp/mavlink-sitl.json")
 _CAPTURE_PATH = Path(os.environ.get("MAVLINK_SITL_CAPTURE", _DEFAULT_CAPTURE))
 
@@ -108,6 +107,7 @@ class TestLiveSitlCapture:
         the SITL config sets a different SYSID_THISMAV.
         """
         import os
+
         from kya.runtime.parsers import mavlink
         frames = _load_frames()
         sysids_seen: set[str] = set()
