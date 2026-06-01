@@ -95,7 +95,24 @@ def create_legacy_tables(db, tables: list) -> None:
         existing = (
             bind.get_execution_options().get("schema_translate_map") or {})
         merged = dict(existing)
-        merged[_LEGACY_MD_IMPORT_SCHEMA] = target_schema
+        # Preserve a customer's pre-existing mapping for the same key
+        # rather than silently overwriting it -- their SA app may rely
+        # on that translation for non-KYA tables. Warn (loudly) when
+        # the value we would have set differs, so the operator can
+        # diagnose "KYA tables not visible" cases.
+        if _LEGACY_MD_IMPORT_SCHEMA in existing:
+            if existing[_LEGACY_MD_IMPORT_SCHEMA] != target_schema:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[KYA-LEGACY] schema_translate_map already maps %r to %r; "
+                    "preserving customer value (would have set %r). If KYA "
+                    "tables aren't visible, this is why.",
+                    _LEGACY_MD_IMPORT_SCHEMA,
+                    existing[_LEGACY_MD_IMPORT_SCHEMA],
+                    target_schema)
+            # else: same value, no-op
+        else:
+            merged[_LEGACY_MD_IMPORT_SCHEMA] = target_schema
         target_bind = bind.execution_options(schema_translate_map=merged)
     _LEGACY_MD.create_all(bind=target_bind, tables=tables)
 

@@ -14,8 +14,16 @@ from __future__ import annotations
 import pathlib
 import re
 
-# Source roots to scan
-_KYA_ROOT = pathlib.Path(__file__).resolve().parent.parent / "kya"
+# Source roots to scan. All wheel-shipped packages must be covered
+# so a refactor miss in kya_redteam/ or kya_hooks/ can't sneak through.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+_KYA_ROOT = _REPO_ROOT / "kya"  # kept for back-compat with test names
+_SCAN_ROOTS = [
+    _REPO_ROOT / "kya",
+    _REPO_ROOT / "kya_redteam",
+    _REPO_ROOT / "kya_hooks",
+    _REPO_ROOT / "kya_otlp_bridge",
+]
 
 # Files where the literal string is allowed:
 #   - _portable.py: defines the legacy default (until v0.1.6 changed
@@ -37,30 +45,34 @@ _PATTERNS = [
 
 
 def test_no_hardcoded_prov_schema_in_kya_source():
-    """Scan kya/ for any hardcoded 'prov_schema' string. Any file not
-    in _ALLOWED_FILES that contains the literal must be refactored to
-    use ``dialect_schema_qualifier()`` or ``schema_args()``."""
+    """Scan every wheel-shipped package (kya/, kya_redteam/, kya_hooks/,
+    kya_otlp_bridge/) for any hardcoded 'prov_schema' string. Any file
+    not in _ALLOWED_FILES that contains the literal must be refactored
+    to use ``dialect_schema_qualifier()`` or ``schema_args()``."""
     offenders = []
-    for path in _KYA_ROOT.rglob("*.py"):
-        if path.name in _ALLOWED_FILES:
+    for root in _SCAN_ROOTS:
+        if not root.exists():
             continue
-        if "__pycache__" in path.parts:
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for pat in _PATTERNS:
-            for m in pat.finditer(text):
-                # Skip occurrences inside a comment line
-                line_start = text.rfind("\n", 0, m.start()) + 1
-                line = text[line_start:m.start()]
-                if "#" in line:
-                    continue
-                # Report the offending line
-                line_end = text.find("\n", m.start())
-                full_line = text[line_start:line_end].strip()
-                line_no = text[:m.start()].count("\n") + 1
-                offenders.append(
-                    f"{path.relative_to(_KYA_ROOT.parent)}:{line_no}: "
-                    f"{full_line[:120]}")
+        for path in root.rglob("*.py"):
+            if path.name in _ALLOWED_FILES:
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for pat in _PATTERNS:
+                for m in pat.finditer(text):
+                    # Skip occurrences inside a comment line
+                    line_start = text.rfind("\n", 0, m.start()) + 1
+                    line = text[line_start:m.start()]
+                    if "#" in line:
+                        continue
+                    # Report the offending line
+                    line_end = text.find("\n", m.start())
+                    full_line = text[line_start:line_end].strip()
+                    line_no = text[:m.start()].count("\n") + 1
+                    offenders.append(
+                        f"{path.relative_to(_REPO_ROOT)}:{line_no}: "
+                        f"{full_line[:120]}")
     assert not offenders, (
         "Hardcoded 'prov_schema' string found in source -- use "
         "dialect_schema_qualifier() / schema_args() from kya._portable "
@@ -84,34 +96,37 @@ def test_no_hardcoded_schema_in_raw_sql():
     ``qual_for_raw_sql_decisions(db)`` (for veldt-decisions tables).
     """
     bare_pat = re.compile(r"\bprov_schema\.\w+")
-    for path in _KYA_ROOT.rglob("*.py"):
-        if path.name in _ALLOWED_FILES:
+    for root in _SCAN_ROOTS:
+        if not root.exists():
             continue
-        if "__pycache__" in path.parts:
-            continue
-        # Strip full-line comments so docstring mentions of the legacy
-        # name in narrative prose don't false-positive. (Inline
-        # comments after code are still scanned -- intentional, since
-        # they could mask a real refactor miss.)
-        lines = path.read_text(
-            encoding="utf-8", errors="ignore").splitlines(keepends=True)
-        stripped = "".join(
-            "" if ln.lstrip().startswith("#") else ln
-            for ln in lines)
-        for m in bare_pat.finditer(stripped):
-            line_no = stripped[:m.start()].count("\n") + 1
-            line_start = stripped.rfind("\n", 0, m.start()) + 1
-            line_end = stripped.find("\n", m.start())
-            full_line = stripped[
-                line_start:(line_end if line_end != -1 else len(stripped))
-            ].strip()
-            raise AssertionError(
-                f"Hardcoded 'prov_schema.{m.group()[13:]}' found in raw "
-                f"SQL at {path.relative_to(_KYA_ROOT.parent)}:{line_no}\n"
-                f"  {full_line[:120]}\n"
-                "Use qual_for_raw_sql(db) (KYA tables) or "
-                "qual_for_raw_sql_decisions(db) (decisions tables) "
-                "from kya._portable.")
+        for path in root.rglob("*.py"):
+            if path.name in _ALLOWED_FILES:
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            # Strip full-line comments so docstring mentions of the legacy
+            # name in narrative prose don't false-positive. (Inline
+            # comments after code are still scanned -- intentional, since
+            # they could mask a real refactor miss.)
+            lines = path.read_text(
+                encoding="utf-8", errors="ignore").splitlines(keepends=True)
+            stripped = "".join(
+                "" if ln.lstrip().startswith("#") else ln
+                for ln in lines)
+            for m in bare_pat.finditer(stripped):
+                line_no = stripped[:m.start()].count("\n") + 1
+                line_start = stripped.rfind("\n", 0, m.start()) + 1
+                line_end = stripped.find("\n", m.start())
+                full_line = stripped[
+                    line_start:(line_end if line_end != -1 else len(stripped))
+                ].strip()
+                raise AssertionError(
+                    f"Hardcoded 'prov_schema.{m.group()[13:]}' found in raw "
+                    f"SQL at {path.relative_to(_REPO_ROOT)}:{line_no}\n"
+                    f"  {full_line[:120]}\n"
+                    "Use qual_for_raw_sql(db) (KYA tables) or "
+                    "qual_for_raw_sql_decisions(db) (decisions tables) "
+                    "from kya._portable.")
 
 
 def test_default_schema_is_none_in_v0_1_6():

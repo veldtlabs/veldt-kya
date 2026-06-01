@@ -720,13 +720,14 @@ def get_governance_summary(
     try:
         # governance_audit_log / governance_incidents / decision_approvals
         # are veldt-decisions tables, not KYA tables -- use the decisions
-        # schema qualifier so split-schema deployments work.
-        qual = qual_for_raw_sql_decisions(db)
+        # schema qualifier so split-schema deployments work. Named `dq`
+        # for consistency with fleet_metrics.py's split-qualifier code.
+        dq = qual_for_raw_sql_decisions(db)
         # Verdict counts within window
         rows = db.execute(
             text(f"""
                 SELECT verdict, COUNT(*)
-                FROM {qual}governance_audit_log
+                FROM {dq}governance_audit_log
                 WHERE tenant_id = :tid
                   AND created_at >= now() - (:days || ' days')::interval
                 GROUP BY verdict
@@ -741,7 +742,7 @@ def get_governance_summary(
                 SELECT COUNT(*) FILTER (WHERE resolution_status IN ('open','investigating')),
                        COUNT(*) FILTER (WHERE severity = 'critical'
                                         AND resolution_status IN ('open','investigating'))
-                FROM {qual}governance_incidents
+                FROM {dq}governance_incidents
                 WHERE tenant_id = :tid
             """),
             {"tid": tenant_id},
@@ -754,7 +755,7 @@ def get_governance_summary(
         row = db.execute(
             text(f"""
                 SELECT COUNT(*)
-                FROM {qual}decision_approvals
+                FROM {dq}decision_approvals
                 WHERE tenant_id = :tid AND status = 'pending_approval'
             """),
             {"tid": tenant_id},
@@ -767,7 +768,7 @@ def get_governance_summary(
             text(f"""
                 SELECT action_type, verdict, risk_level, created_at,
                        policies_failed, model_id
-                FROM {qual}governance_audit_log
+                FROM {dq}governance_audit_log
                 WHERE tenant_id = :tid
                   AND created_at >= now() - (:days || ' days')::interval
                 ORDER BY created_at DESC

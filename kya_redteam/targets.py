@@ -89,8 +89,12 @@ _CURRENT_KEY_ID = _resolve_current_key_id()
 
 # ── DDL ─────────────────────────────────────────────────────────────
 
-_TARGETS_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_targets (
+# NOTE: DDL templates below are reference-only; the live ensure_tables()
+# path uses portable Table objects from kya._legacy_tables. The {prefix}
+# placeholder is filled at call-time via qual_for_raw_sql() so the DDL
+# stays dialect-aware if anyone resurrects the raw-SQL path.
+_TARGETS_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {prefix}kya_redteam_targets (
     id                   SERIAL PRIMARY KEY,
     tenant_id            UUID NOT NULL,
     agent_key            VARCHAR(50) NOT NULL,
@@ -113,14 +117,14 @@ CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_targets (
 );
 """
 
-_TARGETS_IDX = """
+_TARGETS_IDX_TEMPLATE = """
 CREATE INDEX IF NOT EXISTS idx_kya_redteam_targets_tenant_agent
-    ON prov_schema.kya_redteam_targets (tenant_id, agent_key);
+    ON {prefix}kya_redteam_targets (tenant_id, agent_key);
 """
 
-_SECRETS_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_target_secrets (
-    target_id     INT PRIMARY KEY REFERENCES prov_schema.kya_redteam_targets(id) ON DELETE CASCADE,
+_SECRETS_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {prefix}kya_redteam_target_secrets (
+    target_id     INT PRIMARY KEY REFERENCES {prefix}kya_redteam_targets(id) ON DELETE CASCADE,
     tenant_id     UUID NOT NULL,
     ciphertext    BYTEA NOT NULL,
     key_id        TEXT NOT NULL,
@@ -490,11 +494,13 @@ def list_targets(
     db, tenant_id: str, agent_key: str | None = None,
 ) -> list[dict]:
     ensure_tables(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     if agent_key:
         rows = db.execute(
             text(
                 f"SELECT {_SELECT_TARGET_COLS} "
-                "FROM prov_schema.kya_redteam_targets "
+                f"FROM {qual}kya_redteam_targets "
                 "WHERE tenant_id = (:tid)::uuid AND agent_key = :ak "
                 "ORDER BY id DESC"
             ),
@@ -504,7 +510,7 @@ def list_targets(
         rows = db.execute(
             text(
                 f"SELECT {_SELECT_TARGET_COLS} "
-                "FROM prov_schema.kya_redteam_targets "
+                f"FROM {qual}kya_redteam_targets "
                 "WHERE tenant_id = (:tid)::uuid "
                 "ORDER BY id DESC"
             ),
@@ -552,11 +558,13 @@ def update_target(
         else:
             set_clauses.append(f"{k} = :{k}")
             params[k] = v
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     if set_clauses:
         set_clauses.append("updated_at = now()")
         db.execute(
             text(
-                "UPDATE prov_schema.kya_redteam_targets "
+                f"UPDATE {qual}kya_redteam_targets "
                 f"SET {', '.join(set_clauses)} "
                 "WHERE tenant_id = (:tid)::uuid AND id = :id"
             ),
@@ -567,7 +575,7 @@ def update_target(
         # Upsert the secret row
         db.execute(
             text(
-                "INSERT INTO prov_schema.kya_redteam_target_secrets "
+                f"INSERT INTO {qual}kya_redteam_target_secrets "
                 "  (target_id, tenant_id, ciphertext, key_id) "
                 "VALUES (:id, (:tid)::uuid, :ct, :kid) "
                 "ON CONFLICT (target_id) DO UPDATE "
@@ -583,7 +591,7 @@ def update_target(
     if patch.get("auth_kind") == "none":
         db.execute(
             text(
-                "DELETE FROM prov_schema.kya_redteam_target_secrets "
+                f"DELETE FROM {qual}kya_redteam_target_secrets "
                 "WHERE target_id = :id AND tenant_id = (:tid)::uuid"
             ),
             {"id": target_id, "tid": tenant_id},
@@ -594,10 +602,12 @@ def update_target(
 
 def delete_target(db, tenant_id: str, target_id: int) -> bool:
     ensure_tables(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     # ON DELETE CASCADE on the secrets table removes the secret row.
     result = db.execute(
         text(
-            "DELETE FROM prov_schema.kya_redteam_targets "
+            f"DELETE FROM {qual}kya_redteam_targets "
             "WHERE tenant_id = (:tid)::uuid AND id = :id"
         ),
         {"tid": tenant_id, "id": target_id},
@@ -648,9 +658,11 @@ def verify_target(db, tenant_id: str, target_id: int) -> dict:
         err = f"transport: {exc}"
     duration_ms = int((time.monotonic() - start) * 1000)
 
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     db.execute(
         text(
-            "UPDATE prov_schema.kya_redteam_targets "
+            f"UPDATE {qual}kya_redteam_targets "
             "SET verified_at = now(), "
             "    verified_status = :st, "
             "    verified_error = :err, "
@@ -751,9 +763,11 @@ def rotate_target_secret(
             "Update auth_kind first via PUT /redteam/targets/{tid}."
         )
     ciphertext, key_id = encrypt_secret(new_auth_secret)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     db.execute(
         text(
-            "INSERT INTO prov_schema.kya_redteam_target_secrets "
+            f"INSERT INTO {qual}kya_redteam_target_secrets "
             "  (target_id, tenant_id, ciphertext, key_id) "
             "VALUES (:id, (:tid)::uuid, :ct, :kid) "
             "ON CONFLICT (target_id) DO UPDATE "
@@ -767,7 +781,7 @@ def rotate_target_secret(
     # show "something changed" even though the visible columns didn't.
     db.execute(
         text(
-            "UPDATE prov_schema.kya_redteam_targets "
+            f"UPDATE {qual}kya_redteam_targets "
             "SET updated_at = now() "
             "WHERE id = :id AND tenant_id = (:tid)::uuid"
         ),
@@ -804,10 +818,12 @@ def rotate_encryption_key_for_tenant(
       live:      + {"rotated": M}
     """
     ensure_tables(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     rows = db.execute(
         text(
             "SELECT target_id, ciphertext, key_id "
-            "FROM prov_schema.kya_redteam_target_secrets "
+            f"FROM {qual}kya_redteam_target_secrets "
             "WHERE tenant_id = (:tid)::uuid"
         ),
         {"tid": tenant_id},
@@ -857,7 +873,7 @@ def rotate_encryption_key_for_tenant(
         try:
             db.execute(
                 text(
-                    "UPDATE prov_schema.kya_redteam_target_secrets "
+                    f"UPDATE {qual}kya_redteam_target_secrets "
                     "SET ciphertext = :ct, key_id = :kid, updated_at = now() "
                     "WHERE target_id = :id AND tenant_id = (:tid)::uuid"
                 ),

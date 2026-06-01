@@ -40,8 +40,18 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - Refactored every hardcoded `prov_schema.<table>` raw SQL string across
-  13 files to use `qual_for_raw_sql(db)` (KYA tables) or
-  `qual_for_raw_sql_decisions(db)` (veldt-decisions tables).
+  the wheel's full package set (kya + kya_redteam) to use
+  `qual_for_raw_sql(db)` (KYA tables) or `qual_for_raw_sql_decisions(db)`
+  (veldt-decisions tables). The CI guard in
+  `tests/test_no_hardcoded_schemas.py` now scans every shipped package
+  (kya, kya_redteam, kya_hooks, kya_otlp_bridge) so a future regression
+  in any of them fails the build.
+- `kya._legacy_tables.create_legacy_tables()` no longer silently
+  overwrites a customer's pre-existing `schema_translate_map` entry for
+  the same key. When the customer's mapping differs from what KYA would
+  set, the customer's value is preserved and a `[KYA-LEGACY]` warning
+  is logged so split-schema deployments can diagnose "KYA tables not
+  visible" cases.
 - Module-level `_PG_SCHEMA` constants in `evidence.py`, `invocations.py`,
   `principals.py`, `versioning.py` no longer hardcode `prov_schema` as
   the fallback.
