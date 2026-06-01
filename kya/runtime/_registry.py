@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from ._canonical import RuntimeEvent, SourceTool
+from ._canonical import BoundEvent, SourceTool
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,14 @@ class Parser(Protocol):
         any input; return False for anything not obviously yours."""
         ...
 
-    def parse(self, raw: dict) -> RuntimeEvent | None:
+    def parse(self, raw: dict) -> BoundEvent | None:
         """Translate the raw payload into a canonical event, or
         return ``None`` if this parser cannot meaningfully handle it.
-        Should raise :class:`RuntimeParserError` only when the caller
-        explicitly forced this parser and the payload is wrong shape.
+        The returned event satisfies :class:`BoundEvent` -- runtime-
+        security parsers return :class:`RuntimeEvent`, autonomy
+        parsers return :class:`AutonomyEvent`. Should raise
+        :class:`RuntimeParserError` only when the caller explicitly
+        forced this parser and the payload is wrong shape.
         """
         ...
 

@@ -61,6 +61,14 @@ judge    = ["litellm>=1.55"]
 # fails-soft when PyYAML is missing -- programmatic dict-form rules
 # still work. Install this extra for YAML rule files.
 attack_chains = ["pyyaml>=6.0"]
+# MAVLink (drone) runtime parser. pymavlink is LGPL-3.0 -- declared
+# as an optional extra so the Apache-2.0 kya core wheel stays clean
+# (consumers explicitly opt into LGPL by installing this extra).
+# Without this extra the parser still works on dict-shaped inputs
+# (e.g. fixtures, JSON streams from a MAVLink router) -- pymavlink
+# is only needed when the collector itself reads raw UART / UDP /
+# .tlog files.
+mavlink = ["pymavlink>=2.4,<3"]
 # Presidio PII detector (opt-in scorer_orchestrator adapter).
 # kya/scorers_presidio.py uses Presidio's pattern-based
 # recognizers DIRECTLY without spaCy/NLP -- so the only runtime
@@ -120,6 +128,7 @@ all      = [
     "requests>=2.31",
     "litellm>=1.55",
     "pyyaml>=6.0",
+    "pymavlink>=2.4,<3",
     "presidio-analyzer>=2.2",
 ]
 
