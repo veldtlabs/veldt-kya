@@ -196,7 +196,6 @@ def run_once(db: Session) -> dict:
     Returns a summary dict {scanned, regimes_evaluated, emitted, skipped,
     errors} suitable for /health-style logging.
     """
-    from ._portable import qual_for_raw_sql
 
     _ensure_metrics()
     now = datetime.now(timezone.utc)

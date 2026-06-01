@@ -175,7 +175,6 @@ def ensure_user_trust_table(db) -> None:
     """
     from ._legacy_tables import create_legacy_tables, kya_user_trust
     from ._migrations import apply_migrations
-
     from ._portable import qual_for_raw_sql
     create_legacy_tables(db, [kya_user_trust])
     # Phase 4b: additive ALTERs for existing deployments. IF NOT
