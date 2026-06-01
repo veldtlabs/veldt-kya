@@ -48,12 +48,13 @@ from ._portable import (
 )
 
 # All legacy tables share one MetaData so create_all can be batched.
-# Schema is set to the default ("prov_schema") at import; the actual
-# dialect-aware retargeting happens at CALL TIME via the
-# `create_legacy_tables()` helper below, which uses SQLAlchemy's
-# `schema_translate_map`. This solves the previous bug where env vars
-# set AFTER import had no effect.
-_LEGACY_MD = MetaData(schema=dialect_schema_qualifier())
+# Schema is set to whatever `dialect_schema_qualifier()` returns at
+# import time; the actual dialect-aware retargeting happens at CALL
+# TIME via the `create_legacy_tables()` helper below, which uses
+# SQLAlchemy's `schema_translate_map`. This solves the previous bug
+# where env vars set AFTER import had no effect.
+_LEGACY_MD_IMPORT_SCHEMA = dialect_schema_qualifier()
+_LEGACY_MD = MetaData(schema=_LEGACY_MD_IMPORT_SCHEMA)
 
 
 def create_legacy_tables(db, tables: list) -> None:
@@ -61,11 +62,11 @@ def create_legacy_tables(db, tables: list) -> None:
     schema qualifier for the bound dialect.
 
     Behavior:
-        PG  + KYA_VERSIONS_SCHEMA="prov_schema"  → tables in prov_schema
-        PG  + KYA_VERSIONS_SCHEMA=""             → tables in default (public)
-        SQLite / DuckDB / MySQL                   → tables in default ns
-                                                     (schema_translate_map
-                                                      strips "prov_schema")
+        PG  + KYA_VERSIONS_SCHEMA set    -> tables in that schema
+        PG  + KYA_VERSIONS_SCHEMA unset  -> tables in default (public)
+        SQLite / DuckDB / MySQL          -> tables in default namespace
+                                            (schema_translate_map strips
+                                            the import-time qualifier)
 
     Uses SQLAlchemy's `schema_translate_map` execution option which
     rewrites table-name qualifiers at SQL-emission time without rebuilding
@@ -75,16 +76,27 @@ def create_legacy_tables(db, tables: list) -> None:
     schema = dialect_schema_qualifier()  # read env at CALL time
     dialect = bind.engine.dialect.name
 
-    if dialect == "postgresql" and schema:
-        # PG with prov_schema set — emit table names as-is (no remap needed
-        # because _LEGACY_MD.schema already matches).
+    if dialect == "postgresql" and schema == _LEGACY_MD_IMPORT_SCHEMA:
+        # PG with the same schema setting as at import — emit table
+        # names as-is (no remap needed because _LEGACY_MD.schema
+        # already matches).
         target_bind = bind
     else:
-        # Non-PG OR PG with KYA_VERSIONS_SCHEMA="" — strip the schema
-        # so tables land in the default namespace.
-        target_bind = bind.execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        # Non-PG OR the env value changed between import and call —
+        # remap the import-time qualifier to the current target.
+        target_schema = schema if dialect == "postgresql" else None
+        # MERGE with any pre-existing schema_translate_map the caller
+        # already set on the connection. Replacing it blindly would
+        # (a) silently break the customer's own translation rules and
+        # (b) trigger SA's "schema translate map which previously had
+        # X present as a key now no longer has it present" error when
+        # the key sets differ between successive maps. By merging,
+        # our addition is additive and harmless to other entries.
+        existing = (
+            bind.get_execution_options().get("schema_translate_map") or {})
+        merged = dict(existing)
+        merged[_LEGACY_MD_IMPORT_SCHEMA] = target_schema
+        target_bind = bind.execution_options(schema_translate_map=merged)
     _LEGACY_MD.create_all(bind=target_bind, tables=tables)
 
 

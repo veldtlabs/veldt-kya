@@ -16,7 +16,9 @@ the production scoring path uses this module.
 Resolution order at score time
 ------------------------------
     1. Caller-provided weights (if explicit `weights=` kwarg)
-    2. Tenant override row in `prov_schema.kya_weight_overrides`
+    2. Tenant override row in `kya_weight_overrides` (in the configured
+       KYA schema; defaults to the dialect's default — override via
+       ``KYA_VERSIONS_SCHEMA``)
     3. Platform default override row (tenant_id = NULL)
     4. Module-level default constants (CLASS_WEIGHTS, CAPABILITY_WEIGHTS, …)
 
@@ -28,8 +30,9 @@ Tenants can raise their own bar; they can't lower it.
 
 Audit
 -----
-Every successful weight change writes a row to `prov_schema.kya_weight_changes`
-with old_value / new_value / changed_by / reason / scope-context.
+Every successful weight change writes a row to `kya_weight_changes`
+(same schema as above) with old_value / new_value / changed_by /
+reason / scope-context.
 
 Public API
 ----------
@@ -69,44 +72,8 @@ text = _sa_text
 logger = logging.getLogger(__name__)
 
 
-_TABLE_OVERRIDES_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_weight_overrides (
-    id          SERIAL PRIMARY KEY,
-    tenant_id   UUID,                          -- NULL = platform default override
-    scope       VARCHAR(50)  NOT NULL,         -- class_weights / capability_weights / ...
-    key         VARCHAR(100) NOT NULL,         -- e.g. "pii", "code_execution"
-    value       INTEGER      NOT NULL,
-    created_by  UUID,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, scope, key)
-);
-"""
-
-_TABLE_CHANGES_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_weight_changes (
-    id          SERIAL PRIMARY KEY,
-    tenant_id   UUID,                          -- NULL = platform-level change
-    scope       VARCHAR(50)  NOT NULL,
-    key         VARCHAR(100) NOT NULL,
-    old_value   INTEGER,
-    new_value   INTEGER,
-    action      VARCHAR(20)  NOT NULL,         -- "set" | "delete"
-    changed_by  UUID,
-    reason      TEXT,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-"""
-
-_INDEX_OVERRIDES_DDL = """
-CREATE INDEX IF NOT EXISTS idx_kya_weight_overrides_tenant_scope
-    ON prov_schema.kya_weight_overrides (tenant_id, scope);
-"""
-
-_INDEX_CHANGES_DDL = """
-CREATE INDEX IF NOT EXISTS idx_kya_weight_changes_tenant_created
-    ON prov_schema.kya_weight_changes (tenant_id, created_at DESC);
-"""
+# DDL is owned by `kya._legacy_tables`; the schema qualifier and
+# dialect-specific types are handled centrally there.
 
 
 # Scopes this module manages. Each maps to a module-level dict that holds
@@ -151,7 +118,7 @@ def get_effective_weights(db, scope: str, tenant_id: str | None = None) -> dict:
     weights = dict(_SCOPE_REGISTRY[scope])  # start with in-process default
 
     # Use SA Core (not raw text) so the schema_translate_map applies
-    # on non-PG backends. Raw text with literal "prov_schema." would
+    # on non-PG backends. Raw text with a literal schema prefix would
     # fail on SQLite (no schema-translate for raw SQL).
     #
     # ORDER BY id ASC: if a backend somehow ended up with multiple
@@ -464,7 +431,7 @@ def delete_override(
     old = _current_value(db, scope, key, tenant_id)
     if old is None:
         return False
-    # SA Core delete for cross-dialect (raw text with prov_schema. +
+    # SA Core delete for cross-dialect (raw text with a schema prefix +
     # ::uuid casts is PG-only).
     from sqlalchemy import and_
     from sqlalchemy import delete as sa_delete

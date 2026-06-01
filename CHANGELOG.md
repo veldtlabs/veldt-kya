@@ -10,6 +10,56 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dedicated `veldt-kya` repo separated from the upstream `veldt-decisions`
   monorepo (open-core split).
 
+## [0.1.6]
+
+### Changed (BREAKING)
+- **Default schema for KYA tables flipped from `prov_schema` to `None`**
+  (= dialect's default; `public` on PostgreSQL). Customers running on the
+  same database instance as v0.1.5 must export
+  `KYA_VERSIONS_SCHEMA=prov_schema` to keep their existing KYA tables
+  addressable, or migrate the tables into `public`.
+- New env var `KYA_DECISIONS_SCHEMA` (default `prov_schema`) controls the
+  schema for non-KYA tables that KYA's compliance / rogue / fleet-metrics
+  helpers read (`governance_incidents`, `governance_audit_log`,
+  `decision_approvals`, `tenants`, `custom_agents`). Lets customers run
+  KYA tables and veldt-decisions tables in separate schemas without
+  conflict.
+
+### Added
+- `since_ts` / `until_ts` keyword arguments on `kya.list_invocations()` and
+  `kya.list_evidence()`. Server-side window filter (half-open:
+  `since_ts <= occurred_at < until_ts`) so callers building time-bounded
+  packs no longer have to filter post-fetch.
+- `kya._portable.decisions_schema_qualifier()` and
+  `qual_for_raw_sql_decisions()` helpers — symmetric to the KYA-schema
+  ones, for any code that joins veldt-decisions tables.
+- CI guard test `tests/test_no_hardcoded_schemas.py` that scans the open
+  SDK source for hardcoded `prov_schema.<table>` strings (catches
+  single-quoted, double-quoted, AND triple-quoted SQL) and fails the
+  build if a future PR re-introduces a hardcode.
+
+### Fixed
+- Refactored every hardcoded `prov_schema.<table>` raw SQL string across
+  13 files to use `qual_for_raw_sql(db)` (KYA tables) or
+  `qual_for_raw_sql_decisions(db)` (veldt-decisions tables).
+- Module-level `_PG_SCHEMA` constants in `evidence.py`, `invocations.py`,
+  `principals.py`, `versioning.py` no longer hardcode `prov_schema` as
+  the fallback.
+- `KYA_VERSIONS_SCHEMA` is validated to be a SQL-legal identifier before
+  being interpolated into `CREATE SCHEMA IF NOT EXISTS` (defense against
+  operator-typo-induced SQL injection on misconfigured deployments).
+
+### Upgrade
+
+If your deployment relied on the v0.1.5 default of `prov_schema`:
+
+```bash
+export KYA_VERSIONS_SCHEMA=prov_schema
+export KYA_DECISIONS_SCHEMA=prov_schema  # only if you join decisions tables
+```
+
+Starting fresh on v0.1.6 needs no env vars — tables land in `public`.
+
 ## [0.1.0] — 2026-05-21
 
 Initial public release on PyPI.

@@ -79,8 +79,10 @@ from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_f
 
 PRINCIPAL_KINDS = ("user", "agent", "service_account")
 
-# Schema qualifier — PG only.
-_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA", "prov_schema") or None
+# Schema qualifier — PG only. Defaults to None (= dialect's default
+# namespace) as of v0.1.6; set KYA_VERSIONS_SCHEMA in the environment
+# to pin tables to a named schema.
+_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
 
 
 def _require_sqlalchemy() -> None:
@@ -310,9 +312,10 @@ def _apply_idp_binding_migrations(db) -> None:
     apply_migrations swallows + logs."""
     from ._migrations import apply_migrations
     dialect = db.get_bind().dialect.name
-    # PG uses the schema configured via KYA_VERSIONS_SCHEMA env (default
-    # 'prov_schema'). Other backends use the default namespace.
-    # Hardcoding 'prov_schema' here would mismatch any deployment that
+    # PG uses the schema configured via KYA_VERSIONS_SCHEMA env
+    # (default: dialect's default schema; override via KYA_VERSIONS_SCHEMA
+    # env var). Other backends use the default namespace.
+    # Hardcoding a schema name here would mismatch any deployment that
     # set KYA_VERSIONS_SCHEMA="" or to a custom name.
     qual = (f"{_PG_SCHEMA}."
             if dialect == "postgresql" and _PG_SCHEMA

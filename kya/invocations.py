@@ -89,7 +89,7 @@ def _require_sqlalchemy() -> None:
 
 # Schema qualifier — PG only; SDK consumers on SQLite/MySQL/DuckDB get the
 # default namespace.
-_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA", "prov_schema") or None
+_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
 
 
 if _HAS_SQLALCHEMY:
@@ -168,8 +168,9 @@ def ensure_invocations_table(db) -> None:
     """Create kya_invocations + indexes if absent. Idempotent.
 
     Schema selection is dialect-aware: PostgreSQL deployments land in
-    `prov_schema` (override via KYA_VERSIONS_SCHEMA env); SQLite/MySQL/
-    DuckDB get the table in the default namespace.
+    the configured KYA schema (default: dialect's default; override
+    via KYA_VERSIONS_SCHEMA env var); SQLite/MySQL/DuckDB get the
+    table in the default namespace.
     """
     _require_sqlalchemy()
     conn = db.connection()
@@ -360,10 +361,17 @@ def list_invocations(
     agent_key: str | None = None,
     principal_id: str | None = None,
     correlation_id: str | None = None,
+    since_ts: datetime | None = None,
+    until_ts: datetime | None = None,
     limit: int = 100,
 ) -> list[dict]:
     """Most-recent first (by occurred_at). Filterable by any of agent_key /
-    principal_id / correlation_id."""
+    principal_id / correlation_id / time window.
+
+    Time window is half-open: ``since_ts <= occurred_at < until_ts``.
+    Both bounds optional. When set, rows outside the window are
+    excluded server-side so callers can build deterministic
+    time-bounded packs without post-fetch filtering."""
     _require_sqlalchemy()
     ensure_invocations_table(db)
 
@@ -374,6 +382,10 @@ def list_invocations(
         stmt = stmt.where(Invocation.principal_id == principal_id)
     if correlation_id:
         stmt = stmt.where(Invocation.correlation_id == correlation_id)
+    if since_ts is not None:
+        stmt = stmt.where(Invocation.occurred_at >= since_ts)
+    if until_ts is not None:
+        stmt = stmt.where(Invocation.occurred_at < until_ts)
     stmt = stmt.order_by(Invocation.occurred_at.desc()).limit(limit)
 
     return [_row_to_dict(row) for row in db.execute(stmt).scalars().all()]

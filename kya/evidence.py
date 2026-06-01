@@ -141,7 +141,7 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
-_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA", "prov_schema") or None
+_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
 
 # Valid evidence kinds — closed set so callers don't invent shapes.
 VALID_EVIDENCE_KINDS = {
@@ -665,6 +665,8 @@ def list_evidence(
     invocation_id: int | None = None,
     correlation_id: str | None = None,
     evidence_kind: str | None = None,
+    since_ts: datetime | None = None,
+    until_ts: datetime | None = None,
     limit: int = 100,
 ) -> list[dict]:
     """Return evidence rows ordered by `id` ascending (chain order).
@@ -674,6 +676,13 @@ def list_evidence(
     `verify_chain()` — call verify_chain directly against the
     (tenant_id, invocation_id) pair so it walks the full chain
     server-side without limit-induced gaps.
+
+    NOTE on time window: ``since_ts <= occurred_at < until_ts``
+    (half-open). When supplied, rows outside the window are
+    excluded server-side. The chain itself is still ordered by
+    ``id ASC`` so callers receive the chain in canonical order
+    within the window. ``verify_chain()`` always walks the FULL
+    chain regardless of window.
     """
     _require_sqlalchemy()
     init_evidence_table(db)
@@ -685,6 +694,10 @@ def list_evidence(
         stmt = stmt.where(_EvidenceRow.correlation_id == correlation_id)
     if evidence_kind:
         stmt = stmt.where(_EvidenceRow.evidence_kind == evidence_kind)
+    if since_ts is not None:
+        stmt = stmt.where(_EvidenceRow.occurred_at >= since_ts)
+    if until_ts is not None:
+        stmt = stmt.where(_EvidenceRow.occurred_at < until_ts)
     stmt = stmt.order_by(_EvidenceRow.id.asc()).limit(limit)
 
     return [_row_to_dict(row) for row in db.execute(stmt).scalars().all()]

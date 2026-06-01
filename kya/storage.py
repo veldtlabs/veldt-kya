@@ -110,6 +110,22 @@ def init_storage(db) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             _schema = None
         if _schema:
+            # Validate identifier shape -- env-controlled, but a
+            # mistyped value could still craft a SQL injection if it
+            # contained quoting characters. Reject anything that isn't
+            # a PG-legal unquoted identifier (letters / digits /
+            # underscores, not starting with a digit).
+            import re as _re
+            if not _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", _schema):
+                import logging
+                logging.getLogger(__name__).error(
+                    "[KYA-STORAGE] KYA_VERSIONS_SCHEMA=%r is not a "
+                    "valid SQL identifier (letters, digits, "
+                    "underscores; no leading digit). Refusing to "
+                    "issue CREATE SCHEMA.", _schema,
+                )
+                _schema = None
+        if _schema:
             try:
                 from sqlalchemy import text as _sa_text
                 with bind.begin() as _conn:

@@ -527,10 +527,11 @@ class RogueReport:
 
 def get_rogue_signals(agent_key: str, db=None, tenant_id: str | None = None) -> RogueReport:
     """Build a rogue report. Authoritative source is the DB principal
-    record (`prov_schema.kya_principal_trust.signal_counts`) — that's
-    cross-worker, persistent, and survives restarts. Prometheus counters
-    are also scraped as a *supplemental* live-activity feed (for per-
-    tool top-offenders, since the DB stores aggregate counts only).
+    record (`kya_principal_trust.signal_counts`, in the configured KYA
+    schema) — that's cross-worker, persistent, and survives restarts.
+    Prometheus counters are also scraped as a *supplemental* live-
+    activity feed (for per-tool top-offenders, since the DB stores
+    aggregate counts only).
 
     Read-only and exception-safe — falls back to a zeroed report on any
     failure.
@@ -706,6 +707,8 @@ def get_governance_summary(
     """
     from sqlalchemy import text
 
+    from ._portable import qual_for_raw_sql_decisions
+
     out = {
         "window_days": window_days,
         "verdict_counts": {},  # verdict -> count
@@ -715,11 +718,15 @@ def get_governance_summary(
         "recent_events": [],
     }
     try:
+        # governance_audit_log / governance_incidents / decision_approvals
+        # are veldt-decisions tables, not KYA tables -- use the decisions
+        # schema qualifier so split-schema deployments work.
+        qual = qual_for_raw_sql_decisions(db)
         # Verdict counts within window
         rows = db.execute(
-            text("""
+            text(f"""
                 SELECT verdict, COUNT(*)
-                FROM prov_schema.governance_audit_log
+                FROM {qual}governance_audit_log
                 WHERE tenant_id = :tid
                   AND created_at >= now() - (:days || ' days')::interval
                 GROUP BY verdict
@@ -730,11 +737,11 @@ def get_governance_summary(
 
         # Open incidents
         row = db.execute(
-            text("""
+            text(f"""
                 SELECT COUNT(*) FILTER (WHERE resolution_status IN ('open','investigating')),
                        COUNT(*) FILTER (WHERE severity = 'critical'
                                         AND resolution_status IN ('open','investigating'))
-                FROM prov_schema.governance_incidents
+                FROM {qual}governance_incidents
                 WHERE tenant_id = :tid
             """),
             {"tid": tenant_id},
@@ -745,9 +752,9 @@ def get_governance_summary(
 
         # Pending approvals
         row = db.execute(
-            text("""
+            text(f"""
                 SELECT COUNT(*)
-                FROM prov_schema.decision_approvals
+                FROM {qual}decision_approvals
                 WHERE tenant_id = :tid AND status = 'pending_approval'
             """),
             {"tid": tenant_id},
@@ -757,10 +764,10 @@ def get_governance_summary(
 
         # Most-recent 5 audit entries
         rows = db.execute(
-            text("""
+            text(f"""
                 SELECT action_type, verdict, risk_level, created_at,
                        policies_failed, model_id
-                FROM prov_schema.governance_audit_log
+                FROM {qual}governance_audit_log
                 WHERE tenant_id = :tid
                   AND created_at >= now() - (:days || ' days')::interval
                 ORDER BY created_at DESC
