@@ -28,8 +28,9 @@ Design rules
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, Sequence, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 # ── Source-of-truth enums ──────────────────────────────────────────
 

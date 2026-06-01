@@ -394,9 +394,11 @@ def build_fingerprint_batch(
     The bulk path runs 3 queries total instead of 3 per principal.
     """
     from sqlalchemy import select  # noqa: PLC0415
+
     from .principal_edges import walk_ancestors  # noqa: PLC0415
     from .versioning import (  # noqa: PLC0415
-        AgentVersion, _compose_principal_key,
+        AgentVersion,
+        _compose_principal_key,
     )
 
     # Bulk-load every latest snapshot for the tenant.

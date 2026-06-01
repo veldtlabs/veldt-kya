@@ -184,13 +184,13 @@ from .principal_edges import (
 )
 from .principals import (
     PRINCIPAL_KINDS,
+    PrincipalFingerprintBatch,
     PrincipalTrust,
+    build_fingerprint_batch,
     detect_principal_burst_anomalies,
     ensure_principal_table,
     get_principal_trust,
     get_principal_window_counts,
-    PrincipalFingerprintBatch,
-    build_fingerprint_batch,
     is_valid_principal_kind,
     list_principals,
     principal_fingerprint,
