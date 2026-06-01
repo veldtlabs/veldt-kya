@@ -66,6 +66,13 @@ jobs:
     env:
       KYA_TEST_PG_URL: postgresql+psycopg2://postgres:kya_test@127.0.0.1:5432/kya_test
       KYA_TEST_MYSQL_URL: mysql+pymysql://root:kya_test@127.0.0.1:3306/kya_test
+      # v0.1.6 BREAKING CHANGE: default schema flipped from
+      # "prov_schema" to None. Tests still expect tables in
+      # prov_schema (they explicitly CREATE/DROP there). Pin the
+      # env var so the test suite behaves the same way as a v0.1.5
+      # customer upgrading on the same DB instance -- this IS the
+      # documented upgrade incantation.
+      KYA_VERSIONS_SCHEMA: prov_schema
 
     steps:
       - uses: actions/checkout@v4
