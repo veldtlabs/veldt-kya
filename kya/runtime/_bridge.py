@@ -31,8 +31,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ._canonical import (
+    AutonomyEvent,
+    BoundEvent,
     RuntimeEvent,
+    SourceKind,
     SourceTool,
+    source_kind_of,
 )
 from ._registry import (
     RuntimeParserError,
@@ -59,6 +63,12 @@ class RuntimeIngestResult:
             canonically) and the bridge attempted attack-chain
             dispatch + evidence attach. False if parsing failed.
         source_tool: The source tool used (parser name).
+        source_kind: Top-level event family —
+            ``"runtime_security"`` for container / k8s / host tools,
+            ``"autonomy"`` for UAS / robotics / industrial tools.
+            Downstream filters and dashboards read this rather than
+            enumerating SourceTool values, so adding new autonomy
+            parsers (ROS2, OPC-UA, ...) doesn't break consumers.
         tenant_id, principal_id: Resolved values, or None if the
             event remains unbound. Unbound events still get attack-
             chain dispatched on rules that don't require a principal
@@ -80,6 +90,7 @@ class RuntimeIngestResult:
 
     accepted: bool
     source_tool: SourceTool | None
+    source_kind: SourceKind | None
     tenant_id: str | None
     principal_id: str | None
     principal_binding_method: str
@@ -127,7 +138,7 @@ def reset_principal_resolver_to_default() -> None:
 
 
 def _resolve_principal(
-    ev: RuntimeEvent,
+    ev: BoundEvent,
 ) -> tuple[str | None, str | None, str]:
     """Resolve (tenant_id, principal_id, binding_method) for one event.
 
@@ -170,8 +181,39 @@ def _resolve_principal(
 # Imported lazily so importing ``kya.runtime`` does not eagerly pull
 # the attack_chains stack. Most runtime events still benefit from
 # evidence attach even when attack_chains isn't configured.
+def _evidence_kind(ev: BoundEvent) -> str:
+    """Compose the ``evidence_kind`` string for the attack-chain
+    matcher and the signed evidence ledger.
+
+    Shape per family:
+        runtime-security  -> ``"runtime_<tool>"``   (8 existing tools)
+        autonomy          -> ``"autonomy_<tool>"``  (mavlink, future)
+
+    The runtime-security format is preserved verbatim so existing
+    attack-chain rules in PR #41 + #42 + the ``VALID_EVIDENCE_KINDS``
+    whitelist keep working unchanged. Autonomy events land in their
+    own namespace so dashboards can filter cleanly.
+    """
+    kind = source_kind_of(ev.source_tool)
+    if kind == "runtime_security":
+        return f"runtime_{ev.source_tool}"
+    return f"{kind}_{ev.source_tool}"
+
+
+def _evidence_source(ev: BoundEvent) -> str:
+    """Compose the ``source`` field for the evidence ledger.
+
+    Shape: ``"<family>.<tool>"`` -> ``"runtime.falco"``,
+    ``"autonomy.mavlink"``. The family prefix gives operators a
+    coarse first-cut filter without needing to enumerate tools.
+    """
+    if source_kind_of(ev.source_tool) == "runtime_security":
+        return f"runtime.{ev.source_tool}"
+    return f"autonomy.{ev.source_tool}"
+
+
 def _dispatch_attack_chains(
-    db: Any, ev: RuntimeEvent, tenant_id: str | None,
+    db: Any, ev: BoundEvent, tenant_id: str | None,
     principal_id: str | None,
 ) -> list[str]:
     try:
@@ -190,7 +232,7 @@ def _dispatch_attack_chains(
             db,
             tenant_id=tenant_id or "",
             principal_id=principal_id or "",
-            evidence_kind=f"runtime_{ev.source_tool}",
+            evidence_kind=_evidence_kind(ev),
             payload=_event_to_payload(ev),
             occurred_at_ts=ev.occurred_at_ts,
         )
@@ -202,52 +244,109 @@ def _dispatch_attack_chains(
         return []
 
 
-def _event_to_payload(ev: RuntimeEvent) -> dict[str, Any]:
-    """Flatten a RuntimeEvent into the dotted-payload shape the
-    attack-chain matchers expect. Mirrors how PR #42's Sigma adapter
-    lands fields under ``payload.*`` -- runtime fields land under
-    ``payload.<field>`` for symmetry with the existing rule library.
+def _event_to_payload(ev: BoundEvent) -> dict[str, Any]:
+    """Flatten any BoundEvent into the dotted-payload shape the
+    attack-chain matchers expect.
+
+    Mirrors how PR #42's Sigma adapter lands fields under
+    ``payload.*``. Branches on event family:
+
+    * ``runtime_security`` events emit container / pod / process
+      fields (``container_id``, ``pod_name``, ``proc.cmdline``, ...).
+    * ``autonomy`` events emit vehicle / geo / mission fields
+      (``vehicle.sysid``, ``geo.lat``, ``flight_mode``, ...).
+
+    Branching keeps each family's payload schema clean; downstream
+    rules match on whichever fields are present, no cross-pollination.
     """
     payload: dict[str, Any] = {
         "source_tool": ev.source_tool,
+        "source_kind": source_kind_of(ev.source_tool),
         "source_rule_id": ev.source_rule_id,
         "severity": ev.severity,
         "action": ev.action,
         "message": ev.message,
     }
-    if ev.container_id:
-        payload["container_id"] = ev.container_id
-    if ev.container_image:
-        payload["container_image"] = ev.container_image
-    if ev.pod_name:
-        payload["pod_name"] = ev.pod_name
-    if ev.namespace:
-        payload["namespace"] = ev.namespace
-    if ev.node:
-        payload["node"] = ev.node
-    if ev.process:
-        if ev.process.image:
-            payload["proc.image"] = ev.process.image
-        if ev.process.name:
-            payload["proc.name"] = ev.process.name
-        if ev.process.cmdline:
-            payload["proc.cmdline"] = ev.process.cmdline
-        if ev.process.user:
-            payload["proc.user"] = ev.process.user
-        if ev.process.pid is not None:
-            payload["proc.pid"] = ev.process.pid
-        if ev.process.ppid is not None:
-            payload["proc.ppid"] = ev.process.ppid
     if ev.tags:
         payload["tags"] = list(ev.tags)
+
+    if source_kind_of(ev.source_tool) == "autonomy":
+        _fill_autonomy_payload(payload, ev)
+    else:
+        _fill_runtime_security_payload(payload, ev)
     return payload
+
+
+def _fill_runtime_security_payload(
+    payload: dict[str, Any], ev: BoundEvent,
+) -> None:
+    """Populate container / k8s / process fields. Caller has already
+    classified ``ev`` as a runtime-security event via
+    ``source_kind_of`` — this helper trusts that classification and
+    accesses RuntimeEvent-shaped fields directly."""
+    # source_kind_of guarantees ev is a RuntimeEvent here.
+    re_ev: RuntimeEvent = ev  # type: ignore[assignment]
+    if re_ev.container_id:
+        payload["container_id"] = re_ev.container_id
+    if re_ev.container_image:
+        payload["container_image"] = re_ev.container_image
+    if re_ev.pod_name:
+        payload["pod_name"] = re_ev.pod_name
+    if re_ev.namespace:
+        payload["namespace"] = re_ev.namespace
+    if re_ev.node:
+        payload["node"] = re_ev.node
+    if re_ev.process:
+        if re_ev.process.image:
+            payload["proc.image"] = re_ev.process.image
+        if re_ev.process.name:
+            payload["proc.name"] = re_ev.process.name
+        if re_ev.process.cmdline:
+            payload["proc.cmdline"] = re_ev.process.cmdline
+        if re_ev.process.user:
+            payload["proc.user"] = re_ev.process.user
+        if re_ev.process.pid is not None:
+            payload["proc.pid"] = re_ev.process.pid
+        if re_ev.process.ppid is not None:
+            payload["proc.ppid"] = re_ev.process.ppid
+
+
+def _fill_autonomy_payload(
+    payload: dict[str, Any], ev: BoundEvent,
+) -> None:
+    """Populate vehicle / geo / mission fields. Caller has already
+    classified ``ev`` as an autonomy event."""
+    a_ev: AutonomyEvent = ev  # type: ignore[assignment]
+    if a_ev.vehicle:
+        if a_ev.vehicle.sysid is not None:
+            payload["vehicle.sysid"] = a_ev.vehicle.sysid
+        if a_ev.vehicle.compid is not None:
+            payload["vehicle.compid"] = a_ev.vehicle.compid
+        if a_ev.vehicle.vehicle_id:
+            payload["vehicle.id"] = a_ev.vehicle.vehicle_id
+        if a_ev.vehicle.mission_id:
+            payload["vehicle.mission_id"] = a_ev.vehicle.mission_id
+        if a_ev.vehicle.frame:
+            payload["vehicle.frame"] = a_ev.vehicle.frame
+    if a_ev.geo_lat is not None:
+        payload["geo.lat"] = a_ev.geo_lat
+    if a_ev.geo_lon is not None:
+        payload["geo.lon"] = a_ev.geo_lon
+    if a_ev.geo_alt_m is not None:
+        payload["geo.alt_m"] = a_ev.geo_alt_m
+    if a_ev.flight_mode:
+        payload["flight_mode"] = a_ev.flight_mode
+    if a_ev.link_quality is not None:
+        payload["link_quality"] = a_ev.link_quality
+    if a_ev.command_origin_addr:
+        payload["command_origin_addr"] = a_ev.command_origin_addr
 
 
 # ── Entrypoints ────────────────────────────────────────────────────
 
 
 def _attach_evidence_chain(
-    db: Any, ev: RuntimeEvent, tenant_id: str | None,
+    db: Any, ev: BoundEvent, tenant_id: str | None,
     invocation_id: int | None, correlation_id: str | None,
 ) -> int | None:
     """Write a row into the HMAC-signed evidence ledger.
@@ -279,13 +378,12 @@ def _attach_evidence_chain(
             db,
             tenant_id=tenant_id,
             invocation_id=invocation_id,
-            # New canonical evidence_kind family. Attack-chain rules
-            # in PR #41 + #42 already match on
-            # ``runtime_<source_tool>`` via the dispatch path; the
-            # ledger row uses the same kind so chain-walks find both.
-            evidence_kind=f"runtime_{ev.source_tool}",
+            # evidence_kind matches the dispatcher's; chain-walks
+            # find both rows under the same key. Shape:
+            # "runtime_security_<tool>" or "autonomy_<tool>".
+            evidence_kind=_evidence_kind(ev),
             payload=_event_to_payload(ev),
-            source=f"runtime.{ev.source_tool}",
+            source=_evidence_source(ev),
             correlation_id=correlation_id,
         )
     except Exception:  # noqa: BLE001
@@ -297,7 +395,7 @@ def _attach_evidence_chain(
 
 
 def record_runtime_event(
-    event: RuntimeEvent,
+    event: BoundEvent,
     *,
     db: Any | None = None,
     invocation_id: int | None = None,
@@ -305,12 +403,14 @@ def record_runtime_event(
 ) -> RuntimeIngestResult:
     """Ingest one already-canonical event.
 
-    This is the bridge's primary entry. Use it when you already
-    produced a :class:`RuntimeEvent` (e.g. from a Tetragon sidecar
-    that emits canonical events directly).
+    Accepts any :class:`BoundEvent` —
+    :class:`RuntimeEvent` for container / k8s tools, or
+    :class:`AutonomyEvent` for UAS / robotics / industrial parsers.
+    The bridge classifies via ``source_kind_of(event.source_tool)``
+    and branches its payload schema accordingly.
 
     Args:
-        event: Canonical runtime event.
+        event: Canonical event (any BoundEvent shape).
         db: SQLAlchemy session. Optional -- when None the bridge
             still does in-memory attack-chain dispatch (useful for
             tests / dry-run pipelines) but skips evidence-ledger
@@ -334,6 +434,7 @@ def record_runtime_event(
     return RuntimeIngestResult(
         accepted=True,
         source_tool=event.source_tool,
+        source_kind=source_kind_of(event.source_tool),
         tenant_id=tid,
         principal_id=pid,
         principal_binding_method=method,
@@ -374,6 +475,7 @@ def ingest(
             return RuntimeIngestResult(
                 accepted=False,
                 source_tool=source_tool,
+                source_kind=source_kind_of(source_tool),
                 tenant_id=None, principal_id=None,
                 principal_binding_method="unbound",
                 attack_chain_matches=[],
@@ -385,6 +487,7 @@ def ingest(
             return RuntimeIngestResult(
                 accepted=False,
                 source_tool=source_tool,
+                source_kind=source_kind_of(source_tool),
                 tenant_id=None, principal_id=None,
                 principal_binding_method="unbound",
                 attack_chain_matches=[],
@@ -396,6 +499,7 @@ def ingest(
             return RuntimeIngestResult(
                 accepted=False,
                 source_tool=source_tool,
+                source_kind=source_kind_of(source_tool),
                 tenant_id=None, principal_id=None,
                 principal_binding_method="unbound",
                 attack_chain_matches=[],
@@ -405,6 +509,7 @@ def ingest(
             return RuntimeIngestResult(
                 accepted=False,
                 source_tool=source_tool,
+                source_kind=source_kind_of(source_tool),
                 tenant_id=None, principal_id=None,
                 principal_binding_method="unbound",
                 attack_chain_matches=[],
@@ -422,6 +527,7 @@ def ingest(
         return RuntimeIngestResult(
             accepted=False,
             source_tool=None,
+            source_kind=None,
             tenant_id=None, principal_id=None,
             principal_binding_method="unbound",
             attack_chain_matches=[],

@@ -50,6 +50,7 @@ Public API
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -77,7 +78,208 @@ logger = logging.getLogger(__name__)
 
 from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_for_trust
 
-PRINCIPAL_KINDS = ("user", "agent", "service_account")
+#: Canonical principal kinds. Additive over time — never remove or
+#: rename a value, because existing rows depend on the literal string.
+#:
+#: KYA models *governed autonomy*: any actor that can take an
+#: autonomous action is a principal, and the same evidence /
+#: attribution / trust model applies regardless of what kind of
+#: thing the actor is. The vocabulary is flat and granular because a
+#: drone's lineage can include an AI agent, so the two must be
+#: distinguishable.
+#:
+#: Existing kinds (since v0.1.0):
+#:     ``user``             — human operators
+#:     ``agent``            — software AI agents (LLM-driven or rule-driven)
+#:     ``service_account``  — non-human service identity (k8s SA, machine credential)
+#:
+#: Autonomy kinds (added v0.1.8):
+#:     ``drone``             — UAS (ArduPilot, PX4, ...)
+#:     ``robot``             — physical robotic systems (industrial arms, AGVs)
+#:     ``vehicle``           — ground / surface / sub-surface autonomous vehicles
+#:     ``plc``               — programmable logic controllers (industrial automation)
+#:     ``controller``        — mission / fleet orchestrators that aren't AI agents
+#:     ``sensor``            — IoT sensors emitting trust-relevant signals
+#:     ``actuator``          — end effectors (servos, grippers, valves)
+#:     ``lakehouse_job``     — autonomous data pipelines / scheduled jobs
+#:     ``machine_identity``  — generic machine identity catch-all
+#:     ``autonomous_system`` — *composed* principal representing a whole
+#:                             mission / fleet / cell whose members are
+#:                             themselves principals. Example: ``mission_alpha``
+#:                             whose ``attributes.lineage`` lists the human
+#:                             operator, the controller, the planner agent,
+#:                             and each drone. Use this kind when you want
+#:                             to score / sign at the system level alongside
+#:                             per-member rows.
+#:
+#: The ``attributes`` JSON column on ``kya_principal_trust`` carries
+#: kind-specific metadata + the authority chain. Convention:
+#:
+#:     attributes = {
+#:         "asset_type": "drone",                  # human-readable kind
+#:         "protocol":   "mavlink",                # transport / dialect
+#:         "platform":   "ardupilot",              # vendor / firmware
+#:         "lineage": [                            # delegation chain, root first
+#:             {"kind": "user",        "id": "op_jane"},
+#:             {"kind": "controller",  "id": "mission_alpha"},
+#:             {"kind": "agent",       "id": "planner_v2"}
+#:         ],
+#:         # ... any protocol-specific fields (sysid/compid, node_id, ...)
+#:     }
+#:
+#: Recording lineage is OPTIONAL — leaving it out keeps the row as a
+#: top-level principal. When present it lets the bridge propagate
+#: trust deltas up the chain and lets evidence packs cover an entire
+#: authority graph in one signed deliverable.
+#:
+#: Composite actions / interactions
+#: --------------------------------
+#: An action authorized by a user *through* an agent *on* a drone is
+#: NOT modeled as a single "composite principal" — that would lose
+#: attributability. Instead, every action has:
+#:
+#:     * one **primary principal**  — the immediate actor whose
+#:       trust score moves, e.g. ``drone:uav_002``
+#:     * a **lineage** carried in ``attributes.lineage`` — every
+#:       upstream party with shared accountability
+#:     * an optional **actor_human_id** column — the ultimate human
+#:       on the hook (set when known; helps regulators read the
+#:       trust ledger in plain language)
+#:
+#: Peer-to-peer messages between principals (agent-to-agent talk)
+#: write two evidence rows joined by a shared ``correlation_id``; no
+#: synthetic "interaction principal" is created. This keeps the
+#: ledger interpretable: every row names exactly one accountable
+#: actor, and joint accountability is reconstructed by walking
+#: lineage + correlation_id rather than hidden inside an opaque
+#: composite key.
+#:
+#: Identifier scopes (top-down)
+#: ----------------------------
+#: Every action in KYA is reachable through a stack of identifiers,
+#: each answering a different question:
+#:
+#:     ``tenant_id``                  -- whose data is this?
+#:     ``principal_kind`` + ``principal_id``
+#:                                    -- who/what acted? (the actor)
+#:     autonomous_system principal    -- what composed system does
+#:                                       this actor structurally belong to?
+#:                                       (resolved via ``kya.principal_edges``
+#:                                       ``walk_ancestors``)
+#:     ``correlation_id``             -- which specific operation /
+#:                                       session / mission run was this?
+#:                                       (lives on kya_invocations +
+#:                                       kya_evidence; ties actions across
+#:                                       principals)
+#:     ``invocation_id``              -- which call?
+#:     ``evidence_id``                -- which signed row?
+#:
+#: For a drone shared across two missions, ``walk_ancestors`` finds
+#: both ``autonomous_system`` umbrellas; ``correlation_id`` on the
+#: invocation row picks the specific mission run the action belonged
+#: to. No new "operation_id" / "session_id" column is needed —
+#: ``correlation_id`` already covers cross-principal session
+#: grouping.
+PRINCIPAL_KINDS: tuple[str, ...] = (
+    # Existing
+    "user",
+    "agent",
+    "service_account",
+    # Autonomy (v0.1.8)
+    "drone",
+    "robot",
+    "vehicle",
+    "plc",
+    "controller",
+    "sensor",
+    "actuator",
+    "lakehouse_job",
+    "machine_identity",
+    "autonomous_system",
+)
+
+# ── Runtime extensibility ───────────────────────────────────────────
+#
+# Vendors / integrators can register new principal kinds without
+# modifying KYA source. Two paths:
+#
+#   1) Env var (declarative, no code):
+#        KYA_PRINCIPAL_KINDS_EXTRA=swarm,satellite,iot_gateway
+#
+#   2) Programmatic at startup (for SDK users):
+#        from kya.principals import register_principal_kind
+#        register_principal_kind("swarm")
+#
+# Both feed the same in-process registry. Validation reads the
+# registry rather than the static ``PRINCIPAL_KINDS`` tuple, so an
+# unknown kind passed to ``record_principal_signal`` is only
+# rejected if it isn't in the *registered* set.
+#
+# Naming rules (enforced by ``register_principal_kind``):
+#   * lowercase ASCII letters, digits, underscores
+#   * length 1..20 (matches the VARCHAR(20) column width)
+#   * cannot start with a digit
+#
+# These rules keep the wire format predictable for downstream
+# consumers (dashboards, exports, attack-chain rules).
+
+_KIND_REGEX = re.compile(r"^[a-z][a-z0-9_]{0,19}$")
+
+
+def _initial_registered_kinds() -> set[str]:
+    extras: set[str] = set()
+    raw = os.environ.get("KYA_PRINCIPAL_KINDS_EXTRA", "").strip()
+    if raw:
+        for k in raw.split(","):
+            k = k.strip()
+            if k and _KIND_REGEX.match(k):
+                extras.add(k)
+            elif k:
+                logger.warning(
+                    "[KYP-KINDS] ignoring malformed extra kind %r from "
+                    "KYA_PRINCIPAL_KINDS_EXTRA — must match %s",
+                    k, _KIND_REGEX.pattern,
+                )
+    return set(PRINCIPAL_KINDS) | extras
+
+
+_REGISTERED_PRINCIPAL_KINDS: set[str] = _initial_registered_kinds()
+
+
+def register_principal_kind(kind: str) -> None:
+    """Register an additional principal kind for the lifetime of
+    this process.
+
+    Idempotent. Raises ``ValueError`` if the kind violates the
+    naming rules (lowercase ASCII / digits / underscore, length
+    1..20, no leading digit).
+
+    Use this at SDK startup to add domain-specific principal kinds
+    that your fleet emits but that aren't in the default vocabulary
+    yet. For deploy-time declaration without code changes, prefer
+    the ``KYA_PRINCIPAL_KINDS_EXTRA`` env var.
+    """
+    if not isinstance(kind, str) or not _KIND_REGEX.match(kind):
+        raise ValueError(
+            f"invalid principal_kind {kind!r}; must match "
+            f"{_KIND_REGEX.pattern} (lowercase ASCII letters, digits, "
+            f"underscore; 1-20 chars; no leading digit)")
+    _REGISTERED_PRINCIPAL_KINDS.add(kind)
+
+
+def is_valid_principal_kind(kind: str) -> bool:
+    """True if ``kind`` is known to the registry — either in the
+    default ``PRINCIPAL_KINDS`` tuple or added via
+    :func:`register_principal_kind` or the
+    ``KYA_PRINCIPAL_KINDS_EXTRA`` env var."""
+    return kind in _REGISTERED_PRINCIPAL_KINDS
+
+
+def registered_principal_kinds() -> tuple[str, ...]:
+    """Snapshot of every kind currently accepted by the registry.
+    Useful for tests / introspection / building dashboards that
+    enumerate the full vocabulary."""
+    return tuple(sorted(_REGISTERED_PRINCIPAL_KINDS))
 
 # Schema qualifier — PG only. Defaults to None (= dialect's default
 # namespace) as of v0.1.6; set KYA_VERSIONS_SCHEMA in the environment
@@ -493,8 +695,12 @@ def record_principal_signal(
     Trade-off: under high contention two concurrent signals can race on
     `signal_counts`; mitigated by application-level retry if needed.
     """
-    if principal_kind not in PRINCIPAL_KINDS:
-        logger.debug("[KYP] unknown principal_kind=%s — defaulting to 'user'", principal_kind)
+    if not is_valid_principal_kind(principal_kind):
+        logger.debug(
+            "[KYP] unregistered principal_kind=%s -- defaulting to 'user'. "
+            "Register via KYA_PRINCIPAL_KINDS_EXTRA or "
+            "register_principal_kind() to keep the original kind.",
+            principal_kind)
         principal_kind = "user"
     if occurred_at is None:
         occurred_at = datetime.now(timezone.utc)
@@ -660,7 +866,7 @@ def record_principal_clean(
     Mirrors the same upsert + Valkey + gauge plumbing as
     `record_principal_signal` so behavior stays symmetric.
     """
-    if principal_kind not in PRINCIPAL_KINDS:
+    if not is_valid_principal_kind(principal_kind):
         principal_kind = "user"
     if occurred_at is None:
         occurred_at = datetime.now(timezone.utc)

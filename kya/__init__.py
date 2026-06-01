@@ -171,6 +171,17 @@ from .phoenix_poll import (
 from .phoenix_poll import (
     is_enabled as phoenix_poll_enabled,
 )
+from .principal_edges import (
+    DEFAULT_EDGE_KIND,
+    PrincipalEdge,
+    add_principal_edge,
+    ensure_principal_edges_table,
+    list_children,
+    list_parents,
+    remove_principal_edge,
+    walk_ancestors,
+    walk_descendants,
+)
 from .principals import (
     PRINCIPAL_KINDS,
     PrincipalTrust,
@@ -178,9 +189,12 @@ from .principals import (
     ensure_principal_table,
     get_principal_trust,
     get_principal_window_counts,
+    is_valid_principal_kind,
     list_principals,
     record_principal_clean,
     record_principal_signal,
+    register_principal_kind,
+    registered_principal_kinds,
 )
 from .requests import (
     RequestSummary,
@@ -646,6 +660,20 @@ __all__ = [
     "get_principal_window_counts",
     "detect_principal_burst_anomalies",
     "delegation_trust_weight",
+    # v0.1.8 — extensible principal vocabulary
+    "register_principal_kind",
+    "is_valid_principal_kind",
+    "registered_principal_kinds",
+    # v0.1.8 — many-to-many principal DAG
+    "PrincipalEdge",
+    "DEFAULT_EDGE_KIND",
+    "ensure_principal_edges_table",
+    "add_principal_edge",
+    "remove_principal_edge",
+    "list_children",
+    "list_parents",
+    "walk_descendants",
+    "walk_ancestors",
     # Invocation tracking (event-time vs ingest-time + parallel tree)
     "VALID_MODES",
     "VALID_OUTCOMES",

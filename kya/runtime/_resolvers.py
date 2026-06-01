@@ -45,11 +45,12 @@ never silently drop runtime evidence.
 
 Resolver contract
 -----------------
-A resolver is any callable taking ``RuntimeEvent`` and returning
-``(tenant_id, principal_id, binding_method_label) | None``. The
-chain treats them as opaque; new strategies (custom DBs, service
+A resolver is any callable taking a :class:`BoundEvent` (so it works
+for both :class:`RuntimeEvent` and :class:`AutonomyEvent`) and
+returning ``(tenant_id, principal_id, binding_method_label) | None``.
+The chain treats them as opaque; new strategies (custom DBs, service
 discovery, ...) can be added by callers via
-:func:`build_resolver_chain` without modifying this module.
+:func:`build_default_resolver_chain` without modifying this module.
 """
 from __future__ import annotations
 
@@ -61,16 +62,22 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 
-from ._canonical import RuntimeEvent
+from ._canonical import BoundEvent, decode_mavlink_sysid
 
 logger = logging.getLogger(__name__)
 
 
-#: Resolver signature: takes an event, returns (tid, pid, method)
-#: or None. The method label is free-text and shows up in
+#: Resolver signature: takes any event satisfying :class:`BoundEvent`,
+#: returns ``(tid, pid, method)`` or ``None``. The method label is
+#: free-text and shows up in
 #: ``RuntimeIngestResult.principal_binding_method`` so operators can
 #: tell which strategy bound the event.
-Resolver = Callable[[RuntimeEvent], "tuple[str, str, str] | None"]
+#:
+#: Container-oriented resolvers self-gate via ``getattr(ev,
+#: "container_id", None)`` so they cost roughly one attribute lookup
+#: when an autonomy event flows through. The chain runs every
+#: resolver per event; gating MUST be cheap.
+Resolver = Callable[[BoundEvent], "tuple[str, str, str] | None"]
 
 
 # ── Strategy 1: explicit binding cache ─────────────────────────────
@@ -125,9 +132,9 @@ class ExplicitBindingCache:
             return len(cls._cache)
 
     def __call__(
-        self, ev: RuntimeEvent,
+        self, ev: BoundEvent,
     ) -> tuple[str, str, str] | None:
-        cid = ev.container_id
+        cid = getattr(ev, "container_id", None)
         if not cid:
             return None
         with self._lock:
@@ -217,9 +224,9 @@ class DockerLabelResolver:
         return (str(tenant), str(principal))
 
     def __call__(
-        self, ev: RuntimeEvent,
+        self, ev: BoundEvent,
     ) -> tuple[str, str, str] | None:
-        cid = ev.container_id
+        cid = getattr(ev, "container_id", None)
         if not cid:
             return None
         now = time.time()
@@ -248,7 +255,7 @@ class K8sAnnotationResolver:
     """
 
     def __call__(
-        self, ev: RuntimeEvent,
+        self, ev: BoundEvent,
     ) -> tuple[str, str, str] | None:
         return None
 
@@ -297,7 +304,7 @@ class ContainerNameConventionResolver:
         self.default_tenant = default_tenant or os.environ.get(
             "KYA_RUNTIME_DEFAULT_TENANT")
 
-    def _container_name(self, ev: RuntimeEvent) -> str | None:
+    def _container_name(self, ev: BoundEvent) -> str | None:
         # Raw output_fields["container.name"] is the canonical source
         # for Falco; Tetragon parsers will land it the same place.
         of = ev.raw.get("output_fields") if isinstance(
@@ -309,9 +316,14 @@ class ContainerNameConventionResolver:
         return None
 
     def __call__(
-        self, ev: RuntimeEvent,
+        self, ev: BoundEvent,
     ) -> tuple[str, str, str] | None:
         if self.regex is None or not self.default_tenant:
+            return None
+        # Gate: only events that carry a container_id field at all
+        # can possibly match a container-name regex. Skips the regex
+        # work on autonomy events at minimal cost (one getattr).
+        if getattr(ev, "container_id", None) is None:
             return None
         name = self._container_name(ev)
         if not name:
@@ -348,17 +360,68 @@ class ProcessUserResolver:
         self.user_map = dict(user_map or {})
 
     def __call__(
-        self, ev: RuntimeEvent,
+        self, ev: BoundEvent,
     ) -> tuple[str, str, str] | None:
-        if not self.user_map or ev.process is None:
+        if not self.user_map:
             return None
-        user = ev.process.user
+        process = getattr(ev, "process", None)
+        if process is None:
+            return None
+        user = process.user
         if not user:
             return None
         hit = self.user_map.get(user)
         if not hit:
             return None
         return (*hit, "process_user_map")
+
+
+# ── Strategy 6: MAVLink (sysid, compid) -> principal ────────────────
+
+
+class MavlinkSysidResolver:
+    """Resolve a ``mavlink_sysid`` hint to a principal_id via a
+    fleet manifest.
+
+    The manifest maps each known ``(sysid, compid)`` pair to a
+    ``(tenant_id, principal_id)``. Unmapped pairs return None and the
+    chain continues — an unmapped vehicle is treated as an
+    unauthorized command source, which is the whole point: the
+    bridge surfaces a principal-inconsistency signal rather than
+    inventing identity.
+
+    The resolver is NOT in the default chain because every fleet's
+    manifest is bespoke. Callers wire it in explicitly via
+    :func:`build_resolver_chain_with_mavlink`.
+
+    Identity caveat
+    ---------------
+    MAVLink sysid/compid bytes are forgeable on the wire. This
+    resolver provides **best-effort attribution**, not cryptographic
+    identity. For signed packets (MAVLink 2.0 + signing), the parser
+    surfaces the key_id as an ``explicit`` or ``spiffe_id`` hint that
+    takes priority over the sysid resolver in the default chain.
+    """
+
+    def __init__(
+        self,
+        fleet_manifest: dict[tuple[int, int], tuple[str, str]],
+    ) -> None:
+        self._manifest = dict(fleet_manifest)
+
+    def __call__(
+        self, ev: BoundEvent,
+    ) -> tuple[str, str, str] | None:
+        for hint in ev.principal_hints:
+            if hint.kind != "mavlink_sysid":
+                continue
+            decoded = decode_mavlink_sysid(hint.value)
+            if decoded is None:
+                continue
+            hit = self._manifest.get(decoded)
+            if hit:
+                return (*hit, "mavlink_sysid")
+        return None
 
 
 # ── Chain runner ───────────────────────────────────────────────────
@@ -376,7 +439,7 @@ class PrincipalResolverChain:
         self.resolvers = list(resolvers)
 
     def __call__(
-        self, ev: RuntimeEvent,
+        self, ev: BoundEvent,
     ) -> tuple[str, str, str] | None:
         for r in self.resolvers:
             try:
@@ -401,15 +464,25 @@ def build_default_resolver_chain(
     docker_principal_label: str = "io.veldt.principal_id",
     docker_tenant_label: str = "io.veldt.tenant_id",
     process_user_map: dict[str, tuple[str, str]] | None = None,
+    mavlink_fleet_manifest: (
+        dict[tuple[int, int], tuple[str, str]] | None
+    ) = None,
 ) -> PrincipalResolverChain:
-    """Construct the default chain: explicit cache -> docker label ->
-    k8s annotation (stub) -> name convention -> process-user map.
+    """Construct the default chain.
+
+    Order: explicit cache -> docker label -> k8s annotation (stub) ->
+    name convention -> process-user map -> (mavlink sysid, if a
+    fleet manifest was supplied).
 
     All args are optional; sensible defaults pulled from env where
     helpful. Pass ``default_tenant=`` to make the naming-convention
-    resolver active without an env var.
+    resolver active without an env var. Pass ``mavlink_fleet_manifest``
+    to bind MAVLink events to principals; without it, the MAVLink
+    resolver is omitted (and unmapped vehicles surface as unbound,
+    which is correct — unknown vehicles are unauthorized command
+    sources, not implicit principals).
     """
-    return PrincipalResolverChain([
+    resolvers: list[Resolver] = [
         ExplicitBindingCache(),
         DockerLabelResolver(
             principal_label=docker_principal_label,
@@ -422,7 +495,10 @@ def build_default_resolver_chain(
             default_tenant=default_tenant,
         ),
         ProcessUserResolver(user_map=process_user_map),
-    ])
+    ]
+    if mavlink_fleet_manifest:
+        resolvers.append(MavlinkSysidResolver(mavlink_fleet_manifest))
+    return PrincipalResolverChain(resolvers)
 
 
 # ── Public SDK convenience ─────────────────────────────────────────
