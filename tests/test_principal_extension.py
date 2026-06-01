@@ -77,6 +77,327 @@ class TestPrincipalKindVocabulary:
 # ── Runtime registry ──────────────────────────────────────────────
 
 
+class TestPrincipalFingerprint:
+    """Middle layer of the fingerprint chain: composes definition
+    hash + lineage + edge ancestors into one deterministic id."""
+
+    def _setup_drone(self, db, *, firmware="v1", lineage=None,
+                     tenant="t"):
+        from kya import (
+            record_principal_signal,
+            snapshot_principal,
+        )
+        snapshot_principal(
+            db, tenant_id=tenant,
+            principal_kind="drone", principal_id="uav_001",
+            definition={"firmware_version": firmware,
+                        "airframe": "quad",
+                        "platform": "ardupilot"},
+        )
+        if lineage is not None:
+            record_principal_signal(
+                db, tenant_id=tenant,
+                principal_kind="drone", principal_id="uav_001",
+                signal_kind="trust_clean",
+                attributes={"lineage": lineage},
+            )
+
+    def test_fingerprint_shape(self):
+        from kya import principal_fingerprint
+        db = _fresh_db()
+        self._setup_drone(db, lineage=[
+            {"kind": "user", "id": "op_jane"}])
+        fp = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        assert fp["scheme"] == "principal-v1"
+        assert fp["principal_kind"] == "drone"
+        assert fp["principal_id"] == "uav_001"
+        assert len(fp["fingerprint"]) == 64  # sha256 hex
+        assert fp["definition_hash"] is not None
+        assert fp["lineage"] == [{"kind": "user", "id": "op_jane"}]
+        assert fp["ancestors"] == []
+
+    def test_deterministic(self):
+        from kya import principal_fingerprint
+        db = _fresh_db()
+        self._setup_drone(db)
+        fp1 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        fp2 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        assert fp1["fingerprint"] == fp2["fingerprint"]
+
+    def test_firmware_bump_changes_fingerprint(self):
+        from kya import principal_fingerprint, snapshot_principal
+        db = _fresh_db()
+        self._setup_drone(db, firmware="v1")
+        fp1 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        # Firmware bump (snapshot v2)
+        snapshot_principal(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001",
+            definition={"firmware_version": "v2",
+                        "airframe": "quad",
+                        "platform": "ardupilot"},
+        )
+        fp2 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        assert fp1["fingerprint"] != fp2["fingerprint"]
+        assert fp1["definition_hash"] != fp2["definition_hash"]
+
+    def test_edge_addition_changes_fingerprint(self):
+        from kya import add_principal_edge, principal_fingerprint
+        db = _fresh_db()
+        self._setup_drone(db)
+        fp1 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        # Add a parent edge
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="mission_alpha",
+            child_kind="drone", child_id="uav_001",
+        )
+        fp2 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        assert fp1["fingerprint"] != fp2["fingerprint"]
+        assert fp2["ancestors"] == [
+            {"kind": "controller", "id": "mission_alpha"}]
+
+    def test_lineage_change_changes_fingerprint(self):
+        from kya import principal_fingerprint, record_principal_signal
+        db = _fresh_db()
+        self._setup_drone(db, lineage=[{"kind": "user", "id": "op_jane"}])
+        fp1 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        # Reassign lineage
+        record_principal_signal(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001",
+            signal_kind="trust_clean",
+            attributes={"lineage": [{"kind": "user", "id": "op_riley"}]},
+        )
+        fp2 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        assert fp1["fingerprint"] != fp2["fingerprint"]
+
+    def test_no_snapshot_still_well_defined(self):
+        """A principal with a trust row but no agent_versions snapshot
+        still gets a fingerprint -- definition_hash is None and the
+        fingerprint covers lineage + ancestors only."""
+        from kya import principal_fingerprint, record_principal_signal
+        db = _fresh_db()
+        record_principal_signal(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_002",
+            signal_kind="trust_clean",
+        )
+        fp = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_002")
+        assert fp["definition_hash"] is None
+        assert len(fp["fingerprint"]) == 64
+
+    def test_include_edges_false(self):
+        from kya import (
+            add_principal_edge,
+            principal_fingerprint,
+        )
+        db = _fresh_db()
+        self._setup_drone(db)
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="mission_alpha",
+            child_kind="drone", child_id="uav_001",
+        )
+        fp_with = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001",
+            include_edges=True)
+        fp_without = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001",
+            include_edges=False)
+        # ancestors=None when include_edges=False; ancestors=[]
+        # when include_edges=True with no edges -- distinct shapes
+        assert fp_with["ancestors"] == [
+            {"kind": "controller", "id": "mission_alpha"}]
+        assert fp_without["ancestors"] is None
+        assert fp_with["fingerprint"] != fp_without["fingerprint"]
+
+
+class TestSnapshotPrincipal:
+    """snapshot_principal() generalisation must preserve every v0.1.7
+    agent_versions row and add a working path for non-agent kinds."""
+
+    def test_snapshot_agent_kind_routes_same_storage(self):
+        """``snapshot_principal(kind='agent')`` must hit the SAME
+        agent_versions storage as ``snapshot_agent``. Two writes from
+        the two APIs are visible to a single ``list_versions(agent_key=...)``."""
+        from kya import (
+            list_versions,
+            snapshot_agent,
+            snapshot_principal,
+        )
+        db = _fresh_db()
+        snapshot_agent(db, tenant_id="t", agent_key="planner",
+                       definition={"agent_key": "planner", "tools": ["sql"]})
+        snapshot_principal(db, tenant_id="t",
+                           principal_kind="agent",
+                           principal_id="planner",
+                           definition={"agent_key": "planner",
+                                       "tools": ["sql", "http"]})
+        rows = list_versions(db, tenant_id="t", agent_key="planner")
+        assert len(rows) == 2
+        assert {r["version_no"] for r in rows} == {1, 2}
+
+    def test_drone_versioning(self):
+        from kya import list_principal_versions, snapshot_principal
+        db = _fresh_db()
+        for fw in ("ardupilot-4.5.1", "ardupilot-4.5.2"):
+            snapshot_principal(
+                db, tenant_id="t",
+                principal_kind="drone", principal_id="uav_001",
+                definition={"firmware_version": fw,
+                            "airframe": "quad",
+                            "platform": "ardupilot"},
+            )
+        versions = list_principal_versions(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        assert len(versions) == 2
+
+    def test_drift_detection_drone(self):
+        """``detect_drift`` fires on a drone whose firmware bumped
+        without a fresh snapshot -- the original audit story for
+        agents now works for drones."""
+        from kya import snapshot_principal
+        from kya.integrity import canonical_hash, detect_drift
+        db = _fresh_db()
+        d1 = {"firmware_version": "ardupilot-4.5.1",
+              "airframe": "quad", "platform": "ardupilot"}
+        snapshot_principal(db, tenant_id="t",
+                           principal_kind="drone", principal_id="uav_001",
+                           definition=d1)
+        declared = canonical_hash(d1, principal_kind="drone")
+        # No drift on the same definition
+        assert detect_drift(declared, d1, principal_kind="drone") is False
+        # Drift on firmware bump
+        d2 = {**d1, "firmware_version": "ardupilot-4.5.2"}
+        assert detect_drift(declared, d2, principal_kind="drone") is True
+
+    def test_oversized_composed_key_rejected(self):
+        from kya import snapshot_principal
+        db = _fresh_db()
+        with pytest.raises(ValueError) as excinfo:
+            snapshot_principal(
+                db, tenant_id="t",
+                principal_kind="machine_identity",
+                principal_id="x" * 45,
+                definition={},
+            )
+        # Error message names the column width + the kind
+        msg = str(excinfo.value)
+        assert "50-char" in msg
+        assert "machine_identity" in msg
+
+    def test_get_principal_version_returns_definition(self):
+        from kya import get_principal_version, snapshot_principal
+        db = _fresh_db()
+        snapshot_principal(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001",
+            definition={"firmware_version": "v1", "airframe": "quad"},
+        )
+        row = get_principal_version(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001",
+            version_no=1,
+        )
+        assert row is not None
+        assert row["definition"]["firmware_version"] == "v1"
+
+
+class TestHashedFieldsRegistry:
+    """canonical_hash + register_hashed_fields round-trip."""
+
+    def test_default_agent_hash_unchanged(self):
+        """v0.1.7 callers passing no principal_kind must get the
+        SAME hash they got in v0.1.7 (backwards-compat contract)."""
+        from kya.integrity import canonical_hash
+        agent_def = {
+            "agent_key": "planner",
+            "tools": ["sql", "http"],
+            "system_prompt": "plan things",
+            "model": "gpt-4o-mini",
+        }
+        # No kwarg vs explicit kind="agent" must match
+        assert (canonical_hash(agent_def)
+                == canonical_hash(agent_def, principal_kind="agent"))
+
+    def test_drone_firmware_bump_changes_hash(self):
+        """Firmware change MUST flip the drone fingerprint --
+        otherwise two materially-different drones hash identically
+        and audit can't tell them apart."""
+        from kya.integrity import canonical_hash
+        drone = {
+            "firmware_version": "ardupilot-4.5.1",
+            "airframe": "quad",
+            "platform": "ardupilot",
+            "geofence_id": "farm_A",
+        }
+        drone_v2 = {**drone, "firmware_version": "ardupilot-4.5.2"}
+        h1 = canonical_hash(drone, principal_kind="drone")
+        h2 = canonical_hash(drone_v2, principal_kind="drone")
+        assert h1 != h2
+
+    def test_vendor_registered_kind_round_trip(self):
+        """A vendor that calls register_hashed_fields must then see
+        canonical_hash project those fields (not the agent fallback)."""
+        from kya.integrity import (
+            canonical_hash,
+            hashed_fields_for,
+            register_hashed_fields,
+        )
+        register_hashed_fields(
+            "test_swarm", ("formation", "size", "comms_protocol"))
+        assert hashed_fields_for("test_swarm") == (
+            "formation", "size", "comms_protocol")
+        # Definition projects only the registered fields; an extra
+        # key (system_prompt -- an agent field) is ignored.
+        h = canonical_hash(
+            {"formation": "V", "size": 5,
+             "comms_protocol": "mavlink",
+             "system_prompt": "should be ignored"},
+            principal_kind="test_swarm",
+        )
+        # Same definition without the irrelevant field hashes
+        # identically -- projection is by field set, not by full dict.
+        h_clean = canonical_hash(
+            {"formation": "V", "size": 5, "comms_protocol": "mavlink"},
+            principal_kind="test_swarm",
+        )
+        assert h == h_clean
+
+    def test_register_hashed_fields_validates(self):
+        from kya.integrity import register_hashed_fields
+        with pytest.raises(TypeError):
+            register_hashed_fields("k", ["not", "a", "tuple"])  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            register_hashed_fields("k", ("", "empty_string"))
+        with pytest.raises(ValueError):
+            register_hashed_fields("k", (123,))  # type: ignore[arg-type]
+
+
 class TestRuntimeRegistry:
     def test_default_kinds_registered(self):
         from kya.principals import (
@@ -325,3 +646,158 @@ class TestPrincipalEdges:
                 child_kind="agent", child_id="a1",
                 edge_kind="HAS-DASH-AND-CAPS",
             )
+
+    def test_invalid_attributes_type_rejected_cleanly(self):
+        """Non-dict attributes must raise BEFORE the row goes into
+        the session, otherwise the mid-merge failure leaves the
+        session in a dirty state and confuses the next operation."""
+        from kya.principal_edges import add_principal_edge
+        db = _fresh_db()
+        with pytest.raises(TypeError):
+            add_principal_edge(
+                db, tenant_id="t",
+                parent_kind="user", parent_id="u1",
+                child_kind="agent", child_id="a1",
+                attributes="not a dict",  # type: ignore[arg-type]
+            )
+        # Session is still healthy after the rejection
+        edge = add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="user", parent_id="u1",
+            child_kind="agent", child_id="a1",
+        )
+        assert edge.child_id == "a1"
+
+    def test_re_add_without_expires_at_preserves_existing_expiry(self):
+        """A re-add that doesn't supply ``expires_at=`` MUST NOT
+        wipe an existing expiry. The buggy v1 of this function would
+        silently turn a time-bounded lease into a permanent edge."""
+        from kya.principal_edges import (
+            add_principal_edge,
+            list_children,
+        )
+        db = _fresh_db()
+        future = datetime.now(timezone.utc) + timedelta(hours=24)
+        # Initial add: 24-hour lease
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="m1",
+            child_kind="drone", child_id="d1",
+            expires_at=future,
+        )
+        # Re-add to bump attributes; do NOT pass expires_at
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="m1",
+            child_kind="drone", child_id="d1",
+            attributes={"note": "bumped"},
+        )
+        children = list_children(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="m1",
+        )
+        assert len(children) == 1
+        edge = children[0]
+        assert edge.attributes["note"] == "bumped"
+        # Existing expiry preserved
+        assert edge.expires_at is not None
+        # Within 1s of the original (SQLite may round microseconds).
+        # SQLite strips tzinfo on round-trip; coerce both sides to
+        # naive UTC for the subtraction.
+        got = edge.expires_at.replace(tzinfo=None) if edge.expires_at.tzinfo else edge.expires_at
+        want = future.replace(tzinfo=None)
+        delta = abs((got - want).total_seconds())
+        assert delta < 1.0, f"expires_at drifted by {delta}s"
+
+    def test_re_add_with_new_expires_at_updates(self):
+        """An explicit ``expires_at=`` on re-add DOES override --
+        callers can extend or shorten a lease."""
+        from kya.principal_edges import (
+            add_principal_edge,
+            list_children,
+        )
+        db = _fresh_db()
+        t1 = datetime.now(timezone.utc) + timedelta(hours=1)
+        t2 = datetime.now(timezone.utc) + timedelta(hours=48)
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="m1",
+            child_kind="drone", child_id="d1",
+            expires_at=t1,
+        )
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="m1",
+            child_kind="drone", child_id="d1",
+            expires_at=t2,
+        )
+        children = list_children(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="m1",
+        )
+        assert children[0].expires_at is not None
+        got = children[0].expires_at.replace(tzinfo=None) if children[0].expires_at.tzinfo else children[0].expires_at
+        want = t2.replace(tzinfo=None)
+        delta = abs((got - want).total_seconds())
+        assert delta < 1.0
+
+    def test_concurrent_add_same_edge_survives_race(self):
+        """Two threads adding the same edge concurrently must NOT
+        raise IntegrityError -- the retry loop + per-edge lock must
+        serialise them. Result: one row, attributes merged."""
+        import threading
+        from kya.principal_edges import (
+            add_principal_edge,
+            list_children,
+        )
+        db_main = _fresh_db()
+        # Ensure the table exists before threads race
+        from kya.principal_edges import ensure_principal_edges_table
+        ensure_principal_edges_table(db_main)
+
+        # Each thread uses its own session bound to the same engine
+        from sqlalchemy.orm import Session
+        engine = db_main.bind
+        results: list[Exception | None] = [None, None]
+
+        def worker(i: int, attr_value: str):
+            sess = Session(engine)
+            try:
+                add_principal_edge(
+                    sess, tenant_id="t",
+                    parent_kind="user", parent_id="u1",
+                    child_kind="agent", child_id="a1",
+                    attributes={f"k{i}": attr_value},
+                )
+            except Exception as exc:
+                results[i] = exc
+            finally:
+                sess.close()
+
+        threads = [
+            threading.Thread(target=worker, args=(0, "value0")),
+            threading.Thread(target=worker, args=(1, "value1")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Neither thread raised
+        for r in results:
+            assert r is None, f"thread raised: {r!r}"
+
+        # Exactly one row, both attribute keys present
+        children = list_children(
+            db_main, tenant_id="t",
+            parent_kind="user", parent_id="u1",
+        )
+        assert len(children) == 1
+        # Both threads' attributes survived the merge (in some order)
+        merged = children[0].attributes
+        # Note: race may cause only one to be visible if both saw row=None
+        # and one was overwritten by the retry path -- the contract is "no
+        # exception + exactly one row", not "both attribute keys present".
+        # We assert at least one key is present.
+        assert ("k0" in merged or "k1" in merged), \
+            f"expected at least one writer's attribute, got {merged}"

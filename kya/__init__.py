@@ -191,6 +191,7 @@ from .principals import (
     get_principal_window_counts,
     is_valid_principal_kind,
     list_principals,
+    principal_fingerprint,
     record_principal_clean,
     record_principal_signal,
     register_principal_kind,
@@ -482,11 +483,14 @@ from .tenant_budget import (
 )
 from .versioning import (
     ensure_table,
+    get_principal_version,
     get_version,
+    list_principal_versions,
     list_versions,
     rollback_to,
     snapshot_agent,
     snapshot_on_first_sight,
+    snapshot_principal,
 )
 
 __all__ = [
@@ -674,6 +678,12 @@ __all__ = [
     "list_parents",
     "walk_descendants",
     "walk_ancestors",
+    # v0.1.8 — generalised definition versioning
+    "snapshot_principal",
+    "list_principal_versions",
+    "get_principal_version",
+    # v0.1.8 — hierarchical fingerprint middle layer
+    "principal_fingerprint",
     # Invocation tracking (event-time vs ingest-time + parallel tree)
     "VALID_MODES",
     "VALID_OUTCOMES",

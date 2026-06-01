@@ -270,22 +270,32 @@ def _event_to_payload(ev: BoundEvent) -> dict[str, Any]:
     if ev.tags:
         payload["tags"] = list(ev.tags)
 
-    if source_kind_of(ev.source_tool) == "autonomy":
+    # Dispatch on concrete type so the type-checker narrows
+    # correctly and a parser that mis-classifies its event
+    # (e.g. emits a RuntimeEvent with source_tool="mavlink")
+    # is caught here rather than silently producing a malformed
+    # payload. The isinstance check on these concrete dataclasses
+    # is fast -- the slow-path warning applies to runtime_checkable
+    # Protocols, not concrete classes.
+    if isinstance(ev, AutonomyEvent):
         _fill_autonomy_payload(payload, ev)
-    else:
+    elif isinstance(ev, RuntimeEvent):
         _fill_runtime_security_payload(payload, ev)
+    else:
+        logger.warning(
+            "[KYA-RUNTIME] bridge received unknown event type %s "
+            "for source_tool=%s; payload will miss family fields. "
+            "Implement RuntimeEvent or AutonomyEvent, or extend "
+            "_event_to_payload.", type(ev).__name__, ev.source_tool,
+        )
     return payload
 
 
 def _fill_runtime_security_payload(
-    payload: dict[str, Any], ev: BoundEvent,
+    payload: dict[str, Any], re_ev: RuntimeEvent,
 ) -> None:
-    """Populate container / k8s / process fields. Caller has already
-    classified ``ev`` as a runtime-security event via
-    ``source_kind_of`` — this helper trusts that classification and
-    accesses RuntimeEvent-shaped fields directly."""
-    # source_kind_of guarantees ev is a RuntimeEvent here.
-    re_ev: RuntimeEvent = ev  # type: ignore[assignment]
+    """Populate container / k8s / process fields. Caller is the
+    type-narrowed branch in ``_event_to_payload``."""
     if re_ev.container_id:
         payload["container_id"] = re_ev.container_id
     if re_ev.container_image:
@@ -312,11 +322,10 @@ def _fill_runtime_security_payload(
 
 
 def _fill_autonomy_payload(
-    payload: dict[str, Any], ev: BoundEvent,
+    payload: dict[str, Any], a_ev: AutonomyEvent,
 ) -> None:
-    """Populate vehicle / geo / mission fields. Caller has already
-    classified ``ev`` as an autonomy event."""
-    a_ev: AutonomyEvent = ev  # type: ignore[assignment]
+    """Populate vehicle / geo / mission fields. Caller is the
+    type-narrowed branch in ``_event_to_payload``."""
     if a_ev.vehicle:
         if a_ev.vehicle.sysid is not None:
             payload["vehicle.sysid"] = a_ev.vehicle.sysid

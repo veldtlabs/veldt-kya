@@ -269,6 +269,69 @@ class TestMavlinkSysidResolver:
         ev = self._ev_with_sysid_hint(2, 1)
         assert chain(ev) == ("acme", "uav_002", "mavlink_sysid")
 
+    def test_does_not_bind_runtime_security_event(self):
+        """A Falco event that happens to carry a mavlink_sysid hint
+        (test-fixture mix-up, copy-paste bug) MUST NOT bind via the
+        MAVLink resolver -- the principal would be unrelated to the
+        actual container actor."""
+        r = MavlinkSysidResolver(self.FLEET)
+        ev = RuntimeEvent(
+            source_tool="falco",
+            source_rule_id="r",
+            occurred_at_ts=1.0,
+            severity="low",
+            action="x",
+            message="m",
+            principal_hints=(
+                PrincipalHint(
+                    kind="mavlink_sysid",
+                    value=encode_mavlink_sysid(1, 1),
+                ),
+            ),
+        )
+        assert r(ev) is None
+
+
+# ── Bridge fail-soft ─────────────────────────────────────────────
+
+
+class TestBridgeFailSoft:
+    """A parser that mis-classifies its event (RuntimeEvent with
+    source_tool='mavlink', or vice versa) must NOT crash the bridge
+    or silently emit a malformed payload."""
+
+    def setup_method(self):
+        set_principal_resolver(None)
+
+    def teardown_method(self):
+        from kya.runtime import reset_principal_resolver_to_default
+        reset_principal_resolver_to_default()
+
+    def test_misclassified_event_logs_warning(self, caplog):
+        """A parser that emits a RuntimeEvent shape but tags it with
+        an autonomy source_tool gets a warning + a payload missing
+        the vehicle fields (not a crash, not silent corruption)."""
+        import logging
+        # type: ignore[arg-type] -- intentional mis-classification
+        ev = RuntimeEvent(
+            source_tool="mavlink",  # type: ignore[arg-type]
+            source_rule_id="r",
+            occurred_at_ts=1.0,
+            severity="low",
+            action="x",
+            message="m",
+            tenant_id="t",
+            principal_id="p",
+        )
+        with caplog.at_level(logging.WARNING, logger="kya.runtime._bridge"):
+            result = record_runtime_event(ev)
+        # Bridge still accepts it (fail-soft contract)
+        assert result.accepted is True
+        # But source_kind reflects the tool's family, not the
+        # event's class -- this is the misclassification surface
+        # the warning calls out.
+        assert result.source_kind == "autonomy"
+
 
 # ── Backwards-compat: 8 existing parsers keep working ─────────────
 

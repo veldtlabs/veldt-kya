@@ -281,6 +281,247 @@ def registered_principal_kinds() -> tuple[str, ...]:
     enumerate the full vocabulary."""
     return tuple(sorted(_REGISTERED_PRINCIPAL_KINDS))
 
+
+# ── Principal fingerprint ─────────────────────────────────────────
+#
+# The middle layer of the hierarchical fingerprint chain:
+#
+#     definition_hash  ->  principal_fingerprint
+#                            (this module)
+#                          ->  fleet_fingerprint  (Pro)
+#                                ->  pack_fingerprint  (Pro)
+#
+# A principal fingerprint binds a principal's identity (definition
+# hash) to its place in the authority graph (lineage + edges). Two
+# principals with the same definition but different parents have
+# DIFFERENT principal fingerprints, because their authority context
+# differs -- and that authority context is part of what regulators
+# care about. ("Same drone firmware, but moved from mission_alpha to
+# mission_beta -- that's a governance event.")
+#
+# The fingerprint is composed at read time from three sources, all
+# already canonical:
+#
+#   1. The latest snapshot's ``canonical_hash(definition,
+#      principal_kind=kind)`` -- WHAT the principal is.
+#   2. ``attributes.lineage`` from the trust row -- WHO authorized
+#      it (single primary chain).
+#   3. Optionally, the parents resolved via ``walk_ancestors`` on
+#      the many-to-many edges table -- WHO ELSE has authority
+#      (when the principal is shared / leased).
+#
+# The fingerprint is SHA-256 over a canonical-JSON manifest of
+# those three sources, scheme-tagged ``principal-v1``. Bumping to
+# ``principal-v2`` would mean any change to the manifest shape.
+
+
+def principal_fingerprint(
+    db: "Any",
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+    include_edges: bool = True,
+    include_ownership: bool | None = None,
+) -> dict:
+    """Composite fingerprint binding a principal's identity to its
+    authority context.
+
+    Args:
+        db: SQLAlchemy session.
+        tenant_id: Tenant scope (required).
+        principal_kind: One of :data:`PRINCIPAL_KINDS` (or a registered
+            extension). Drives field selection in :func:`canonical_hash`.
+        principal_id: Stable opaque id within (tenant, kind).
+        include_edges: When True (default), walk :func:`walk_ancestors`
+            on the many-to-many edges table and include every ancestor
+            ``(kind, id)`` in the manifest. When False, only the
+            ``attributes.lineage`` single-chain hint contributes.
+            Set False when you intentionally want to compare two
+            principals that share a definition + lineage but
+            differ in edge membership.
+        include_ownership: Forwarded to ``canonical_hash`` so callers
+            in strict-audit mode get a fingerprint that responds to
+            ownership transitions.
+
+    Returns:
+        Dict shape::
+
+            {
+                "fingerprint":     "<sha256 hex>",
+                "scheme":          "principal-v1",
+                "principal_kind":  str,
+                "principal_id":    str,
+                "definition_hash": "<sha256 hex>" | None,
+                "lineage":         [{"kind": str, "id": str}, ...],
+                "ancestors":       [{"kind": str, "id": str}, ...] | None,
+                "include_ownership": bool,
+            }
+
+        ``definition_hash`` is ``None`` when the principal has no
+        snapshot yet (the trust row was created by a signal before
+        any explicit definition was recorded). The fingerprint stays
+        well-defined -- it just covers lineage + ancestors only.
+
+    The function is read-only -- it never writes to the DB. Same
+    inputs always yield the same fingerprint, which is the contract
+    fleet_fingerprint depends on for reproducibility.
+    """
+    from .integrity import canonical_hash  # noqa: PLC0415
+
+    # 1. Definition hash from the latest snapshot (if any). Walks
+    #    the SAME composed-key storage as snapshot_principal --
+    #    the agent-only versioning module is now backing the whole
+    #    autonomy vocabulary.
+    definition_hash: str | None = None
+    try:
+        from .versioning import (  # noqa: PLC0415
+            get_principal_version,
+            list_principal_versions,
+        )
+        recent = list_principal_versions(
+            db, tenant_id=tenant_id,
+            principal_kind=principal_kind, principal_id=principal_id,
+            limit=1,
+        )
+        if recent:
+            latest_no = recent[0]["version_no"]
+            row = get_principal_version(
+                db, tenant_id=tenant_id,
+                principal_kind=principal_kind, principal_id=principal_id,
+                version_no=latest_no,
+            )
+            if row is not None:
+                defn = row.get("definition") or {}
+                definition_hash = canonical_hash(
+                    defn,
+                    principal_kind=principal_kind,
+                    include_ownership=include_ownership,
+                )
+    except Exception:
+        # Best-effort: a versioning lookup failure shouldn't block
+        # fingerprint computation. The hash remains None and the
+        # caller can decide whether to treat that as an error.
+        logger.debug(
+            "[KYP-FP] could not resolve definition snapshot for "
+            "%s:%s -- fingerprint will omit definition_hash.",
+            principal_kind, principal_id, exc_info=True)
+
+    # 2. Lineage from the trust row's attributes JSON.
+    lineage = _lineage_from_trust_row(
+        db, tenant_id=tenant_id,
+        principal_kind=principal_kind, principal_id=principal_id,
+    )
+
+    # 3. Ancestors via the many-to-many edges DAG. We include all
+    #    edge kinds by default (delegation + membership + control
+    #    + ...) because a fingerprint that changes when a drone
+    #    joins a new fleet IS the audit signal we want.
+    ancestors: list[dict] | None = None
+    if include_edges:
+        ancestors = _ancestor_pairs(
+            db, tenant_id=tenant_id,
+            principal_kind=principal_kind, principal_id=principal_id,
+        )
+
+    manifest = {
+        "scheme":          "principal-v1",
+        "principal_kind":  principal_kind,
+        "principal_id":    principal_id,
+        "definition_hash": definition_hash,
+        "lineage":         lineage,
+        "ancestors":       ancestors,
+        "include_ownership": _ownership_recorded(include_ownership),
+    }
+
+    import hashlib as _hashlib  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415
+
+    canonical_bytes = _json.dumps(
+        manifest, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+    return {
+        "fingerprint":     _hashlib.sha256(canonical_bytes).hexdigest(),
+        "scheme":          "principal-v1",
+        "principal_kind":  principal_kind,
+        "principal_id":    principal_id,
+        "definition_hash": definition_hash,
+        "lineage":         lineage,
+        "ancestors":       ancestors,
+        "include_ownership": manifest["include_ownership"],
+    }
+
+
+def _lineage_from_trust_row(
+    db: "Any",
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+) -> list[dict]:
+    """Return the ``attributes.lineage`` list from the principal's
+    trust row, or ``[]`` when no row exists or no lineage was set.
+    """
+    try:
+        row = get_principal_trust(
+            db, tenant_id, principal_kind, principal_id)
+    except Exception:
+        return []
+    attrs = row.attributes or {}
+    raw = attrs.get("lineage")
+    if not isinstance(raw, list):
+        return []
+    # Normalise: only entries with both kind + id make it in.
+    out: list[dict] = []
+    for entry in raw:
+        if (isinstance(entry, dict)
+                and isinstance(entry.get("kind"), str)
+                and isinstance(entry.get("id"), str)):
+            out.append({"kind": entry["kind"], "id": entry["id"]})
+    return out
+
+
+def _ancestor_pairs(
+    db: "Any",
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+) -> list[dict]:
+    """Walk the many-to-many edges DAG upward and return sorted
+    ``[{"kind": ..., "id": ...}]`` ancestor pairs. Sorted so the
+    manifest is canonical regardless of DAG iteration order.
+    """
+    try:
+        from .principal_edges import walk_ancestors  # noqa: PLC0415
+        edges = walk_ancestors(
+            db, tenant_id=tenant_id,
+            leaf_kind=principal_kind, leaf_id=principal_id,
+        )
+    except Exception:
+        return []
+    seen: set[tuple[str, str]] = set()
+    pairs: list[dict] = []
+    for _depth, edge in edges:
+        key = (edge.parent_kind, edge.parent_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append({"kind": edge.parent_kind, "id": edge.parent_id})
+    pairs.sort(key=lambda p: (p["kind"], p["id"]))
+    return pairs
+
+
+def _ownership_recorded(explicit: bool | None) -> bool:
+    """Resolve the recorded ``include_ownership`` flag for the
+    fingerprint manifest. Mirrors integrity._ownership_enabled but
+    re-implemented here to avoid an import cycle.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    raw = os.environ.get("KYA_HASH_OWNER_FIELDS", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
 # Schema qualifier — PG only. Defaults to None (= dialect's default
 # namespace) as of v0.1.6; set KYA_VERSIONS_SCHEMA in the environment
 # to pin tables to a named schema.
@@ -739,7 +980,10 @@ def record_principal_signal(
         _inproc_lock = None
 
     last_exc: Exception | None = None
-    for attempt in range(30):
+    # 10 retries handle the worst contention observed in the load test
+    # (20 workers x 50 ops on the same principal -> 99% land). If you
+    # raise this, also raise the ``attempt == 9`` bailout below.
+    for attempt in range(10):
         stmt = (
             select(_PrincipalRow)
             .where(_PrincipalRow.tenant_id == tenant_id)

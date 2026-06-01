@@ -57,8 +57,10 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
-from collections.abc import Iterable
+import threading
+import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -69,11 +71,13 @@ try:
         BigInteger,
         DateTime,
         Index,
+        Integer,
         String,
         UniqueConstraint,
         func,
         select,
     )
+    from sqlalchemy.exc import IntegrityError, OperationalError
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
     _HAS_SQLALCHEMY = True
@@ -113,6 +117,28 @@ if _HAS_SQLALCHEMY:
         pass
 
 
+    # DRY the table-args between the schema-bound and unqualified
+    # branches. Both halves share the same constraints + indexes;
+    # only the trailing ``{"schema": ...}`` dict differs.
+    _EDGE_CONSTRAINTS: tuple = (
+        UniqueConstraint(
+            "tenant_id",
+            "parent_kind", "parent_id",
+            "child_kind", "child_id",
+            "edge_kind",
+            name="uq_kya_principal_edges",
+        ),
+        Index(
+            "ix_kya_principal_edges_parent",
+            "tenant_id", "parent_kind", "parent_id",
+        ),
+        Index(
+            "ix_kya_principal_edges_child",
+            "tenant_id", "child_kind", "child_id",
+        ),
+    )
+
+
     class _PrincipalEdgeRow(_Base):
         """Many-to-many parent -> child relationships between
         principals. Composite uniqueness on
@@ -121,47 +147,15 @@ if _HAS_SQLALCHEMY:
         """
 
         __tablename__ = "kya_principal_edges"
-        if _PG_SCHEMA:
-            __table_args__ = (
-                UniqueConstraint(
-                    "tenant_id",
-                    "parent_kind", "parent_id",
-                    "child_kind", "child_id",
-                    "edge_kind",
-                    name="uq_kya_principal_edges",
-                ),
-                Index(
-                    "ix_kya_principal_edges_parent",
-                    "tenant_id", "parent_kind", "parent_id",
-                ),
-                Index(
-                    "ix_kya_principal_edges_child",
-                    "tenant_id", "child_kind", "child_id",
-                ),
-                {"schema": _PG_SCHEMA},
-            )
-        else:
-            __table_args__ = (
-                UniqueConstraint(
-                    "tenant_id",
-                    "parent_kind", "parent_id",
-                    "child_kind", "child_id",
-                    "edge_kind",
-                    name="uq_kya_principal_edges",
-                ),
-                Index(
-                    "ix_kya_principal_edges_parent",
-                    "tenant_id", "parent_kind", "parent_id",
-                ),
-                Index(
-                    "ix_kya_principal_edges_child",
-                    "tenant_id", "child_kind", "child_id",
-                ),
-            )
+        __table_args__ = (
+            _EDGE_CONSTRAINTS + ({"schema": _PG_SCHEMA},)
+            if _PG_SCHEMA else _EDGE_CONSTRAINTS
+        )
 
         id: Mapped[int] = mapped_column(
-            BigInteger().with_variant(
-                __import__("sqlalchemy").Integer(), "sqlite"),
+            # SQLite doesn't autoincrement BigInteger primary keys.
+            # Use Integer on SQLite, BigInteger everywhere else.
+            BigInteger().with_variant(Integer(), "sqlite"),
             primary_key=True, autoincrement=True,
         )
         tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
@@ -262,6 +256,32 @@ def _row_to_edge(row: Any) -> PrincipalEdge:
     )
 
 
+# In-process lock for SQLite / DuckDB upserts that don't support
+# row-level locking. Granularity: one lock per (tenant, parent kind+id,
+# child kind+id, edge_kind) key, expressed as a string. A real
+# distributed deployment uses PG/MySQL row locks; this keeps the
+# happy path correct on the embedded backends used in tests.
+_EDGE_UPSERT_LOCKS: dict[str, threading.Lock] = {}
+_EDGE_UPSERT_LOCKS_MUTEX = threading.Lock()
+
+
+def _edge_upsert_lock(
+    tenant_id: str, parent_kind: str, parent_id: str,
+    child_kind: str, child_id: str, edge_kind: str,
+) -> threading.Lock:
+    """Get-or-create the lock for a specific edge key."""
+    key = "\x1f".join((
+        tenant_id, parent_kind, parent_id,
+        child_kind, child_id, edge_kind,
+    ))
+    with _EDGE_UPSERT_LOCKS_MUTEX:
+        lock = _EDGE_UPSERT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _EDGE_UPSERT_LOCKS[key] = lock
+        return lock
+
+
 def add_principal_edge(
     db: Any,
     *,
@@ -277,41 +297,93 @@ def add_principal_edge(
     """Insert an edge (idempotent on the composite uniqueness).
 
     Same-shape re-insert merges ``attributes`` and refreshes
-    ``expires_at`` instead of raising. Returns the resulting
-    :class:`PrincipalEdge`.
+    ``expires_at``. A re-add that *omits* ``expires_at=`` preserves
+    the existing expiry rather than wiping it to NULL -- the common
+    case (refreshing attributes on a leased asset) shouldn't quietly
+    turn a time-bounded lease into a permanent edge.
+
+    Concurrency: a per-edge in-proc lock + a SELECT FOR UPDATE on
+    PG/MySQL + an IntegrityError retry loop together prevent the
+    "two writers both INSERT" race that the unique constraint would
+    otherwise punish with an unhandled exception.
+
+    Returns the resulting :class:`PrincipalEdge`.
     """
     _require_sqlalchemy()
     _validate_edge_kind(edge_kind)
+    if attributes is not None and not isinstance(attributes, dict):
+        raise TypeError(
+            f"attributes must be a dict (or None); got {type(attributes).__name__}")
     ensure_principal_edges_table(db)
 
-    stmt = (
-        select(_PrincipalEdgeRow)
-        .where(_PrincipalEdgeRow.tenant_id == tenant_id)
-        .where(_PrincipalEdgeRow.parent_kind == parent_kind)
-        .where(_PrincipalEdgeRow.parent_id == parent_id)
-        .where(_PrincipalEdgeRow.child_kind == child_kind)
-        .where(_PrincipalEdgeRow.child_id == child_id)
-        .where(_PrincipalEdgeRow.edge_kind == edge_kind)
+    edge_lock = _edge_upsert_lock(
+        tenant_id, parent_kind, parent_id,
+        child_kind, child_id, edge_kind,
     )
-    row = db.execute(stmt).scalar_one_or_none()
 
-    if row is None:
-        row = _PrincipalEdgeRow(
-            tenant_id=tenant_id,
-            parent_kind=parent_kind, parent_id=parent_id,
-            child_kind=child_kind, child_id=child_id,
-            edge_kind=edge_kind,
-            attributes=dict(attributes or {}),
-            expires_at=expires_at,
-        )
-        db.add(row)
-    else:
-        # Idempotent re-add: merge attributes, refresh expiry.
-        merged = {**(dict(row.attributes or {})), **(attributes or {})}
-        row.attributes = merged
-        row.expires_at = expires_at
-    db.commit()
-    return _row_to_edge(row)
+    last_exc: Exception | None = None
+    for attempt in range(5):
+        with edge_lock:
+            stmt = (
+                select(_PrincipalEdgeRow)
+                .where(_PrincipalEdgeRow.tenant_id == tenant_id)
+                .where(_PrincipalEdgeRow.parent_kind == parent_kind)
+                .where(_PrincipalEdgeRow.parent_id == parent_id)
+                .where(_PrincipalEdgeRow.child_kind == child_kind)
+                .where(_PrincipalEdgeRow.child_id == child_id)
+                .where(_PrincipalEdgeRow.edge_kind == edge_kind)
+            )
+            # FOR UPDATE on PG/MySQL serialises the read-modify-write
+            # against a concurrent writer in a different process /
+            # thread. Best-effort: backends without lock support
+            # fall through silently.
+            try:
+                if db.bind.dialect.name in ("postgresql", "mysql"):
+                    stmt = stmt.with_for_update()
+            except Exception:  # noqa: BLE001
+                pass
+
+            try:
+                row = db.execute(stmt).scalar_one_or_none()
+            except Exception:
+                db.rollback()
+                raise
+
+            if row is None:
+                row = _PrincipalEdgeRow(
+                    tenant_id=tenant_id,
+                    parent_kind=parent_kind, parent_id=parent_id,
+                    child_kind=child_kind, child_id=child_id,
+                    edge_kind=edge_kind,
+                    attributes=dict(attributes or {}),
+                    expires_at=expires_at,
+                )
+                db.add(row)
+            else:
+                # Idempotent re-add: merge attributes; preserve
+                # existing expiry when caller didn't supply one.
+                merged = {**(dict(row.attributes or {})),
+                          **(attributes or {})}
+                row.attributes = merged
+                if expires_at is not None:
+                    row.expires_at = expires_at
+
+            try:
+                db.commit()
+                return _row_to_edge(row)
+            except (IntegrityError, OperationalError) as exc:
+                # Lost the race -- another writer inserted the same
+                # edge between our SELECT and our INSERT. Back off
+                # and re-SELECT; this time we'll see their row and
+                # take the merge path.
+                last_exc = exc
+                db.rollback()
+                if attempt == 4:
+                    raise
+                _time.sleep(0.01 + random.random() * 0.02)
+    # Defensive: loop should have either returned or re-raised.
+    raise RuntimeError(
+        "add_principal_edge retry loop exhausted") from last_exc
 
 
 def remove_principal_edge(

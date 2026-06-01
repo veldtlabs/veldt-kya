@@ -412,6 +412,13 @@ class MavlinkSysidResolver:
     def __call__(
         self, ev: BoundEvent,
     ) -> tuple[str, str, str] | None:
+        # Gate: only MAVLink events carry meaningful sysid hints.
+        # A runtime-security event that happens to ship a
+        # mavlink_sysid hint (test fixtures, copy-paste bugs) must
+        # not bind via this resolver -- the principal it would
+        # resolve to is unrelated to the actual container actor.
+        if ev.source_tool != "mavlink":
+            return None
         for hint in ev.principal_hints:
             if hint.kind != "mavlink_sysid":
                 continue
