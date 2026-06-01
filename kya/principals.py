@@ -437,8 +437,14 @@ def principal_fingerprint(
     import hashlib as _hashlib  # noqa: PLC0415
     import json as _json  # noqa: PLC0415
 
+    # Coerce any datetimes inside the manifest to ISO-UTC strings so
+    # the fingerprint is backend-independent (see _canonicalise_for_hash
+    # in integrity.py for the rationale). default=str would serialise
+    # tz-aware vs naive datetimes inconsistently across PG/SQLite.
+    from .integrity import _canonicalise_for_hash  # noqa: PLC0415
     canonical_bytes = _json.dumps(
-        manifest, sort_keys=True, separators=(",", ":"), default=str,
+        _canonicalise_for_hash(manifest),
+        sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
     return {
         "fingerprint":     _hashlib.sha256(canonical_bytes).hexdigest(),

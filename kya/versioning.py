@@ -182,9 +182,30 @@ def _compose_principal_key(principal_kind: str, principal_id: str) -> str:
     and the ``":"`` separator costs 1, so non-agent ids are limited
     to 29 chars max. The check is enforced here rather than at the DB
     boundary so callers get a clear error message.
+
+    Separator safety: ``principal_id`` must NOT contain ``":"`` --
+    otherwise decomposition (``_decompose_principal_key`` in
+    kya_pro) would split at the wrong colon and yield a wrong
+    ``(kind, id)`` pair (e.g. ``"machine_identity:ip6:::1"`` would
+    decompose to ``("machine_identity", ":::1")``). Rejected here
+    rather than silently corrupting the lookup key.
     """
     if principal_kind == "agent":
+        # Agent ids keep their bare-key storage location, but a
+        # colon in an agent id would still confuse downstream
+        # decomposition routines. Reject for consistency.
+        if _PRINCIPAL_KEY_SEPARATOR in principal_id:
+            raise ValueError(
+                f"agent principal_id={principal_id!r} contains "
+                f"reserved separator {_PRINCIPAL_KEY_SEPARATOR!r}; "
+                f"choose an id without colons.")
         return principal_id
+    if _PRINCIPAL_KEY_SEPARATOR in principal_id:
+        raise ValueError(
+            f"principal_id={principal_id!r} contains reserved "
+            f"separator {_PRINCIPAL_KEY_SEPARATOR!r}; the composed "
+            f"key would be ambiguous to decompose. Choose an id "
+            f"without colons (e.g. use dots, dashes, or underscores).")
     if len(principal_kind) + 1 + len(principal_id) > 50:
         raise ValueError(
             f"composed principal key '{principal_kind}:{principal_id}' "

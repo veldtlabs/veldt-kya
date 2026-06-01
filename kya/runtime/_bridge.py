@@ -270,13 +270,9 @@ def _event_to_payload(ev: BoundEvent) -> dict[str, Any]:
     if ev.tags:
         payload["tags"] = list(ev.tags)
 
-    # Dispatch on concrete type so the type-checker narrows
-    # correctly and a parser that mis-classifies its event
-    # (e.g. emits a RuntimeEvent with source_tool="mavlink")
-    # is caught here rather than silently producing a malformed
-    # payload. The isinstance check on these concrete dataclasses
-    # is fast -- the slow-path warning applies to runtime_checkable
-    # Protocols, not concrete classes.
+    # ``record_runtime_event`` validates the class/source_tool
+    # alignment up front (see _validate_event_classification);
+    # here we only need to fill family-specific fields.
     if isinstance(ev, AutonomyEvent):
         _fill_autonomy_payload(payload, ev)
     elif isinstance(ev, RuntimeEvent):
@@ -284,9 +280,10 @@ def _event_to_payload(ev: BoundEvent) -> dict[str, Any]:
     else:
         logger.warning(
             "[KYA-RUNTIME] bridge received unknown event type %s "
-            "for source_tool=%s; payload will miss family fields. "
-            "Implement RuntimeEvent or AutonomyEvent, or extend "
-            "_event_to_payload.", type(ev).__name__, ev.source_tool,
+            "for source_tool=%s -- routing by source_kind only. "
+            "Implement RuntimeEvent or AutonomyEvent for full "
+            "family-specific payload coverage.",
+            type(ev).__name__, ev.source_tool,
         )
     return payload
 
@@ -435,6 +432,15 @@ def record_runtime_event(
         correlation_id: Shared id used by PR #40's cross-agent rules
             to group events from cooperating principals. Optional.
     """
+    # Validate up front -- before any side-effect helper runs --
+    # that the parser's class and source_tool family agree. The
+    # downstream helpers wrap their work in broad try/except blocks
+    # (correctly, to stay fail-soft on resolver / DB hiccups), so
+    # a raise from _event_to_payload would get swallowed and the
+    # bridge would silently emit a mis-classified evidence row.
+    # That's the audit-integrity failure mode this guard prevents.
+    _validate_event_classification(event)
+
     tid, pid, method = _resolve_principal(event)
     matches = _dispatch_attack_chains(db, event, tid, pid)
     evidence_id = _attach_evidence_chain(
@@ -451,6 +457,31 @@ def record_runtime_event(
         evidence_id=evidence_id,
         error=None,
     )
+
+
+def _validate_event_classification(ev: BoundEvent) -> None:
+    """Raise ValueError if the event's class and source_tool family
+    disagree -- the audit-integrity contract enforced before any
+    side-effect helper runs.
+
+    Concrete subclasses of RuntimeEvent / AutonomyEvent are
+    accepted (isinstance covers them). Other BoundEvent shapes
+    (custom vendor classes) skip the check; they route by
+    source_kind only and get a warning, not a raise.
+    """
+    declared_kind = source_kind_of(ev.source_tool)
+    if isinstance(ev, AutonomyEvent):
+        if declared_kind != "autonomy":
+            raise ValueError(
+                f"AutonomyEvent declares source_tool={ev.source_tool!r} "
+                f"which classifies as source_kind={declared_kind!r}; "
+                f"parser must align class with source_tool family.")
+    elif isinstance(ev, RuntimeEvent):
+        if declared_kind != "runtime_security":
+            raise ValueError(
+                f"RuntimeEvent declares source_tool={ev.source_tool!r} "
+                f"which classifies as source_kind={declared_kind!r}; "
+                f"parser must align class with source_tool family.")
 
 
 def ingest(

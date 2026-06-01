@@ -307,12 +307,14 @@ class TestBridgeFailSoft:
         from kya.runtime import reset_principal_resolver_to_default
         reset_principal_resolver_to_default()
 
-    def test_misclassified_event_logs_warning(self, caplog):
+    def test_misclassified_event_raises(self):
         """A parser that emits a RuntimeEvent shape but tags it with
-        an autonomy source_tool gets a warning + a payload missing
-        the vehicle fields (not a crash, not silent corruption)."""
-        import logging
-        # type: ignore[arg-type] -- intentional mis-classification
+        an autonomy source_tool violates the bridge's contract:
+        class and source_tool family MUST agree, otherwise the
+        signed evidence would record a wrong source_kind. The
+        bridge raises ValueError rather than producing malformed
+        evidence -- this is the audit-integrity guard."""
+        import pytest as _pytest
         ev = RuntimeEvent(
             source_tool="mavlink",  # type: ignore[arg-type]
             source_rule_id="r",
@@ -323,13 +325,26 @@ class TestBridgeFailSoft:
             tenant_id="t",
             principal_id="p",
         )
-        with caplog.at_level(logging.WARNING, logger="kya.runtime._bridge"):
-            result = record_runtime_event(ev)
-        # Bridge still accepts it (fail-soft contract)
+        with _pytest.raises(ValueError, match="parser must align"):
+            record_runtime_event(ev)
+
+    def test_aligned_class_and_source_tool_routes_correctly(self):
+        """Sanity check: the happy path -- AutonomyEvent with an
+        autonomy source_tool -- produces an autonomy-flavoured
+        payload and a correctly-tagged result."""
+        ev = AutonomyEvent(
+            source_tool="mavlink",
+            source_rule_id="command/arm",
+            occurred_at_ts=1.0,
+            severity="low",
+            action="arm",
+            message="ARM",
+            vehicle=VehicleRef(sysid=1, compid=1),
+            tenant_id="t",
+            principal_id="p",
+        )
+        result = record_runtime_event(ev)
         assert result.accepted is True
-        # But source_kind reflects the tool's family, not the
-        # event's class -- this is the misclassification surface
-        # the warning calls out.
         assert result.source_kind == "autonomy"
 
 

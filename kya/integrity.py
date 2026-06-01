@@ -33,9 +33,41 @@ Public API
     verify_signature(agent_def, public_key=None) -> dict  # status report
 """
 
+import datetime as _dt
 import hashlib
 import json
 import os
+from typing import Any as _Any
+
+
+def _canonicalise_for_hash(value: _Any) -> _Any:
+    """Recursively coerce ``value`` into a form whose JSON
+    serialisation is identical across backends.
+
+    Specifically: every ``datetime`` (or ``date``) is coerced to an
+    ISO-8601 string with explicit UTC offset, so a naive datetime
+    that round-tripped through SQLite (tz stripped) hashes the
+    same as the tz-aware datetime PG returns. Without this, the
+    same definition would hash differently on PG vs SQLite -- the
+    nondeterminism that fails the reproducibility contract.
+
+    Non-datetime values pass through. dicts / lists recurse so
+    timestamps nested inside the definition are also canonicalised.
+    """
+    if isinstance(value, _dt.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=_dt.timezone.utc)
+        else:
+            value = value.astimezone(_dt.timezone.utc)
+        return value.isoformat()
+    if isinstance(value, _dt.date):
+        # A bare date has no tz; ISO format is unambiguous.
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _canonicalise_for_hash(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonicalise_for_hash(v) for v in value]
+    return value
 
 # Identity field sets per principal kind.
 #
@@ -263,8 +295,14 @@ def canonical_hash(
     fields = hashed_fields_for(principal_kind)
     if _ownership_enabled(include_ownership):
         fields = fields + _OWNERSHIP_FIELDS
-    snapshot = {k: definition.get(k) for k in fields if k in definition}
-    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+    # Project, then canonicalise datetimes -- otherwise a tz-naive
+    # datetime round-tripped through SQLite would hash differently
+    # from the tz-aware datetime PG returns. ``default=str`` would
+    # serialise these inconsistently; explicit ISO-UTC coercion
+    # makes the hash backend-independent.
+    snapshot = _canonicalise_for_hash(
+        {k: definition.get(k) for k in fields if k in definition})
+    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

@@ -207,6 +207,39 @@ class TestPrincipalFingerprint:
         assert fp["definition_hash"] is None
         assert len(fp["fingerprint"]) == 64
 
+    def test_fingerprint_stable_with_cycle_in_edges(self):
+        """A cycle in the edges DAG (A -> B -> A) must produce a
+        deterministic fingerprint -- the BFS cycle guard kicks in
+        but the resulting ancestor set must be canonical."""
+        from kya import add_principal_edge, principal_fingerprint
+        db = _fresh_db()
+        self._setup_drone(db)
+        # Build a cycle around the drone: c1 -> uav_001 -> c1
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="controller", parent_id="c1",
+            child_kind="drone", child_id="uav_001",
+        )
+        # Re-frame as if the drone parents the controller too --
+        # nonsensical but the BFS must still terminate.
+        add_principal_edge(
+            db, tenant_id="t",
+            parent_kind="drone", parent_id="uav_001",
+            child_kind="controller", child_id="c1",
+        )
+        fp1 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        fp2 = principal_fingerprint(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        # Determinism survives the cycle
+        assert fp1["fingerprint"] == fp2["fingerprint"]
+        # Ancestors include the controller exactly once
+        ctrl_count = sum(1 for a in (fp1["ancestors"] or [])
+                         if a == {"kind": "controller", "id": "c1"})
+        assert ctrl_count == 1
+
     def test_include_edges_false(self):
         from kya import (
             add_principal_edge,
@@ -295,6 +328,33 @@ class TestSnapshotPrincipal:
         d2 = {**d1, "firmware_version": "ardupilot-4.5.2"}
         assert detect_drift(declared, d2, principal_kind="drone") is True
 
+    def test_colon_in_principal_id_rejected(self):
+        """principal_id MUST NOT contain ':' -- the composed
+        agent_key would decompose to the wrong (kind, id) pair.
+        Regression test for Day-2 review finding I1."""
+        from kya import snapshot_principal
+        db = _fresh_db()
+        for bad_id in ("ip6:::1", "name:thing", "kind:id"):
+            with pytest.raises(ValueError, match="reserved separator"):
+                snapshot_principal(
+                    db, tenant_id="t",
+                    principal_kind="machine_identity",
+                    principal_id=bad_id,
+                    definition={},
+                )
+
+    def test_colon_in_agent_id_rejected(self):
+        """Even for kind='agent' (bare-key storage), a colon would
+        confuse downstream decomposition. Rejected for consistency."""
+        from kya import snapshot_principal
+        db = _fresh_db()
+        with pytest.raises(ValueError, match="reserved separator"):
+            snapshot_principal(
+                db, tenant_id="t",
+                principal_kind="agent", principal_id="ns:agent",
+                definition={"agent_key": "ns:agent"},
+            )
+
     def test_oversized_composed_key_rejected(self):
         from kya import snapshot_principal
         db = _fresh_db()
@@ -325,6 +385,75 @@ class TestSnapshotPrincipal:
         )
         assert row is not None
         assert row["definition"]["firmware_version"] == "v1"
+
+
+class TestCanonicalHashDeterminism:
+    """Regression for Day-2 review C2: datetime values inside a
+    definition must hash identically across PG / SQLite even when
+    one strips timezone info on round-trip."""
+
+    def test_naive_vs_aware_utc_datetime_hash_identically(self):
+        """A naive datetime is interpreted as UTC; an aware-UTC
+        datetime is already UTC. Their ISO-coerced forms agree, so
+        canonical_hash must return the same digest."""
+        from datetime import datetime, timezone
+
+        from kya.integrity import canonical_hash
+        # Two definitions with the same logical timestamp but
+        # different tzinfo (mimicking PG-aware vs SQLite-stripped).
+        defn_aware = {
+            "agent_key": "x", "tools": ["a"],
+            "last_edited_at": datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+        }
+        defn_naive = {
+            "agent_key": "x", "tools": ["a"],
+            "last_edited_at": datetime(2026, 6, 1, 12, 0),
+        }
+        # Note: "last_edited_at" isn't in _HASHED_FIELDS so it gets
+        # filtered out -- both hashes are identical for that reason.
+        # The non-trivial case: a datetime stored UNDER a hashed
+        # field (e.g. an autonomy_asset's "firmware_hash" might be
+        # accidentally typed as a datetime in test data).
+        defn_in_hash_aware = {
+            "firmware_version": "v1",
+            "firmware_hash": datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+        }
+        defn_in_hash_naive = {
+            "firmware_version": "v1",
+            "firmware_hash": datetime(2026, 6, 1, 12, 0),
+        }
+        h_aware = canonical_hash(defn_in_hash_aware, principal_kind="drone")
+        h_naive = canonical_hash(defn_in_hash_naive, principal_kind="drone")
+        assert h_aware == h_naive, (
+            "naive UTC and aware UTC datetimes must hash identically "
+            "so a definition survives a PG -> SQLite round-trip")
+
+    def test_nested_datetime_canonicalised(self):
+        """Datetimes nested inside list / dict values inside the
+        definition must also be coerced."""
+        from datetime import datetime, timezone
+
+        from kya.integrity import canonical_hash
+        d1 = {
+            "firmware_version": "v1",
+            "approved_modes": ["LOITER", "AUTO"],
+            "geofence_id": "F-1",
+            # Nested datetime inside parameter_set_hash (atypical
+            # but the canonicalisation must reach it):
+            "parameter_set_hash": {
+                "issued_at": datetime(2026, 6, 1, tzinfo=timezone.utc),
+            },
+        }
+        d2 = {
+            "firmware_version": "v1",
+            "approved_modes": ["LOITER", "AUTO"],
+            "geofence_id": "F-1",
+            "parameter_set_hash": {
+                "issued_at": datetime(2026, 6, 1),  # naive
+            },
+        }
+        assert (canonical_hash(d1, principal_kind="drone")
+                == canonical_hash(d2, principal_kind="drone"))
 
 
 class TestHashedFieldsRegistry:
