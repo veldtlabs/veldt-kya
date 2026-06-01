@@ -348,6 +348,49 @@ class TestBridgeFailSoft:
         assert result.source_kind == "autonomy"
 
 
+# ── Subclass dispatch ────────────────────────────────────────────
+
+
+class TestSubclassDispatch:
+    """A vendor subclassing AutonomyEvent / RuntimeEvent must still
+    route correctly. The bridge dispatches via isinstance, which
+    handles subclasses transparently."""
+
+    def setup_method(self):
+        set_principal_resolver(None)
+
+    def teardown_method(self):
+        from kya.runtime import reset_principal_resolver_to_default
+        reset_principal_resolver_to_default()
+
+    def test_autonomy_subclass_routes_correctly(self):
+        """A vendor-extended AutonomyEvent (e.g. a drone-vendor
+        adding telemetry fields) must still be classified as
+        autonomy by the bridge."""
+        from dataclasses import dataclass as _dc
+
+        @_dc(frozen=True, slots=True)
+        class VendorDroneEvent(AutonomyEvent):
+            """A vendor extension adding nothing -- the inheritance
+            alone proves dispatch by isinstance."""
+            pass
+
+        ev = VendorDroneEvent(
+            source_tool="mavlink",
+            source_rule_id="r",
+            occurred_at_ts=1.0,
+            severity="low",
+            action="x",
+            message="m",
+            vehicle=VehicleRef(sysid=1, compid=1),
+            tenant_id="t",
+            principal_id="p",
+        )
+        result = record_runtime_event(ev)
+        assert result.accepted is True
+        assert result.source_kind == "autonomy"
+
+
 # ── Backwards-compat: 8 existing parsers keep working ─────────────
 
 

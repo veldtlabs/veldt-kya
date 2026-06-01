@@ -370,6 +370,85 @@ class TestSnapshotPrincipal:
         assert "50-char" in msg
         assert "machine_identity" in msg
 
+    def test_concurrent_snapshot_principal_race(self):
+        """Two threads snapshotting the same principal concurrently
+        must NOT lose a version due to the version_no race -- the
+        existing snapshot_agent retry loop handles this. Regression
+        test for Day-2 review MEDIUM coverage gap."""
+        import threading
+        from kya import (
+            list_principal_versions,
+            snapshot_principal,
+        )
+        from kya.principal_edges import ensure_principal_edges_table
+        db_main = _fresh_db()
+        ensure_principal_edges_table(db_main)
+        from sqlalchemy.orm import Session
+        engine = db_main.bind
+        errors: list[Exception | None] = [None, None]
+
+        def worker(i: int):
+            sess = Session(engine)
+            try:
+                snapshot_principal(
+                    sess, tenant_id="t",
+                    principal_kind="drone", principal_id="uav_001",
+                    definition={"firmware_version": f"v{i}"},
+                )
+            except Exception as exc:
+                errors[i] = exc
+            finally:
+                sess.close()
+
+        threads = [threading.Thread(target=worker, args=(i,))
+                   for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # Neither thread raised
+        for e in errors:
+            assert e is None, f"thread raised: {e!r}"
+        # Both versions landed
+        versions = list_principal_versions(
+            db_main, tenant_id="t",
+            principal_kind="drone", principal_id="uav_001")
+        assert len(versions) == 2
+
+    def test_unicode_principal_id_accepted(self):
+        """Non-ASCII principal_ids must round-trip cleanly. KYA's
+        identifiers are opaque strings, not constrained to ASCII."""
+        from kya import (
+            get_principal_version,
+            snapshot_principal,
+        )
+        db = _fresh_db()
+        unicode_id = "drone-é-test"  # "drone-é-test"
+        snapshot_principal(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id=unicode_id,
+            definition={"firmware_version": "v1"},
+        )
+        got = get_principal_version(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id=unicode_id,
+            version_no=1)
+        assert got is not None
+        assert got["definition"]["firmware_version"] == "v1"
+
+    def test_long_principal_id_within_limit(self):
+        """A principal_id at the maximum allowed length for its
+        kind must succeed."""
+        from kya import snapshot_principal
+        db = _fresh_db()
+        # "drone:" is 6 chars; column is 50; so max id is 44 chars
+        max_id = "u" * 44
+        snapshot_principal(
+            db, tenant_id="t",
+            principal_kind="drone", principal_id=max_id,
+            definition={"firmware_version": "v1"},
+        )
+
     def test_get_principal_version_returns_definition(self):
         from kya import get_principal_version, snapshot_principal
         db = _fresh_db()

@@ -48,6 +48,8 @@ Public API
     detect_principal_burst_anomalies(...) -> list (Valkey, no DB)
 """
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -316,7 +318,7 @@ def registered_principal_kinds() -> tuple[str, ...]:
 
 
 def principal_fingerprint(
-    db: "Any",
+    db: Any,
     *,
     tenant_id: str,
     principal_kind: str,
@@ -366,6 +368,18 @@ def principal_fingerprint(
     The function is read-only -- it never writes to the DB. Same
     inputs always yield the same fingerprint, which is the contract
     fleet_fingerprint depends on for reproducibility.
+
+    Note on ``tenant_id`` semantics
+    -------------------------------
+    ``tenant_id`` scopes the DB queries but is INTENTIONALLY NOT
+    in the hash. Two tenants running identical principals (same
+    definition + same lineage + same edges) will produce the SAME
+    principal_fingerprint -- this matches the
+    :func:`kya_pro.reproducibility.fleet_fingerprint` policy and
+    enables cross-tenant similarity detection (e.g. "the same
+    drone configuration is deployed across these N customers").
+    A regulator who needs tenant-distinct fingerprints must
+    compose ``(tenant_id, principal_fingerprint)`` themselves.
     """
     from .integrity import canonical_hash  # noqa: PLC0415
 
@@ -434,20 +448,17 @@ def principal_fingerprint(
         "include_ownership": _ownership_recorded(include_ownership),
     }
 
-    import hashlib as _hashlib  # noqa: PLC0415
-    import json as _json  # noqa: PLC0415
-
     # Coerce any datetimes inside the manifest to ISO-UTC strings so
     # the fingerprint is backend-independent (see _canonicalise_for_hash
     # in integrity.py for the rationale). default=str would serialise
     # tz-aware vs naive datetimes inconsistently across PG/SQLite.
     from .integrity import _canonicalise_for_hash  # noqa: PLC0415
-    canonical_bytes = _json.dumps(
+    canonical_bytes = json.dumps(
         _canonicalise_for_hash(manifest),
         sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
     return {
-        "fingerprint":     _hashlib.sha256(canonical_bytes).hexdigest(),
+        "fingerprint":     hashlib.sha256(canonical_bytes).hexdigest(),
         "scheme":          "principal-v1",
         "principal_kind":  principal_kind,
         "principal_id":    principal_id,
@@ -459,7 +470,7 @@ def principal_fingerprint(
 
 
 def _lineage_from_trust_row(
-    db: "Any",
+    db: Any,
     *,
     tenant_id: str,
     principal_kind: str,
@@ -488,7 +499,7 @@ def _lineage_from_trust_row(
 
 
 def _ancestor_pairs(
-    db: "Any",
+    db: Any,
     *,
     tenant_id: str,
     principal_kind: str,
@@ -500,11 +511,23 @@ def _ancestor_pairs(
     """
     try:
         from .principal_edges import walk_ancestors  # noqa: PLC0415
+    except ImportError:
+        logger.warning(
+            "[KYP-FP] principal_edges module not importable -- "
+            "fingerprint will omit the ancestor set. Install the "
+            "extra or include the module to enable graph-aware "
+            "fingerprints.")
+        return []
+    try:
         edges = walk_ancestors(
             db, tenant_id=tenant_id,
             leaf_kind=principal_kind, leaf_id=principal_id,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 -- defensive: DB error shouldn't break fingerprint
+        logger.debug(
+            "[KYP-FP] walk_ancestors raised for %s:%s; treating "
+            "ancestor set as empty.", principal_kind, principal_id,
+            exc_info=True)
         return []
     seen: set[tuple[str, str]] = set()
     pairs: list[dict] = []
@@ -528,10 +551,35 @@ def _ownership_recorded(explicit: bool | None) -> bool:
     raw = os.environ.get("KYA_HASH_OWNER_FIELDS", "").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
-# Schema qualifier — PG only. Defaults to None (= dialect's default
+# Schema qualifier -- PG only. Defaults to None (= dialect's default
 # namespace) as of v0.1.6; set KYA_VERSIONS_SCHEMA in the environment
 # to pin tables to a named schema.
-_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
+#
+# Security: this value gets string-formatted into raw SQL by
+# _apply_idp_binding_migrations (legacy ALTER-TABLE migration path)
+# so it MUST be validated as a strict PostgreSQL identifier --
+# otherwise a hostile environment variable could inject SQL. The
+# regex matches lowercase + digit + underscore PG identifiers up
+# to 63 chars (PG's name-length limit). An invalid value disables
+# the schema qualifier (falls back to dialect default) with a
+# logged warning rather than carrying a tainted value forward.
+_PG_SCHEMA_REGEX = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+def _validate_pg_schema(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    if _PG_SCHEMA_REGEX.match(raw):
+        return raw
+    logger.warning(
+        "[KYP] KYA_VERSIONS_SCHEMA=%r failed validation (must match "
+        "%s); ignoring and using dialect default schema.",
+        raw, _PG_SCHEMA_REGEX.pattern,
+    )
+    return None
+
+
+_PG_SCHEMA = _validate_pg_schema(os.getenv("KYA_VERSIONS_SCHEMA"))
 
 
 def _require_sqlalchemy() -> None:
