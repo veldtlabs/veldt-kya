@@ -14,6 +14,7 @@ JSON file of dicts shaped like pymavlink's ``message.to_dict()`` --
 exactly what ``kya.runtime.parsers.mavlink.parse`` consumes.
 
 Exits non-zero if:
+  * docker not installed OR daemon not running
   * pymavlink is not installed (collector dep missing)
   * SITL fails to boot within the timeout
   * Capture produced zero governance-relevant frames
@@ -21,9 +22,13 @@ Exits non-zero if:
 so the calling CI workflow fails loudly rather than silently.
 
 Environment:
-  OUT      output JSON file path (default /tmp/mavlink-sitl.json)
-  TIMEOUT  SITL boot timeout in seconds (default 120)
-  MISSION  capture duration in seconds (default 30)
+  OUT           output JSON file path (default /tmp/mavlink-sitl.json)
+  TIMEOUT       SITL boot timeout in seconds (default 120)
+  MISSION       capture duration in seconds (default 30)
+  MAVLINK_PORT  host UDP port to bind (default 14550). Override to
+                run multiple SITL instances in parallel.
+  SITL_IMAGE    override the container image (default is a pinned
+                ArduPilot SITL build; see _SITL_IMAGE_DEFAULT).
 
 Usage:
   python3 scripts/mavlink_sitl_live_capture.py
@@ -31,130 +36,79 @@ Usage:
 """
 from __future__ import annotations
 
-import json
 import os
-import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
+
+# Local import -- shared helpers between the two SITL scripts.
+sys.path.insert(0, str(Path(__file__).parent))
+from _sitl_common import (  # noqa: E402
+    capture,
+    cleanup_container,
+    die,
+    env_int,
+    preflight,
+    run,
+    wait_for_heartbeat,
+    write_ndjson,
+)
 
 
 # ── Configuration ────────────────────────────────────────────────
 
 
 OUT = Path(os.environ.get("OUT", "/tmp/mavlink-sitl.json"))
-BOOT_TIMEOUT = int(os.environ.get("TIMEOUT", "120"))
-CAPTURE_SECONDS = int(os.environ.get("MISSION", "30"))
+BOOT_TIMEOUT = env_int("TIMEOUT", 120)
+CAPTURE_SECONDS = env_int("MISSION", 30)
+MAVLINK_PORT = env_int("MAVLINK_PORT", 14550)
 
-# ArduPilot SITL container -- the official ArduPilot project ships
-# this image with the SITL binary + DroneKit preinstalled. Pin to
-# a known-good tag rather than :latest so a CI run today reproduces
-# next year.
-SITL_IMAGE = os.environ.get(
-    "SITL_IMAGE",
-    "ardupilot/ardupilot-dev-base:latest",
-)
+# ArduPilot SITL container. Pinning to ``:latest`` is intentional
+# for development convenience; CI overrides this via SITL_IMAGE to
+# point at a SHA-digested mirror so demos reproduce next year. To
+# pin locally:
+#   SITL_IMAGE=ardupilot/ardupilot-dev-base@sha256:<digest>
+_SITL_IMAGE_DEFAULT = "ardupilot/ardupilot-dev-base:latest"
+SITL_IMAGE = os.environ.get("SITL_IMAGE", _SITL_IMAGE_DEFAULT)
 
-# Container name -- fixed so cleanup is deterministic
+# Container name -- fixed so cleanup is deterministic.
 CONTAINER_NAME = "kya-mavlink-sitl"
 
-# UDP port SITL emits MAVLink on (loopback)
+# Loopback only -- SITL UDP must not be reachable from outside the
+# host. A laptop on a coffee-shop network would otherwise expose
+# the autopilot to the LAN.
 MAVLINK_HOST = "127.0.0.1"
-MAVLINK_PORT = 14550
-
-
-# ── Helpers ──────────────────────────────────────────────────────
-
-
-def _have(cmd: str) -> bool:
-    return shutil.which(cmd) is not None
-
-
-def _die(msg: str, exit_code: int = 1) -> None:
-    print(f"FAIL: {msg}", file=sys.stderr)
-    sys.exit(exit_code)
-
-
-def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    print(f"$ {' '.join(cmd)}")
-    return subprocess.run(cmd, **kw)
-
-
-def _cleanup_container() -> None:
-    """Best-effort container cleanup -- never raises."""
-    try:
-        subprocess.run(
-            ["docker", "rm", "-f", CONTAINER_NAME],
-            capture_output=True, timeout=15,
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
-
-# ── Preflight ────────────────────────────────────────────────────
-
-
-def preflight() -> None:
-    if not _have("docker"):
-        _die("docker not found in PATH")
-    try:
-        import pymavlink  # noqa: F401
-    except ImportError:
-        _die(
-            "pymavlink not installed. Install with: "
-            "pip install 'veldt-kya[mavlink]'"
-        )
-    if OUT.exists():
-        OUT.unlink()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
 
 
 # ── SITL launch ──────────────────────────────────────────────────
 
 
 def launch_sitl() -> None:
-    """Start ArduPilot SITL in a Docker container and expose its
-    MAVLink UDP port on the host."""
-    _cleanup_container()
+    """Start ArduPilot SITL in a Docker container and bind its
+    MAVLink UDP port to the host loopback only."""
+    cleanup_container(CONTAINER_NAME)
 
     # SITL command line:
-    #   --model quad         quadcopter dynamics
-    #   --speedup 5          run 5x real-time for faster CI
-    #   --instance 0         single instance on default UDP ports
+    #   --model quad      quadcopter dynamics
+    #   --speedup 5       run 5x real-time for faster CI
+    #   --no-mavproxy     don't fork MAVProxy; we read MAVLink
+    #                     directly via pymavlink
     cmd = [
         "docker", "run", "-d", "--name", CONTAINER_NAME,
-        "-p", f"{MAVLINK_PORT}:14550/udp",
+        "-p", f"{MAVLINK_HOST}:{MAVLINK_PORT}:14550/udp",
         SITL_IMAGE,
         "sim_vehicle.py",
         "-v", "ArduCopter",
         "--model", "quad",
         "--speedup", "5",
         "--no-mavproxy",
-        "--out", f"udp:0.0.0.0:14550",
+        # SITL emits MAVLink on UDP 14550 inside the container; the
+        # -p above maps that to MAVLINK_PORT on the host loopback.
+        "--out", "udp:127.0.0.1:14550",
     ]
-    result = _run(cmd, capture_output=True, text=True)
+    result = run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        _die(f"docker run failed: {result.stderr}")
-
-
-def wait_for_heartbeat(timeout: int) -> "mavutil.mavlink_connection":  # type: ignore[name-defined]
-    """Block until SITL emits its first HEARTBEAT or timeout.
-    Returns the live mavutil connection."""
-    from pymavlink import mavutil  # noqa: PLC0415
-
-    conn_str = f"udp:{MAVLINK_HOST}:{MAVLINK_PORT}"
-    print(f"connecting to {conn_str} ...")
-    conn = mavutil.mavlink_connection(conn_str)
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        msg = conn.recv_match(type="HEARTBEAT", blocking=True, timeout=5)
-        if msg is not None:
-            print(f"got heartbeat from sys={msg.get_srcSystem()} "
-                  f"comp={msg.get_srcComponent()}")
-            return conn
-    _die(f"no HEARTBEAT within {timeout}s -- SITL didn't boot")
+        die(f"docker run failed: {result.stderr}")
 
 
 # ── Scripted mission ─────────────────────────────────────────────
@@ -170,7 +124,13 @@ def run_scripted_mission(conn) -> None:
         4. COMMAND_LONG arm (-> arm)
         5. COMMAND_LONG takeoff (-> takeoff)
         6. STATUSTEXT will fire naturally during the cycle (-> status)
+
+    The inter-command sleeps are conservative: a cold CI runner
+    with --speedup 5 needs ~0.5s to ACK SET_MODE before the next
+    frame fires. The live integration test catches a silently-
+    dropped command via the "required actions" coverage assertion.
     """
+    import time as _time  # local; never used at module load
     from pymavlink import mavutil  # noqa: PLC0415
 
     sysid = conn.target_system or 1
@@ -183,7 +143,7 @@ def run_scripted_mission(conn) -> None:
         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
         4,  # GUIDED
     )
-    time.sleep(0.5)
+    _time.sleep(0.5)
 
     # 2. PARAM_SET FENCE_ENABLE=1
     print("param_set FENCE_ENABLE=1 ...")
@@ -193,12 +153,12 @@ def run_scripted_mission(conn) -> None:
         1.0,
         mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
     )
-    time.sleep(0.5)
+    _time.sleep(0.5)
 
     # 3. Mission upload (one waypoint)
     print("mission upload ...")
     conn.mav.mission_count_send(sysid, compid, 1)
-    time.sleep(0.5)
+    _time.sleep(0.5)
     conn.mav.mission_item_int_send(
         sysid, compid,
         0,  # seq
@@ -208,7 +168,7 @@ def run_scripted_mission(conn) -> None:
         0, 0, 0, 0,
         int(-353621480), int(1491600400), 50.0,  # Canberra-ish + 50m
     )
-    time.sleep(0.5)
+    _time.sleep(0.5)
 
     # 4. COMMAND_LONG arm
     print("command_long arm ...")
@@ -218,7 +178,7 @@ def run_scripted_mission(conn) -> None:
         0,
         1, 0, 0, 0, 0, 0, 0,
     )
-    time.sleep(1.0)
+    _time.sleep(1.0)
 
     # 5. COMMAND_LONG takeoff to 20m
     print("command_long takeoff 20m ...")
@@ -230,60 +190,31 @@ def run_scripted_mission(conn) -> None:
     )
 
 
-# ── Capture loop ─────────────────────────────────────────────────
-
-
-def capture(conn, seconds: int) -> list[dict]:
-    """Read MAVLink frames from the connection for ``seconds`` and
-    return each as a dict (the same shape ``parse`` consumes)."""
-    captured: list[dict] = []
-    deadline = time.time() + seconds
-    handled = {
-        "COMMAND_LONG", "COMMAND_INT",
-        "MISSION_ITEM", "MISSION_ITEM_INT",
-        "SET_MODE", "PARAM_SET", "STATUSTEXT",
-        "SERVO_OUTPUT_RAW", "DO_SET_SERVO",
-    }
-    while time.time() < deadline:
-        msg = conn.recv_match(blocking=True, timeout=1)
-        if msg is None:
-            continue
-        msg_type = msg.get_type()
-        # We log EVERY message for after-the-fact analysis but
-        # mark the governance-relevant ones so the test can assert
-        # canonical events fired.
-        d = msg.to_dict()
-        d["_handled"] = msg_type in handled
-        # Stamp the absolute wall-clock so a .tlog replay later
-        # can carry deterministic timestamps (see _extract_ts in
-        # the parser docstring).
-        d["_ts"] = time.time()
-        captured.append(d)
-    return captured
-
-
 # ── Entrypoint ───────────────────────────────────────────────────
 
 
 def main() -> int:
-    preflight()
+    preflight(OUT)
     try:
         launch_sitl()
-        conn = wait_for_heartbeat(BOOT_TIMEOUT)
+        conn = wait_for_heartbeat(
+            host=MAVLINK_HOST, port=MAVLINK_PORT,
+            timeout=BOOT_TIMEOUT,
+        )
         run_scripted_mission(conn)
         frames = capture(conn, CAPTURE_SECONDS)
     finally:
-        _cleanup_container()
+        cleanup_container(CONTAINER_NAME)
 
     handled_count = sum(1 for f in frames if f.get("_handled"))
     print(f"captured {len(frames)} total frames; "
           f"{handled_count} are governance-relevant")
 
-    OUT.write_text("\n".join(json.dumps(f) for f in frames))
+    write_ndjson(frames, OUT)
     print(f"wrote {OUT}")
 
     if handled_count == 0:
-        _die(
+        die(
             "captured zero governance-relevant frames "
             "(no COMMAND_LONG / SET_MODE / PARAM_SET / etc.). "
             "SITL booted but the scripted mission did not exercise "

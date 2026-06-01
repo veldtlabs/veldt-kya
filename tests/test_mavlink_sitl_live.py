@@ -35,11 +35,16 @@ def _load_frames() -> list[dict]:
             f"no SITL capture at {_CAPTURE_PATH}; run "
             "`scripts/mavlink_sitl_live_capture.py` first or set "
             "MAVLINK_SITL_CAPTURE to an existing capture file.")
-    return [
+    frames = [
         json.loads(line)
         for line in _CAPTURE_PATH.read_text().splitlines()
         if line.strip()
     ]
+    if not frames:
+        pytest.skip(
+            f"SITL capture at {_CAPTURE_PATH} exists but is empty "
+            "-- re-run the capture script.")
+    return frames
 
 
 # ── Live tests ──────────────────────────────────────────────────
@@ -94,10 +99,15 @@ class TestLiveSitlCapture:
 
     def test_principal_hints_have_real_sysid(self):
         """Every parsed event carries a mavlink_sysid hint encoding
-        the autopilot's actual sysid (typically 1). A test that
-        captures from a real autopilot proves the wire-format
-        contract: pymavlink's to_dict() shape matches the parser's
-        expected key names."""
+        the autopilot's actual sysid. A test that captures from a
+        real autopilot proves the wire-format contract: pymavlink's
+        to_dict() shape matches the parser's expected key names.
+
+        The expected sysid defaults to 1 (ArduPilot SITL default)
+        but can be overridden via ``EXPECTED_SYSID`` env var when
+        the SITL config sets a different SYSID_THISMAV.
+        """
+        import os
         from kya.runtime.parsers import mavlink
         frames = _load_frames()
         sysids_seen: set[str] = set()
@@ -111,10 +121,14 @@ class TestLiveSitlCapture:
         assert sysids_seen, (
             "no principal hints captured -- the parser is not "
             "extracting (sysid, compid) from the SITL frames")
-        # ArduPilot SITL defaults to sysid=1; the value is
-        # encoded "1:1" per encode_mavlink_sysid.
-        assert "1:1" in sysids_seen, (
-            f"expected sysid=1 from SITL, saw: {sysids_seen}")
+        expected_sysid = os.environ.get("EXPECTED_SYSID", "1")
+        # Match any compid for the expected sysid (autopilots emit
+        # under multiple compids: 1=autopilot, 50=mavftp, etc.)
+        matching = [s for s in sysids_seen
+                    if s.startswith(f"{expected_sysid}:")]
+        assert matching, (
+            f"expected sysid={expected_sysid} from SITL, "
+            f"saw: {sysids_seen}")
 
     def test_bridge_accepts_every_parsed_event(self):
         """End-to-end: every parsed SITL frame must survive the

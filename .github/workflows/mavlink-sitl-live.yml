@@ -39,6 +39,12 @@ concurrency:
   group: mavlink-sitl-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+# Default-deny GITHUB_TOKEN scope. The job only reads the repo and
+# uploads an artefact on failure -- no write to issues, packages,
+# deployments. Defence-in-depth.
+permissions:
+  contents: read
+
 jobs:
   sitl_live:
     name: ArduPilot SITL + parser
@@ -64,8 +70,20 @@ jobs:
 
       - name: Pull ArduPilot SITL Docker image
         # Pre-pull so the capture-script timeout isn't burnt on
-        # the cold image pull.
-        run: docker pull ardupilot/ardupilot-dev-base:latest
+        # the cold image pull. Retry 3x with backoff -- hosted
+        # runners fail to pull on cold start ~1% of the time and
+        # we don't want that to break demo-readiness CI.
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            if docker pull ardupilot/ardupilot-dev-base:latest; then
+              exit 0
+            fi
+            echo "pull attempt $attempt failed; backing off..."
+            sleep $((attempt * 10))
+          done
+          echo "all 3 pull attempts failed"
+          exit 1
 
       - name: Capture live SITL frames
         env:

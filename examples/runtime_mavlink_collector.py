@@ -56,139 +56,182 @@ FLEET_MANIFEST: dict[tuple[int, int], tuple[str, str]] = {
 }
 
 
-# ── 2. Wire the resolver chain -----------------------------------
+class MavlinkCollector:
+    """Instance-scoped MAVLink collector.
 
+    Owns its own invocation cache, fleet manifest, and (eventually)
+    its own resolver registration. Two collectors in the same
+    process don't share state -- which is what you want when one
+    collector handles ``mission_alpha`` and another handles
+    ``mission_beta`` against the same DB.
 
-def install_principal_resolver() -> None:
-    from kya.runtime import (
-        ExplicitBindingCache,
-        MavlinkSysidResolver,
-        PrincipalResolverChain,
-        set_principal_resolver,
-    )
+    For a single-tenant single-mission deployment, instantiate
+    once at startup and call ``ingest_frame`` per MAVLink message.
+    For multi-mission deployments, build one ``MavlinkCollector``
+    per mission and route the wire stream by mission_id upstream.
+    """
 
-    # ExplicitBindingCache covers any test/agent-spawn bindings;
-    # MavlinkSysidResolver maps the (sysid, compid) hint emitted
-    # by the parser to a principal via the manifest above. Order
-    # matters: explicit beats manifest beats none.
-    chain = PrincipalResolverChain([
-        ExplicitBindingCache(),
-        MavlinkSysidResolver(FLEET_MANIFEST),
-    ])
-    set_principal_resolver(chain)
+    def __init__(
+        self,
+        fleet_manifest: dict[tuple[int, int], tuple[str, str]] | None = None,
+    ) -> None:
+        # Default to the example manifest; production callers
+        # supply their own loaded from YAML / IdP / DB.
+        self.fleet_manifest = (
+            dict(fleet_manifest) if fleet_manifest is not None
+            else dict(FLEET_MANIFEST)
+        )
+        # Cached per-vehicle invocation anchors -- instance-scoped
+        # so two collectors don't collide. Production collectors
+        # persist this to Valkey / Redis so the chain survives
+        # process restarts.
+        self._invocation_cache: dict[tuple[int, int], int] = {}
 
+    # ── Resolver wire-up ─────────────────────────────────────────
 
-# ── 3. Per-vehicle invocation anchor ----------------------------
-#
-# Cached so the same drone uses the same anchor across an entire
-# session. A real collector persists this to Valkey / Redis so the
-# chain survives restarts.
-_invocation_cache: dict[tuple[int, int], int] = {}
+    def install_principal_resolver(self) -> None:
+        """Install a process-global resolver chain that consults
+        this collector's fleet manifest.
 
-
-def _invocation_for(
-    db: Any, *, tenant_id: str, sysid: int, compid: int,
-    principal_id: str,
-) -> int:
-    """Return the invocation_id for this (sysid, compid) pair,
-    creating one if it doesn't exist yet."""
-    key = (sysid, compid)
-    cached = _invocation_cache.get(key)
-    if cached is not None:
-        return cached
-
-    from kya import record_invocation
-    inv_id = record_invocation(
-        db,
-        tenant_id=tenant_id,
-        agent_key=principal_id,
-        # 'autonomous_action' is a canonical mode; see kya.invocations
-        # for the full vocabulary.
-        mode="autonomous_action",
-        # The collector doesn't have a per-frame prompt; we anchor
-        # the session with a synthetic record.
-        request="MAVLink session anchor",
-        principal_kind="drone",
-        principal_id=principal_id,
-        outcome="ok",
-    )
-    _invocation_cache[key] = inv_id
-    return inv_id
-
-
-# ── 4. Ingest a frame -------------------------------------------
-
-
-def ingest_mavlink_frame(db: Any, frame: dict) -> None:
-    """Push one MAVLink message dict through the bridge."""
-    from kya.runtime import ingest
-
-    sysid = frame.get("sysid")
-    compid = frame.get("compid", 1)
-    if not isinstance(sysid, int) or not isinstance(compid, int):
-        return  # parser will also reject -- bail early
-
-    # Anchor to an invocation per vehicle. The fleet manifest tells
-    # us which principal owns this (sysid, compid).
-    principal = FLEET_MANIFEST.get((sysid, compid))
-    if principal is None:
-        # Unknown source -- the bridge will mark unbound. Still
-        # surface it: an unauthorised sysid is the attack signal.
-        invocation_id = None
-        tenant_id = "acme"  # fallback for cross-tenant unbound
-    else:
-        tenant_id, principal_id = principal
-        invocation_id = _invocation_for(
-            db, tenant_id=tenant_id,
-            sysid=sysid, compid=compid,
-            principal_id=principal_id,
+        Note: ``set_principal_resolver`` is process-global. In a
+        multi-collector deployment the LAST collector to call this
+        wins for the whole process. The convention in such
+        deployments is to install one shared resolver chain that
+        unions every fleet manifest, OR to call only the parent
+        collector's ``install_principal_resolver`` once.
+        """
+        from kya.runtime import (
+            ExplicitBindingCache,
+            MavlinkSysidResolver,
+            PrincipalResolverChain,
+            set_principal_resolver,
         )
 
-    result = ingest(
-        frame,
-        source_tool="mavlink",
-        db=db,
-        invocation_id=invocation_id,
-    )
-    if not result.accepted:
-        logger.warning(
-            "[KYA-MAVLINK-COLLECTOR] frame rejected: %s",
-            result.error)
+        chain = PrincipalResolverChain([
+            ExplicitBindingCache(),
+            MavlinkSysidResolver(self.fleet_manifest),
+        ])
+        set_principal_resolver(chain)
 
+    # ── Invocation anchor (per vehicle) ──────────────────────────
 
-# ── 5. Live UDP reader (optional pymavlink path) ----------------
+    def _invocation_for(
+        self,
+        db: Any, *,
+        tenant_id: str, sysid: int, compid: int,
+        principal_id: str,
+    ) -> int:
+        """Return the invocation_id for this (sysid, compid),
+        creating one if it doesn't exist yet."""
+        key = (sysid, compid)
+        cached = self._invocation_cache.get(key)
+        if cached is not None:
+            return cached
 
+        from kya import record_invocation
+        inv_id = record_invocation(
+            db,
+            tenant_id=tenant_id,
+            agent_key=principal_id,
+            # 'autonomous_action' is a canonical mode; see
+            # kya.invocations for the full vocabulary.
+            mode="autonomous_action",
+            principal_kind="drone",
+            principal_id=principal_id,
+            outcome="success",
+        )
+        self._invocation_cache[key] = inv_id
+        return inv_id
 
-def stream_from_udp(
-    db: Any, *, host: str = "127.0.0.1", port: int = 14550,
-) -> None:
-    """Stream MAVLink frames live from a UDP endpoint (the typical
-    setup when a router like mavlink-routerd is between the
-    autopilot and ground software)."""
-    try:
-        from pymavlink import mavutil
-    except ImportError:
-        logger.error(
-            "pymavlink not installed. Either install "
-            "veldt-kya[mavlink] or pre-decode frames to dicts upstream.")
-        return
+    # ── Ingest one frame ─────────────────────────────────────────
 
-    conn = mavutil.mavlink_connection(f"udp:{host}:{port}")
-    logger.info("[KYA-MAVLINK-COLLECTOR] listening on udp:%s:%d",
-                host, port)
-    while True:
-        msg = conn.recv_match(blocking=True, timeout=5)
-        if msg is None:
-            continue
-        ingest_mavlink_frame(db, msg.to_dict())
+    def ingest_frame(self, db: Any, frame: dict) -> None:
+        """Push one MAVLink message dict through the bridge.
+
+        Unknown (sysid, compid) is NOT silently bound to a default
+        tenant -- the bridge surfaces it as unbound, which is the
+        whole point: an unauthorised sysid is the attack signal a
+        regulator wants. The caller can apply tenant-routing
+        logic UPSTREAM of the collector if they need per-source
+        attribution beyond the fleet manifest.
+        """
+        from kya.runtime import ingest
+
+        sysid = frame.get("sysid")
+        compid = frame.get("compid", 1)
+        if not isinstance(sysid, int) or not isinstance(compid, int):
+            return  # parser will also reject -- bail early
+
+        principal = self.fleet_manifest.get((sysid, compid))
+        if principal is None:
+            # Unknown source -- the bridge will mark unbound.
+            # Surface it WITHOUT inventing a tenant: an unbound
+            # event flows through the evidence chain with
+            # tenant_id=None, which downstream queries can filter
+            # / alert on. This is the safe failure mode.
+            invocation_id = None
+        else:
+            tenant_id, principal_id = principal
+            invocation_id = self._invocation_for(
+                db, tenant_id=tenant_id,
+                sysid=sysid, compid=compid,
+                principal_id=principal_id,
+            )
+
+        result = ingest(
+            frame,
+            source_tool="mavlink",
+            db=db,
+            invocation_id=invocation_id,
+        )
+        if not result.accepted:
+            logger.warning(
+                "[KYA-MAVLINK-COLLECTOR] frame rejected: %s",
+                result.error,
+            )
+
+    # ── Live UDP reader (optional pymavlink path) ────────────────
+
+    def stream_from_udp(
+        self,
+        db: Any, *, host: str = "127.0.0.1", port: int = 14550,
+    ) -> None:
+        """Stream MAVLink frames live from a UDP endpoint (the
+        typical setup when a router like mavlink-routerd is
+        between the autopilot and ground software)."""
+        try:
+            from pymavlink import mavutil
+        except ImportError:
+            logger.error(
+                "pymavlink not installed. Either install "
+                "veldt-kya[mavlink] or pre-decode frames to dicts "
+                "upstream."
+            )
+            return
+
+        conn = mavutil.mavlink_connection(f"udp:{host}:{port}")
+        logger.info(
+            "[KYA-MAVLINK-COLLECTOR] listening on udp:%s:%d",
+            host, port,
+        )
+        while True:
+            msg = conn.recv_match(blocking=True, timeout=5)
+            if msg is None:
+                continue
+            self.ingest_frame(db, msg.to_dict())
 
 
 # ── Smoke-test entrypoint ---------------------------------------
 
 
-def _smoke_test() -> None:
+def _smoke_test() -> dict:
     """Run a couple of pre-canned frames through the pipeline so
-    a developer can verify the wire-up without spinning SITL."""
+    a developer can verify the wire-up without spinning SITL.
+
+    Returns a small dict of the test outcomes so the
+    ``tests/test_runtime_mavlink_collector_smoke.py`` integration
+    can assert without re-implementing the smoke logic.
+    """
     import tempfile
     import os
     os.environ.pop("KYA_VERSIONS_SCHEMA", None)
@@ -202,23 +245,34 @@ def _smoke_test() -> None:
     kya.init_storage(db)
     db.commit()
 
-    install_principal_resolver()
+    collector = MavlinkCollector()
+    collector.install_principal_resolver()
 
-    # Synthetic ARM from uav_001
-    ingest_mavlink_frame(db, {
+    # Synthetic ARM from uav_001 (known principal)
+    collector.ingest_frame(db, {
         "mavpackettype": "COMMAND_LONG",
         "sysid": 1, "compid": 1,
         "command": 400, "param1": 1.0,
     })
     # Synthetic STATUSTEXT from an unknown source -- demonstrates
     # the unbound path (no fleet manifest entry).
-    ingest_mavlink_frame(db, {
+    collector.ingest_frame(db, {
         "mavpackettype": "STATUSTEXT",
         "sysid": 99, "compid": 1,
         "severity": 4, "text": "unknown autopilot reports warning",
     })
 
-    print("collector smoke test OK -- check the evidence chain in the DB")
+    # Reset the resolver so the smoke test doesn't pollute global
+    # state for subsequent tests in the same process.
+    from kya.runtime import reset_principal_resolver_to_default
+    reset_principal_resolver_to_default()
+
+    outcomes = {
+        "known_principal_anchored": (1, 1) in collector._invocation_cache,
+        "unknown_principal_unbound": (99, 1) not in collector._invocation_cache,
+    }
+    print(f"collector smoke test outcomes: {outcomes}")
+    return outcomes
 
 
 if __name__ == "__main__":
@@ -228,5 +282,5 @@ if __name__ == "__main__":
     else:
         print(__doc__)
         print()
-        print("Use --smoke to run the in-process smoke test or call")
-        print("stream_from_udp(db) from your own collector.")
+        print("Use --smoke to run the in-process smoke test or")
+        print("instantiate MavlinkCollector and call ingest_frame.")
