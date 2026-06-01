@@ -111,9 +111,7 @@ def test_set_override_platform_repeated_writes_no_duplicate_rows():
     from kya import tenant_weights
     from kya._legacy_tables import kya_weight_overrides
 
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None}
-    )
+    eng = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=eng)
     tenant_weights.register_scope("class_weights", {"pii": 15})
     with Session() as db:
@@ -151,9 +149,7 @@ def test_set_override_platform_integrityerror_retry_path():
     from kya import tenant_weights
     from kya._legacy_tables import kya_weight_overrides
 
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None}
-    )
+    eng = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=eng)
     tenant_weights.register_scope("class_weights", {"pii": 15})
     with Session() as db:
@@ -197,9 +193,7 @@ def test_propose_from_incident_works_on_sqlite():
     from kya.feedback import ensure_suggestions_table, propose_from_incident
     from kya.tenant_weights import ensure_tables, register_scope
 
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None}
-    )
+    eng = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=eng)
     register_scope("class_weights", CLASS_WEIGHTS)
     with Session() as db:

@@ -48,8 +48,7 @@ def clean_env():
 
 @pytest.fixture
 def db():
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None})
+    eng = create_engine("sqlite:///:memory:")
     session = sessionmaker(bind=eng)()
     init_storage(session)
     yield session

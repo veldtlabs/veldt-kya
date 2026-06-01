@@ -26,8 +26,7 @@ TENANT = "11111111-2222-3333-4444-aaaaaaaa4242"
 
 @pytest.fixture
 def duckdb_session():
-    eng = create_engine("duckdb:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None})
+    eng = create_engine("duckdb:///:memory:")
     db = sessionmaker(bind=eng)()
     init_storage(db)
     yield db

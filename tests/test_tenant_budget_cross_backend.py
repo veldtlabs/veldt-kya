@@ -62,13 +62,9 @@ def _duckdb_available() -> bool:
 def db(request):
     """Yield a session bound to a fresh DB on the requested backend."""
     if request.param == "sqlite":
-        eng = create_engine("sqlite:///:memory:").execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        eng = create_engine("sqlite:///:memory:")
     elif request.param == "duckdb":
-        eng = create_engine("duckdb:///:memory:").execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        eng = create_engine("duckdb:///:memory:")
     elif request.param == "pg":
         from sqlalchemy import text
         eng = create_engine(os.environ["KYA_TEST_PG_URL"])
@@ -86,9 +82,7 @@ def db(request):
                 ))
     else:  # mysql
         from sqlalchemy import text
-        eng = create_engine(os.environ["KYA_TEST_MYSQL_URL"]).execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        eng = create_engine(os.environ["KYA_TEST_MYSQL_URL"])
         # MySQL has no schemas in the PG sense — truncate the three
         # tables at fixture start to isolate each test.
         with eng.begin() as conn:

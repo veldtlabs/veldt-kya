@@ -225,9 +225,7 @@ def test_set_override_rejects_non_integer_value():
     from sqlalchemy.orm import sessionmaker
     from kya import tenant_weights
 
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None}
-    )
+    eng = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=eng)
     tenant_weights.register_scope("class_weights", {"pii": 15})
     with Session() as db:
@@ -245,9 +243,7 @@ def test_set_override_rejects_unknown_scope():
     from sqlalchemy.orm import sessionmaker
     from kya import tenant_weights
 
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None}
-    )
+    eng = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=eng)
     with Session() as db:
         tenant_weights.ensure_tables(db)

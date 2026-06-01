@@ -43,9 +43,7 @@ from sqlalchemy.orm import sessionmaker
 def db(request):
     """Yield a session bound to a fresh DB on the requested backend."""
     if request.param == "sqlite":
-        eng = create_engine("sqlite:///:memory:").execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        eng = create_engine("sqlite:///:memory:")
     else:
         from sqlalchemy import text
         eng = create_engine(os.environ["KYA_TEST_PG_URL"])

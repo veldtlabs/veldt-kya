@@ -58,8 +58,7 @@ def db(request):
                 conn.execute(text(
                     f"DROP TABLE IF EXISTS prov_schema.{tbl}"))
     elif label == "mysql":
-        eng = create_engine(url).execution_options(
-            schema_translate_map={"prov_schema": None})
+        eng = create_engine(url)
         with eng.begin() as conn:
             for tbl in ("kya_delegation_policy_overrides",
                         "kya_delegation_violations", "kya_invocations",
@@ -69,8 +68,7 @@ def db(request):
                 except Exception:
                     pass
     else:
-        eng = create_engine(url).execution_options(
-            schema_translate_map={"prov_schema": None})
+        eng = create_engine(url)
     session = sessionmaker(bind=eng)()
     init_storage(session)
     yield session

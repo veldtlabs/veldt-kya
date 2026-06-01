@@ -51,8 +51,7 @@ _SEVERITY_RANK = {
 @pytest.fixture
 def db():
     """In-memory SQLite session with KYA storage initialized."""
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None})
+    eng = create_engine("sqlite:///:memory:")
     session = sessionmaker(bind=eng)()
     kya.init_storage(session)
     yield session
