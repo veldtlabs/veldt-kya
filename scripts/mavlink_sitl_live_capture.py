@@ -61,13 +61,29 @@ BOOT_TIMEOUT = env_int("TIMEOUT", 120)
 CAPTURE_SECONDS = env_int("MISSION", 30)
 MAVLINK_PORT = env_int("MAVLINK_PORT", 14550)
 
-# ArduPilot SITL container. Pinning to ``:latest`` is intentional
-# for development convenience; CI overrides this via SITL_IMAGE to
-# point at a SHA-digested mirror so demos reproduce next year. To
-# pin locally:
-#   SITL_IMAGE=ardupilot/ardupilot-dev-base@sha256:<digest>
-_SITL_IMAGE_DEFAULT = "ardupilot/ardupilot-dev-base:latest"
+# ArduPilot SITL container.
+#
+# Image choice rationale: ardupilot/* official images on Docker Hub
+# (ardupilot/ardupilot-dev-base, *-clang, *-chibios, etc.) are
+# CI-for-BUILDING images -- they ship the toolchain to compile
+# ArduPilot from source but do NOT contain a pre-built sim_vehicle.py
+# runnable. ArduPilot's official project doesn't publish a turn-key
+# SITL runtime image.
+#
+# The community-maintained ``radarku/ardupilot-sitl`` (highest-
+# starred SITL runtime as of mid-2026) ships pre-built ArduCopter
+# binaries + sim_vehicle.py at /ardupilot/Tools/autotest/sim_vehicle.py.
+# Verified to boot ArduCopter v4.x against this script's command-line.
+#
+# CI override the SITL_IMAGE env var to pin to a SHA digest for
+# year-over-year reproducibility:
+#   SITL_IMAGE=radarku/ardupilot-sitl@sha256:<digest>
+_SITL_IMAGE_DEFAULT = "radarku/ardupilot-sitl:latest"
 SITL_IMAGE = os.environ.get("SITL_IMAGE", _SITL_IMAGE_DEFAULT)
+
+# Full path to sim_vehicle.py inside the image -- not on PATH by
+# default in radarku/ardupilot-sitl, but at this canonical location.
+_SIM_VEHICLE_PATH = "/ardupilot/Tools/autotest/sim_vehicle.py"
 
 # Container name -- fixed so cleanup is deterministic.
 CONTAINER_NAME = "kya-mavlink-sitl"
@@ -95,7 +111,8 @@ def launch_sitl() -> None:
         "docker", "run", "-d", "--name", CONTAINER_NAME,
         "-p", f"{MAVLINK_HOST}:{MAVLINK_PORT}:14550/udp",
         SITL_IMAGE,
-        "sim_vehicle.py",
+        # Full path -- sim_vehicle.py isn't on PATH in this image.
+        _SIM_VEHICLE_PATH,
         "-v", "ArduCopter",
         "--model", "quad",
         "--speedup", "5",

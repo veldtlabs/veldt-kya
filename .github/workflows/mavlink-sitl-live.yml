@@ -73,10 +73,16 @@ jobs:
         # the cold image pull. Retry 3x with backoff -- hosted
         # runners fail to pull on cold start ~1% of the time and
         # we don't want that to break demo-readiness CI.
+        #
+        # Image rationale (see scripts/mavlink_sitl_live_capture.py
+        # for the long version): ardupilot/* images on Docker Hub
+        # are CI-for-BUILDING (no pre-built sim_vehicle.py). The
+        # community ``radarku/ardupilot-sitl`` (highest-starred
+        # SITL runtime) ships pre-built ArduCopter + sim_vehicle.py.
         run: |
           set -e
           for attempt in 1 2 3; do
-            if docker pull ardupilot/ardupilot-dev-base:latest; then
+            if docker pull radarku/ardupilot-sitl:latest; then
               exit 0
             fi
             echo "pull attempt $attempt failed; backing off..."
