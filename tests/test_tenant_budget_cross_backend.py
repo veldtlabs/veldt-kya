@@ -78,7 +78,7 @@ def db(request):
                 # preload) error on CASCADE walks. Tables don't depend
                 # on each other so explicit non-cascading drop is fine.
                 conn.execute(text(
-                    f"DROP TABLE IF EXISTS prov_schema.{tbl}"
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE"
                 ))
     else:  # mysql
         from sqlalchemy import text

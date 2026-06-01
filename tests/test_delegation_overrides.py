@@ -56,7 +56,7 @@ def db(request):
                         "kya_delegation_violations", "kya_invocations",
                         "agent_versions"):
                 conn.execute(text(
-                    f"DROP TABLE IF EXISTS prov_schema.{tbl}"))
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE"))
     elif label == "mysql":
         eng = create_engine(url)
         with eng.begin() as conn:

@@ -51,7 +51,7 @@ def db(request):
         with eng.begin() as conn:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS prov_schema"))
             for tbl in ("kya_principal_trust", "kya_user_trust"):
-                conn.execute(text(f"DROP TABLE IF EXISTS prov_schema.{tbl}"))
+                conn.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
     elif label == "mysql":
         eng = create_engine(url)
         with eng.begin() as conn:

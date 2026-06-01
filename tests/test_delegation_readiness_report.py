@@ -447,7 +447,7 @@ def test_cross_backend_smoke_runs_against_postgres():
     with eng.begin() as conn:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS prov_schema"))
         conn.execute(text(
-            "DROP TABLE IF EXISTS prov_schema.kya_delegation_violations"))
+            "DROP TABLE IF EXISTS kya_delegation_violations CASCADE"))
     db = sessionmaker(bind=eng)()
     init_storage(db)
     try:
