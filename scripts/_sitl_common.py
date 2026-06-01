@@ -30,12 +30,16 @@ from pathlib import Path
 # Set of MAVLink message types the open-SDK parser canonicalises.
 # Used to mark "_handled" on each captured frame so downstream
 # tests can assert coverage without re-importing the parser.
-HANDLED_MESSAGE_TYPES: frozenset[str] = frozenset({
-    "COMMAND_LONG", "COMMAND_INT",
-    "MISSION_ITEM", "MISSION_ITEM_INT",
-    "SET_MODE", "PARAM_SET", "STATUSTEXT",
-    "SERVO_OUTPUT_RAW", "DO_SET_SERVO",
-})
+#
+# CRITICAL: This is imported from the parser module rather than
+# redefined here. Two frozensets that drift apart would silently
+# misclassify a captured frame as "_handled": False when the
+# parser actually canonicalises it (or vice versa). The import
+# ensures one source of truth -- a new message family added to
+# the parser flows into capture stats automatically.
+from kya.runtime.parsers.mavlink._parser import (  # noqa: E402, PLC0415
+    _HANDLED_MESSAGES as HANDLED_MESSAGE_TYPES,
+)
 
 
 # ── Process control ──────────────────────────────────────────────
@@ -83,12 +87,24 @@ def preflight(out_path: Path) -> None:
     The ``docker info`` ping catches "docker installed but daemon
     not running" (common on macOS Docker Desktop) with a
     friendlier message than the raw ``docker run`` failure.
+    Timeout is 30s because Docker Desktop on macOS/Windows
+    routinely takes 15-45s to come up after a reboot; a 5s
+    timeout would surface a misleading TimeoutExpired traceback
+    rather than the actionable error message.
     """
     if not have("docker"):
         die("docker not found in PATH")
-    info = subprocess.run(
-        ["docker", "info"], capture_output=True, timeout=5,
-    )
+    try:
+        info = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        die(
+            "docker daemon not responding within 30s. If Docker "
+            "Desktop is still starting, wait for it to finish and "
+            "retry. On Linux, check that the docker service is "
+            "running (`systemctl status docker`)."
+        )
     if info.returncode != 0:
         die(
             "docker daemon not reachable. Start Docker Desktop "
@@ -170,21 +186,45 @@ def capture(conn, seconds: int) -> list[dict]:
 
 def write_ndjson(frames: list[dict], path: Path) -> None:
     """Write frames as NDJSON to ``path``. One JSON object per
-    line, trailing newline (the conventional NDJSON shape)."""
+    line, trailing newline (the conventional NDJSON shape).
+
+    Behaviour on ``frames == []``: creates an empty file. The
+    live integration test (``tests/test_mavlink_sitl_live.py``)
+    skips with a clear message in this case, so a "captured zero
+    frames" outcome doesn't masquerade as a missing-capture
+    skip downstream. Direct consumers that key off file
+    existence should also check size > 0 before assuming
+    "capture available".
+    """
     lines = "\n".join(json.dumps(f) for f in frames)
     path.write_text(lines + "\n" if lines else "")
 
 
 def env_int(name: str, default: int) -> int:
     """Read an integer env var with a default. Used by the
-    capture entrypoints for TIMEOUT / MISSION / MAVLINK_PORT."""
+    capture entrypoints for TIMEOUT / MISSION / MAVLINK_PORT.
+
+    Rejects non-positive values: ``TIMEOUT=-5`` or ``MISSION=0``
+    would cause the heartbeat/capture loops to never enter
+    (``time.time() < deadline`` is immediately false), producing
+    a confusing "no HEARTBEAT" error rather than the real cause
+    (bad env var). Fail fast with a clear message instead.
+    """
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return default
     try:
-        return int(raw)
+        val = int(raw)
     except ValueError:
         die(f"env var {name}={raw!r} is not an integer")
+    if val < 1:
+        die(
+            f"env var {name}={val} must be a positive integer "
+            f"(1 or greater); negative / zero would cause the "
+            f"capture loop to skip without producing a useful "
+            f"error message."
+        )
+    return val
 
 
 __all__ = [

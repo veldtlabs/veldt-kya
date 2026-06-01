@@ -220,3 +220,114 @@ class TestImageOverride:
         assert "vendor/custom-gazebo:v1.0" in argv
         # And the default is NOT included
         assert "khancyr/ardupilot-gazebo:latest" not in argv
+
+
+# ── Shared module behaviour (env_int + preflight + atexit) ───────
+
+
+class TestEnvIntValidation:
+    """Day-4.5 follow-up review fix: env_int rejects non-positive
+    values rather than letting the capture loop silently skip."""
+
+    def test_negative_timeout_rejected(self):
+        import os
+        import subprocess
+        os.environ["TIMEOUT"] = "-5"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import sys; sys.path.insert(0, 'scripts'); "
+                 "from _sitl_common import env_int; "
+                 "env_int('TIMEOUT', 120)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0
+            assert "positive" in result.stderr.lower()
+        finally:
+            os.environ.pop("TIMEOUT", None)
+
+    def test_zero_mission_rejected(self):
+        import os
+        import subprocess
+        os.environ["MISSION"] = "0"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import sys; sys.path.insert(0, 'scripts'); "
+                 "from _sitl_common import env_int; "
+                 "env_int('MISSION', 30)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0
+            assert "positive" in result.stderr.lower()
+        finally:
+            os.environ.pop("MISSION", None)
+
+    def test_non_integer_rejected(self):
+        import os
+        import subprocess
+        os.environ["TIMEOUT"] = "abc"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import sys; sys.path.insert(0, 'scripts'); "
+                 "from _sitl_common import env_int; "
+                 "env_int('TIMEOUT', 120)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0
+            assert "not an integer" in result.stderr.lower()
+        finally:
+            os.environ.pop("TIMEOUT", None)
+
+    def test_positive_int_accepted(self):
+        """The happy path -- valid positive integer flows through."""
+        import os
+        os.environ["TIMEOUT"] = "180"
+        try:
+            sys.path.insert(0, str(_SCRIPT.parent))
+            from _sitl_common import env_int
+            assert env_int("TIMEOUT", 120) == 180
+        finally:
+            os.environ.pop("TIMEOUT", None)
+            try:
+                sys.path.remove(str(_SCRIPT.parent))
+            except ValueError:
+                pass
+
+
+class TestDockerDaemonPreflight:
+    """preflight() reports a friendly error when the Docker daemon
+    isn't reachable, rather than letting the bare TimeoutExpired
+    or non-zero exit code surface as a noisy traceback."""
+
+    def test_docker_info_failure_calls_die(self):
+        sys.path.insert(0, str(_SCRIPT.parent))
+        try:
+            # Force a clean re-import so the module's `subprocess`
+            # reference is the same object we're going to patch.
+            sys.modules.pop("_sitl_common", None)
+            from _sitl_common import preflight  # noqa: PLC0415
+
+            mock_result = MagicMock()
+            mock_result.returncode = 1
+            mock_result.stdout = b""
+            mock_result.stderr = b"Cannot connect to the Docker daemon"
+
+            from pathlib import Path
+            tmp = Path("/tmp/_sitl_preflight_probe.json")
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+
+            with patch("_sitl_common.shutil.which", return_value="/usr/bin/docker"), \
+                 patch("_sitl_common.subprocess.run", return_value=mock_result), \
+                 patch("builtins.__import__"):
+                # __import__ patch keeps pymavlink check happy
+                # without requiring the real package.
+                with pytest.raises(SystemExit) as exc_info:
+                    preflight(tmp)
+            assert exc_info.value.code == 1
+        finally:
+            try:
+                sys.path.remove(str(_SCRIPT.parent))
+            except ValueError:
+                pass
