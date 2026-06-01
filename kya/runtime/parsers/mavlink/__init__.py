@@ -9,8 +9,8 @@ file -- into KYA's canonical :class:`kya.runtime.AutonomyEvent`.
 The collector that feeds this parser is the user's responsibility
 (MAVLink router, sidecar reading the autopilot UART, sidekick
 reading rosbag, anything that produces a dict-shaped MAVLink
-message). Tests at ``tests/runtime/test_mavlink_parser.py``
-exercise parsing from in-memory dicts shaped like pymavlink's
+message). Tests at ``tests/test_mavlink_parser.py`` exercise
+parsing from in-memory dicts shaped like pymavlink's
 ``message.to_dict()``.
 
 Six message families are mapped today (the minimum to cover the
