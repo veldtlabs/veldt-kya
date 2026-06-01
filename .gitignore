@@ -94,3 +94,7 @@ examples/verify_0_1_2_live_pg*.py
 KYA_FEATURES_BUSINESS_VALUE.csv
 KYA_FEATURES_BUSINESS_VALUE*.csv
   .test_*_live_capture.json
+
+# MAVLink SITL / Gazebo capture-path comparison README -- kept
+# local only while the autonomy story is still pre-partner-meeting.
+scripts/README_mavlink_sitl.md
