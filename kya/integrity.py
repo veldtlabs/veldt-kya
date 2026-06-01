@@ -146,6 +146,32 @@ _PLC_FIELDS = (
     "compliance_scope",
 )
 
+# SCADA / supervisory-control-stack identity fields. SCADA sits a
+# layer above PLCs -- it's the operator-facing HMI + historian +
+# command-router stack (Citect, Wonderware, Ignition, etc.). The
+# governance questions are different from a PLC's: SCADA cares
+# about WHICH operator console issued a command, which tag
+# database mediates the read/write, and which protocols are
+# allowed on the wire. The PLC-side caches firmware + program;
+# the SCADA-side caches operator-console identity + supervised
+# PLC membership + protocol allowlist.
+_SCADA_FIELDS = (
+    "platform",           # "citect", "wonderware", "ignition", ...
+    "version",            # vendor product version
+    "operator_console_id", # which HMI / console (room, station id)
+    "historian_endpoint", # time-series DB the system writes to
+    "tag_database_hash",  # canonical hash of the SCADA tag
+                          # definitions (renaming or remapping a tag
+                          # is a governance event in industrial audit)
+    "supervised_plcs",    # sorted list of (kind, id) members this
+                          # SCADA controls -- moving a PLC under a
+                          # different SCADA flips the fingerprint
+    "approved_protocols", # allowlist (e.g. OPC-UA, Modbus-TCP,
+                          # EtherNet/IP); enabling an extra protocol
+                          # is a governance-meaningful change
+    "compliance_scope",
+)
+
 # Service-account / machine-identity fields. Lightweight today;
 # extend additively as IdP integration matures.
 _MACHINE_IDENTITY_FIELDS = (
@@ -189,6 +215,7 @@ _HASHED_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
     "sensor":            _AUTONOMY_ASSET_FIELDS,
     "actuator":          _AUTONOMY_ASSET_FIELDS,
     "plc":               _PLC_FIELDS,
+    "scada":             _SCADA_FIELDS,
     "lakehouse_job":     _HASHED_FIELDS,
     "autonomous_system": _AUTONOMOUS_SYSTEM_FIELDS,
 }

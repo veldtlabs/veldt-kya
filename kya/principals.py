@@ -100,7 +100,16 @@ from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_f
 #:     ``drone``             — UAS (ArduPilot, PX4, ...)
 #:     ``robot``             — physical robotic systems (industrial arms, AGVs)
 #:     ``vehicle``           — ground / surface / sub-surface autonomous vehicles
-#:     ``plc``               — programmable logic controllers (industrial automation)
+#:     ``plc``               — programmable logic controllers (individual
+#:                             devices on a factory floor or in field RTUs)
+#:     ``scada``             — supervisory control + data acquisition stacks
+#:                             (Citect / Wonderware / Ignition operator
+#:                             consoles, HMIs, historians). A SCADA system
+#:                             is the supervisory layer ABOVE one or more
+#:                             ``plc`` principals; modelled separately
+#:                             because the governance questions differ
+#:                             (operator-console identity, network command
+#:                             flow vs. PLC firmware + program drift)
 #:     ``controller``        — mission / fleet orchestrators that aren't AI agents
 #:     ``sensor``            — IoT sensors emitting trust-relevant signals
 #:     ``actuator``          — end effectors (servos, grippers, valves)
@@ -193,6 +202,7 @@ PRINCIPAL_KINDS: tuple[str, ...] = (
     "robot",
     "vehicle",
     "plc",
+    "scada",
     "controller",
     "sensor",
     "actuator",

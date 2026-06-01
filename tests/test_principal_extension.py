@@ -44,10 +44,61 @@ class TestPrincipalKindVocabulary:
 
     def test_autonomy_kinds_added(self):
         from kya.principals import PRINCIPAL_KINDS
-        for k in ("drone", "robot", "vehicle", "plc", "controller",
-                  "sensor", "actuator", "lakehouse_job",
+        for k in ("drone", "robot", "vehicle", "plc", "scada",
+                  "controller", "sensor", "actuator", "lakehouse_job",
                   "machine_identity", "autonomous_system"):
             assert k in PRINCIPAL_KINDS
+
+    def test_scada_distinct_from_plc(self):
+        """``scada`` and ``plc`` are modeled separately because they
+        answer different governance questions. PLC governance cares
+        about firmware + program drift; SCADA governance cares about
+        operator console identity, tag database, and supervised-PLC
+        membership. Their hashed-field sets MUST be distinct,
+        otherwise the partner-deck story is undercut by a
+        kind-collapsing fingerprint."""
+        from kya.integrity import _HASHED_FIELDS_BY_KIND
+        plc_fields = _HASHED_FIELDS_BY_KIND["plc"]
+        scada_fields = _HASHED_FIELDS_BY_KIND["scada"]
+        assert plc_fields != scada_fields
+        # SCADA-specific fields the operator console cares about
+        assert "operator_console_id" in scada_fields
+        assert "tag_database_hash" in scada_fields
+        assert "supervised_plcs" in scada_fields
+        # PLC-specific fields SCADA doesn't carry directly
+        assert "program_hash" in plc_fields
+        assert "io_map_hash" in plc_fields
+        assert "program_hash" not in scada_fields
+        assert "io_map_hash" not in scada_fields
+
+    def test_scada_definition_round_trip(self):
+        """A SCADA definition snapshotted + re-hashed yields the
+        same fingerprint -- the canonical surface is stable."""
+        from kya import snapshot_principal
+        from kya.integrity import canonical_hash, detect_drift
+        db = _fresh_db()
+        defn = {
+            "platform": "ignition",
+            "version": "8.1.45",
+            "operator_console_id": "plant_a_hmi_3",
+            "tag_database_hash": "sha256:abc123",
+            "supervised_plcs": [
+                {"kind": "plc", "id": "line_4_packaging"},
+                {"kind": "plc", "id": "line_5_palletizer"},
+            ],
+            "approved_protocols": ["opc-ua", "modbus-tcp"],
+        }
+        snapshot_principal(
+            db, tenant_id="t",
+            principal_kind="scada", principal_id="ignition_plant_a",
+            definition=defn,
+        )
+        declared = canonical_hash(defn, principal_kind="scada")
+        assert detect_drift(declared, defn, principal_kind="scada") is False
+        # Adding an unauthorised protocol fires drift (governance event)
+        rogue = {**defn, "approved_protocols": [
+            "opc-ua", "modbus-tcp", "dnp3"]}
+        assert detect_drift(declared, rogue, principal_kind="scada") is True
 
     def test_drone_principal_signal_round_trip(self):
         from kya.principals import (
