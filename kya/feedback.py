@@ -6,7 +6,9 @@ When a `governance_incident` is resolved with `severity=critical`, this
 module analyzes WHICH factors fired against the agent that produced the
 incident and proposes weight bumps for factors that SHOULD have caught
 it earlier (or contributed to it being missed). Suggestions are stored
-in `prov_schema.kya_weight_suggestions` for platform-admin review.
+in `kya_weight_suggestions` (in the configured KYA schema; defaults
+to the dialect's default — override via ``KYA_VERSIONS_SCHEMA``) for
+platform-admin review.
 
 Closed-loop intent
 ------------------
@@ -23,7 +25,7 @@ governance model. Human-in-the-loop is non-negotiable here.
 
 Storage
 -------
-prov_schema.kya_weight_suggestions:
+kya_weight_suggestions:
     id, tenant_id, incident_id, agent_key, scope, key,
     current_value, suggested_value, suggested_delta,
     rationale (text), evidence (jsonb), status, suggested_at,
@@ -62,30 +64,8 @@ text = _sa_text
 logger = logging.getLogger(__name__)
 
 
-_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_weight_suggestions (
-    id                SERIAL PRIMARY KEY,
-    tenant_id         UUID,                       -- NULL = platform-level suggestion
-    incident_id       INTEGER,                    -- FK to governance_incidents.id
-    agent_key         VARCHAR(100),
-    scope             VARCHAR(50) NOT NULL,
-    key               VARCHAR(100) NOT NULL,
-    current_value     INTEGER,
-    suggested_value   INTEGER NOT NULL,
-    suggested_delta   INTEGER NOT NULL,
-    rationale         TEXT,
-    evidence          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    status            VARCHAR(20) NOT NULL DEFAULT 'pending',
-    suggested_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    decided_at        TIMESTAMPTZ,
-    decided_by        UUID,
-    decision_notes    TEXT
-);
-"""
-_INDEX_DDL = """
-CREATE INDEX IF NOT EXISTS idx_kya_suggestions_tenant_status
-    ON prov_schema.kya_weight_suggestions (tenant_id, status, suggested_at DESC);
-"""
+# DDL is owned by `kya._legacy_tables`; the schema qualifier and
+# dialect-specific types are handled centrally there.
 
 
 def ensure_suggestions_table(db) -> None:
@@ -160,7 +140,7 @@ _INCIDENT_TO_FACTORS = {
 def propose_from_incident(db, incident_row: dict) -> list[dict]:
     """Generate weight-tightening suggestions from a resolved incident.
 
-    `incident_row` is the dict-shape of a `prov_schema.governance_incidents`
+    `incident_row` is the dict-shape of a `governance_incidents`
     row including resolution context. Returns the list of suggestion dicts
     persisted to `kya_weight_suggestions` (status='pending').
 
@@ -207,7 +187,7 @@ def propose_from_incident(db, incident_row: dict) -> list[dict]:
 
         # Don't propose duplicate pending suggestions for the same key.
         # SA Core (not raw text) so it works cross-dialect — the raw
-        # version used PG-specific `::uuid` casts and `prov_schema.`
+        # version used PG-specific `::uuid` casts and a literal schema
         # prefix that don't translate on SQLite/MySQL.
         from sqlalchemy import and_
         from sqlalchemy import select as sa_select
@@ -353,7 +333,7 @@ def _set_decision(
     notes: str | None,
 ) -> dict:
     """SA Core update with RETURNING — cross-dialect (raw text would
-    fail on SQLite because of the prov_schema. prefix)."""
+    fail on SQLite because of the schema prefix)."""
     from datetime import datetime, timezone
 
     from sqlalchemy import update as sa_update

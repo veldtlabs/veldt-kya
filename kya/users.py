@@ -29,7 +29,9 @@ Starts at 50. Bounded 0-100.
 
 Storage
 -------
-prov_schema.kya_user_trust — current state per (tenant_id, user_id):
+kya_user_trust (in the configured KYA schema; defaults to the
+dialect's default — override via ``KYA_VERSIONS_SCHEMA``) —
+current state per (tenant_id, user_id):
   trust_score (int 0-100)
   signal_counts (jsonb) — all-time per-signal counters
   last_signal_at, last_clean_at — for time-decay
@@ -160,25 +162,8 @@ class UserTrust:
 
 # ── DDL ──────────────────────────────────────────────────────────────────
 
-_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_user_trust (
-    id              SERIAL PRIMARY KEY,
-    tenant_id       UUID NOT NULL,
-    user_id         UUID NOT NULL,
-    trust_score     INTEGER NOT NULL DEFAULT 50,
-    signal_counts   JSONB   NOT NULL DEFAULT '{}'::jsonb,
-    last_signal_at  TIMESTAMPTZ,
-    last_clean_at   TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, user_id)
-);
-"""
-
-_INDEX_DDL = """
-CREATE INDEX IF NOT EXISTS idx_kya_user_trust_tenant_score
-    ON prov_schema.kya_user_trust (tenant_id, trust_score);
-"""
+# DDL is owned by `kya._legacy_tables`; the schema qualifier and
+# dialect-specific types are handled centrally there.
 
 
 def ensure_user_trust_table(db) -> None:
@@ -190,12 +175,12 @@ def ensure_user_trust_table(db) -> None:
     """
     from ._legacy_tables import create_legacy_tables, kya_user_trust
     from ._migrations import apply_migrations
-
+    from ._portable import qual_for_raw_sql
     create_legacy_tables(db, [kya_user_trust])
     # Phase 4b: additive ALTERs for existing deployments. IF NOT
     # EXISTS guards on every statement so re-runs are no-ops.
     dialect = db.get_bind().dialect.name
-    qual = "prov_schema." if dialect == "postgresql" else ""
+    qual = qual_for_raw_sql(db)
     table = f"{qual}kya_user_trust"
     migrations = [
         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
@@ -344,9 +329,12 @@ def _upsert_with_delta(
     dialect = dialect_of(db)
 
     if dialect == "postgresql":
+        from ._portable import qual_for_raw_sql
+        qual = qual_for_raw_sql(db)
+        table_ref = f"{qual}kya_user_trust"
         result = db.execute(
             text(f"""
-                INSERT INTO prov_schema.kya_user_trust
+                INSERT INTO {table_ref}
                     (id, tenant_id, user_id, trust_score, signal_counts,
                      {ts_col}, updated_at)
                 VALUES (
@@ -358,13 +346,13 @@ def _upsert_with_delta(
                 )
                 ON CONFLICT (tenant_id, user_id) DO UPDATE
                 SET trust_score = GREATEST({MIN_TRUST}, LEAST({MAX_TRUST},
-                                           prov_schema.kya_user_trust.trust_score + :delta)),
+                                           {table_ref}.trust_score + :delta)),
                     signal_counts =
                         jsonb_set(
-                            COALESCE(prov_schema.kya_user_trust.signal_counts, '{{}}'::jsonb),
+                            COALESCE({table_ref}.signal_counts, '{{}}'::jsonb),
                             ARRAY[:kind],
                             to_jsonb(COALESCE(
-                                (prov_schema.kya_user_trust.signal_counts->>:kind)::int, 0
+                                ({table_ref}.signal_counts->>:kind)::int, 0
                             ) + 1)
                         ),
                     {ts_col} = now(),
@@ -378,12 +366,12 @@ def _upsert_with_delta(
 
     # Non-PG: read-modify-write.
     # Schema resolution must honor schema_translate_map — Table.schema
-    # alone returns "prov_schema" even on dialects where the session's
-    # execution_options have remapped it to None. Raw text() doesn't
-    # apply that translation, so we apply it manually here. Mirrors the
-    # same pattern in _dialect_helpers._duckdb_upsert_raw. Without this
-    # fix, record_user_signal on MySQL/SQLite/DuckDB tries to query
-    # `prov_schema.kya_user_trust` which doesn't exist on those backends.
+    # alone returns the configured schema even on dialects where the
+    # session's execution_options have remapped it to None. Raw text()
+    # doesn't apply that translation, so we apply it manually here.
+    # Mirrors the same pattern in _dialect_helpers._duckdb_upsert_raw.
+    # Without this fix, record_user_signal on MySQL/SQLite/DuckDB tries
+    # to query the qualified table name which doesn't exist on those backends.
     schema = kya_user_trust.schema
     try:
         bind = db.get_bind() if hasattr(db, "get_bind") else db.bind

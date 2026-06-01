@@ -56,10 +56,9 @@ def db(request):
                         "kya_delegation_violations", "kya_invocations",
                         "agent_versions"):
                 conn.execute(text(
-                    f"DROP TABLE IF EXISTS prov_schema.{tbl}"))
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE"))
     elif label == "mysql":
-        eng = create_engine(url).execution_options(
-            schema_translate_map={"prov_schema": None})
+        eng = create_engine(url)
         with eng.begin() as conn:
             for tbl in ("kya_delegation_policy_overrides",
                         "kya_delegation_violations", "kya_invocations",
@@ -69,8 +68,7 @@ def db(request):
                 except Exception:
                     pass
     else:
-        eng = create_engine(url).execution_options(
-            schema_translate_map={"prov_schema": None})
+        eng = create_engine(url)
     session = sessionmaker(bind=eng)()
     init_storage(session)
     yield session
@@ -350,7 +348,7 @@ def test_per_kind_override_routes_violations_to_different_modes(db,
     # in block mode; tool_widening in observe. Use the dialect-aware
     # schema prefix so this query works on PG (prov_schema.) AND on
     # sqlite/duckdb/mysql (default ns).
-    _sp = ("prov_schema."
+    _sp = (""
            if db.get_bind().dialect.name == "postgresql" else "")
     rows = db.execute(text(
         f"SELECT violation_kind, mode_active, blocked "

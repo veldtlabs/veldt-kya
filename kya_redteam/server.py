@@ -327,11 +327,13 @@ def create_app() -> FastAPI:
         from db.database import SessionLocal  # type: ignore
         from sqlalchemy import text as _sa_text
 
+        from kya._portable import qual_for_raw_sql
         from kya_redteam import request_cancel
         with SessionLocal() as db:
+            qual = qual_for_raw_sql(db)
             existing = db.execute(
                 _sa_text(
-                    "SELECT tenant_id FROM prov_schema.kya_redteam_runs "
+                    f"SELECT tenant_id FROM {qual}kya_redteam_runs "
                     "WHERE run_id = (:rid)::uuid"
                 ),
                 {"rid": run_id},
@@ -351,10 +353,13 @@ def create_app() -> FastAPI:
         response."""
         from db.database import SessionLocal  # type: ignore
         from sqlalchemy import text as _sa_text
+
+        from kya._portable import qual_for_raw_sql
         with SessionLocal() as db:
+            qual = qual_for_raw_sql(db)
             row = db.execute(
                 _sa_text(
-                    "SELECT tenant_id FROM prov_schema.kya_redteam_runs "
+                    f"SELECT tenant_id FROM {qual}kya_redteam_runs "
                     "WHERE run_id = (:rid)::uuid"
                 ),
                 {"rid": run_id},

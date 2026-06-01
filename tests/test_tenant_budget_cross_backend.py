@@ -62,13 +62,9 @@ def _duckdb_available() -> bool:
 def db(request):
     """Yield a session bound to a fresh DB on the requested backend."""
     if request.param == "sqlite":
-        eng = create_engine("sqlite:///:memory:").execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        eng = create_engine("sqlite:///:memory:")
     elif request.param == "duckdb":
-        eng = create_engine("duckdb:///:memory:").execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        eng = create_engine("duckdb:///:memory:")
     elif request.param == "pg":
         from sqlalchemy import text
         eng = create_engine(os.environ["KYA_TEST_PG_URL"])
@@ -82,13 +78,11 @@ def db(request):
                 # preload) error on CASCADE walks. Tables don't depend
                 # on each other so explicit non-cascading drop is fine.
                 conn.execute(text(
-                    f"DROP TABLE IF EXISTS prov_schema.{tbl}"
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE"
                 ))
     else:  # mysql
         from sqlalchemy import text
-        eng = create_engine(os.environ["KYA_TEST_MYSQL_URL"]).execution_options(
-            schema_translate_map={"prov_schema": None}
-        )
+        eng = create_engine(os.environ["KYA_TEST_MYSQL_URL"])
         # MySQL has no schemas in the PG sense — truncate the three
         # tables at fixture start to isolate each test.
         with eng.begin() as conn:
@@ -129,7 +123,7 @@ def test_ensure_tables_creates_three_tables(db):
     # PG keeps tables in prov_schema; other dialects strip via the
     # fixture's schema_translate_map and use the default namespace.
     dialect = db.get_bind().dialect.name
-    schema = "prov_schema" if dialect == "postgresql" else None
+    schema = None  # v0.1.6: tables go to dialect default (public on PG)
     table_names = insp.get_table_names(schema=schema)
     assert "kya_tenant_cost_budgets" in table_names
     assert "kya_budget_changes" in table_names

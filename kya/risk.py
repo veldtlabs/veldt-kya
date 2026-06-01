@@ -259,7 +259,18 @@ def score_agent(
         except Exception:
             # If the table doesn't exist yet or DB hiccups, fall back to
             # in-process defaults — scoring must never break.
-            pass
+            #
+            # CRITICAL: roll back the session so PG doesn't leave us in
+            # an aborted-transaction state. Without this, every
+            # subsequent DB op in the same session fails with
+            # `psycopg2.errors.InFailedSqlTransaction` until manual
+            # rollback -- which a caller assembling a regulator pack
+            # (score_agent + record_invocation + freeze_snapshot in
+            # one Session) has no idea to do.
+            try:
+                db.rollback()
+            except Exception:
+                pass
     # Defensive coercion — a caller may pass tools as a string by mistake.
     # Iterate-as-list-of-strings; reject non-iterables.
     raw_tools = agent_def.get("tools") or []

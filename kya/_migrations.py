@@ -9,17 +9,18 @@ every table follows the same idempotent shape.
 Usage in any ensure_*_table helper:
 
     from ._migrations import apply_migrations
-
-    _MIGRATIONS = [
-        "ALTER TABLE prov_schema.my_table "
-        "  ADD COLUMN IF NOT EXISTS new_col TEXT;",
-        "CREATE INDEX IF NOT EXISTS idx_my_table_new "
-        "  ON prov_schema.my_table (new_col);",
-    ]
+    from ._portable import qual_for_raw_sql
 
     def ensure_my_table(db):
         db.execute(text(_TABLE_DDL))
-        apply_migrations(db, "my_table", _MIGRATIONS)
+        qual = qual_for_raw_sql(db)
+        migrations = [
+            f"ALTER TABLE {qual}my_table "
+            f"  ADD COLUMN IF NOT EXISTS new_col TEXT;",
+            f"CREATE INDEX IF NOT EXISTS idx_my_table_new "
+            f"  ON {qual}my_table (new_col);",
+        ]
+        apply_migrations(db, "my_table", migrations)
         db.commit()
 
 Every statement in `migrations` MUST be safely re-runnable (IF NOT

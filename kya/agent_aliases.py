@@ -44,23 +44,8 @@ from ._migrations import apply_migrations
 logger = logging.getLogger(__name__)
 
 
-_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_agent_aliases (
-    id                   SERIAL PRIMARY KEY,
-    tenant_id            UUID NOT NULL,
-    alias                TEXT NOT NULL,
-    canonical_agent_key  VARCHAR(50) NOT NULL,
-    note                 TEXT,
-    created_by           UUID,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, alias)
-);
-"""
-
-_INDEX_DDL = """
-CREATE INDEX IF NOT EXISTS idx_kya_agent_aliases_canonical
-    ON prov_schema.kya_agent_aliases (tenant_id, canonical_agent_key);
-"""
+# DDL is owned by `kya._legacy_tables` so the schema qualifier and
+# dialect-specific types are handled centrally (see create_legacy_tables()).
 
 _MIGRATIONS = [
     # additive evolution slot
@@ -104,8 +89,8 @@ def resolve_alias(db, tenant_id: str, alias: str) -> str | None:
         return None
     try:
         ensure_table(db)
-        # SA Core for cross-dialect (raw text with prov_schema. + ::uuid
-        # is PG-only).
+        # SA Core for cross-dialect (raw text with a schema prefix +
+        # ::uuid is PG-only).
         from sqlalchemy import and_
         from sqlalchemy import select as sa_select
 
@@ -213,9 +198,11 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
                 f"is {dialect!r}. Standalone SDK deployments don't "
                 f"need this maintenance migration.",
         }
+    from ._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     aliases = db.execute(
         text(
-            "SELECT alias, canonical_agent_key FROM prov_schema.kya_agent_aliases "
+            f"SELECT alias, canonical_agent_key FROM {qual}kya_agent_aliases "
             "WHERE tenant_id = (:tid)::uuid"
         ),
         {"tid": tenant_id},
@@ -228,7 +215,7 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
         src = db.execute(
             text(
                 "SELECT trust_score, signal_counts, last_signal_at, principal_kind "
-                "FROM prov_schema.kya_principal_trust "
+                f"FROM {qual}kya_principal_trust "
                 "WHERE tenant_id = (:tid)::uuid AND principal_id = :pid"
             ),
             {"tid": tenant_id, "pid": alias},
@@ -239,7 +226,7 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
         dst = db.execute(
             text(
                 "SELECT trust_score, signal_counts, last_signal_at "
-                "FROM prov_schema.kya_principal_trust "
+                f"FROM {qual}kya_principal_trust "
                 "WHERE tenant_id = (:tid)::uuid AND principal_id = :pid"
             ),
             {"tid": tenant_id, "pid": canonical},
@@ -263,7 +250,7 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
         if dst:
             db.execute(
                 text(
-                    "UPDATE prov_schema.kya_principal_trust "
+                    f"UPDATE {qual}kya_principal_trust "
                     "SET trust_score = :ts, signal_counts = (:sc)::jsonb, "
                     "    last_signal_at = :ls, updated_at = now() "
                     "WHERE tenant_id = (:tid)::uuid AND principal_id = :pid"
@@ -279,7 +266,7 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
         else:
             db.execute(
                 text(
-                    "INSERT INTO prov_schema.kya_principal_trust "
+                    f"INSERT INTO {qual}kya_principal_trust "
                     "  (tenant_id, principal_kind, principal_id, trust_score, "
                     "   signal_counts, last_signal_at) "
                     "VALUES ((:tid)::uuid, :kind, :pid, :ts, (:sc)::jsonb, :ls)"
@@ -296,7 +283,7 @@ def migrate_principals_for_aliases(db, tenant_id: str) -> dict:
         # Drop the alias-keyed row
         db.execute(
             text(
-                "DELETE FROM prov_schema.kya_principal_trust "
+                f"DELETE FROM {qual}kya_principal_trust "
                 "WHERE tenant_id = (:tid)::uuid AND principal_id = :pid"
             ),
             {"tid": tenant_id, "pid": alias},

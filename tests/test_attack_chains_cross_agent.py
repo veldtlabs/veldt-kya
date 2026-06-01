@@ -102,8 +102,7 @@ def _engine(rule):
 def sqlite_db():
     """SQLite in-memory session for the helper test (needs real
     kya_invocations table)."""
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None})
+    eng = create_engine("sqlite:///:memory:")
     session = sessionmaker(bind=eng)()
     kya.init_storage(session)
     yield session

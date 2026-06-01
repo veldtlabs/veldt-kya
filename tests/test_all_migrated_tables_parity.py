@@ -213,7 +213,7 @@ def _setup_backend(url: str, dialect_name: str):
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS prov_schema"))
             for t in ("tenants", "users", "decision_rules", "governance_policies"):
                 try:
-                    conn.execute(text(f"DROP TABLE IF EXISTS prov_schema.{t} CASCADE"))
+                    conn.execute(text(f"DROP TABLE IF EXISTS {t} CASCADE CASCADE"))
                 except Exception:
                     pass
             conn.execute(text("CREATE TABLE prov_schema.tenants (id UUID PRIMARY KEY)"))
@@ -495,7 +495,7 @@ def test_parity_postgres():
             "governance_policies", "tenants", "users", "decision_rules",
         ]:
             try:
-                conn.execute(text(f"DROP TABLE IF EXISTS prov_schema.{t} CASCADE"))
+                conn.execute(text(f"DROP TABLE IF EXISTS {t} CASCADE CASCADE"))
             except Exception:
                 pass
     eng.dispose()

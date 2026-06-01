@@ -410,7 +410,7 @@ def test_governance_tables_postgres():
             "tenants",
         ):
             try:
-                conn.execute(text(f"DROP TABLE IF EXISTS prov_schema.{t} CASCADE"))
+                conn.execute(text(f"DROP TABLE IF EXISTS {t} CASCADE CASCADE"))
             except Exception:
                 pass
         conn.execute(text("CREATE TABLE prov_schema.tenants (id UUID PRIMARY KEY)"))

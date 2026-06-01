@@ -86,8 +86,12 @@ def tier_allows_orchestrator(tenant_tier: str, orchestrator_kind: str) -> bool:
 
 # ── DDL ─────────────────────────────────────────────────────────────
 
-_CAMPAIGNS_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_campaigns (
+# NOTE: DDL strings below are templates; the live ensure_tables() path
+# uses portable Table objects from kya._legacy_tables. These string-based
+# DDL templates are kept for reference / future raw-SQL fallback and use
+# the {prefix} placeholder so they remain dialect-aware.
+_CAMPAIGNS_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {prefix}kya_redteam_campaigns (
     id                  SERIAL PRIMARY KEY,
     tenant_id           UUID NOT NULL,
     agent_key           VARCHAR(50) NOT NULL,
@@ -114,16 +118,16 @@ CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_campaigns (
 );
 """
 
-_CAMPAIGNS_IDX = """
+_CAMPAIGNS_IDX_TEMPLATE = """
 CREATE INDEX IF NOT EXISTS idx_kya_redteam_campaigns_tenant_agent
-    ON prov_schema.kya_redteam_campaigns (tenant_id, agent_key);
+    ON {prefix}kya_redteam_campaigns (tenant_id, agent_key);
 """
 
-_FINDINGS_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_findings (
+_FINDINGS_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {prefix}kya_redteam_findings (
     id                  SERIAL PRIMARY KEY,
     tenant_id           UUID NOT NULL,
-    campaign_id         INT REFERENCES prov_schema.kya_redteam_campaigns(id) ON DELETE SET NULL,
+    campaign_id         INT REFERENCES {prefix}kya_redteam_campaigns(id) ON DELETE SET NULL,
     run_id              UUID NOT NULL,
     agent_key           VARCHAR(50) NOT NULL,
     orchestrator        TEXT,
@@ -142,15 +146,15 @@ CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_findings (
 );
 """
 
-_FINDINGS_IDX = """
+_FINDINGS_IDX_TEMPLATE = """
 CREATE INDEX IF NOT EXISTS idx_kya_redteam_findings_run
-    ON prov_schema.kya_redteam_findings (tenant_id, agent_key, run_id);
+    ON {prefix}kya_redteam_findings (tenant_id, agent_key, run_id);
 CREATE INDEX IF NOT EXISTS idx_kya_redteam_findings_severity
-    ON prov_schema.kya_redteam_findings (tenant_id, severity);
+    ON {prefix}kya_redteam_findings (tenant_id, severity);
 """
 
-_TENANT_POLICY_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_tenant_policy (
+_TENANT_POLICY_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {prefix}kya_redteam_tenant_policy (
     tenant_id              UUID PRIMARY KEY,
     max_auto_incident_mode TEXT NOT NULL DEFAULT 'never',
     budget_monthly_prompts INT  NOT NULL DEFAULT 10000,
@@ -164,14 +168,24 @@ CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_tenant_policy (
 
 _MIGRATIONS_CAMPAIGNS: list = []
 _MIGRATIONS_FINDINGS: list = []
-_MIGRATIONS_POLICY = [
-    # Phase 3.5.A — tenant-level attacker-LLM override + token cap.
-    # Both nullable so missing values fall back to env defaults.
-    "ALTER TABLE prov_schema.kya_redteam_tenant_policy "
+# Phase 3.5.A — tenant-level attacker-LLM override + token cap.
+# Both nullable so missing values fall back to env defaults.
+# Built as templates so the schema qualifier is dialect-aware at call
+# time; materialized via _policy_migrations(db).
+_MIGRATIONS_POLICY_TEMPLATES = [
+    "ALTER TABLE {prefix}kya_redteam_tenant_policy "
     "  ADD COLUMN IF NOT EXISTS attacker_llm_model TEXT;",
-    "ALTER TABLE prov_schema.kya_redteam_tenant_policy "
+    "ALTER TABLE {prefix}kya_redteam_tenant_policy "
     "  ADD COLUMN IF NOT EXISTS attacker_tokens_monthly_cap BIGINT;",
 ]
+
+
+def _policy_migrations(db) -> list[str]:
+    """Materialize the policy migration templates with the runtime
+    KYA-schema qualifier. Dialect-aware via qual_for_raw_sql()."""
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
+    return [m.format(prefix=qual) for m in _MIGRATIONS_POLICY_TEMPLATES]
 
 _ENSURED_ENGINES: set[int] = set()
 
@@ -205,7 +219,7 @@ def ensure_tables(db) -> None:
         )
         apply_migrations(db, "kya_redteam_campaigns", _MIGRATIONS_CAMPAIGNS)
         apply_migrations(db, "kya_redteam_findings", _MIGRATIONS_FINDINGS)
-        apply_migrations(db, "kya_redteam_tenant_policy", _MIGRATIONS_POLICY)
+        apply_migrations(db, "kya_redteam_tenant_policy", _policy_migrations(db))
         db.commit()
         _ENSURED_ENGINES.add(engine_key)
     except Exception as exc:
@@ -338,11 +352,13 @@ _SELECT_CAMPAIGN_COLS = (
 
 def list_campaigns(db, tenant_id: str, agent_key: str | None = None) -> list[dict]:
     ensure_tables(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     if agent_key:
         rows = db.execute(
             text(
                 f"SELECT {_SELECT_CAMPAIGN_COLS} "
-                "FROM prov_schema.kya_redteam_campaigns "
+                f"FROM {qual}kya_redteam_campaigns "
                 "WHERE tenant_id = (:tid)::uuid AND agent_key = :ak "
                 "ORDER BY id DESC"
             ),
@@ -352,7 +368,7 @@ def list_campaigns(db, tenant_id: str, agent_key: str | None = None) -> list[dic
         rows = db.execute(
             text(
                 f"SELECT {_SELECT_CAMPAIGN_COLS} "
-                "FROM prov_schema.kya_redteam_campaigns "
+                f"FROM {qual}kya_redteam_campaigns "
                 "WHERE tenant_id = (:tid)::uuid "
                 "ORDER BY id DESC"
             ),
@@ -363,10 +379,12 @@ def list_campaigns(db, tenant_id: str, agent_key: str | None = None) -> list[dic
 
 def get_campaign(db, tenant_id: str, campaign_id: int) -> dict | None:
     ensure_tables(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     row = db.execute(
         text(
             f"SELECT {_SELECT_CAMPAIGN_COLS} "
-            "FROM prov_schema.kya_redteam_campaigns "
+            f"FROM {qual}kya_redteam_campaigns "
             "WHERE tenant_id = (:tid)::uuid AND id = :cid"
         ),
         {"tid": tenant_id, "cid": campaign_id},
@@ -406,9 +424,11 @@ def update_campaign(db, tenant_id: str, campaign_id: int, **patch) -> dict | Non
     if not set_clauses:
         return get_campaign(db, tenant_id, campaign_id)
     set_clauses.append("updated_at = now()")
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     db.execute(
         text(
-            "UPDATE prov_schema.kya_redteam_campaigns "
+            f"UPDATE {qual}kya_redteam_campaigns "
             f"SET {', '.join(set_clauses)} "
             "WHERE tenant_id = (:tid)::uuid AND id = :cid"
         ),
@@ -425,9 +445,11 @@ def delete_campaign(db, tenant_id: str, campaign_id: int) -> bool:
     originating campaign definition).
     """
     ensure_tables(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     result = db.execute(
         text(
-            "DELETE FROM prov_schema.kya_redteam_campaigns "
+            f"DELETE FROM {qual}kya_redteam_campaigns "
             "WHERE tenant_id = (:tid)::uuid AND id = :cid"
         ),
         {"tid": tenant_id, "cid": campaign_id},
@@ -584,10 +606,12 @@ def _row_to_finding(r) -> dict:
 
 def get_finding(db, tenant_id: str, finding_id: int) -> dict | None:
     ensure_tables(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     row = db.execute(
         text(
             f"SELECT {_SELECT_FINDING_COLS} "
-            "FROM prov_schema.kya_redteam_findings "
+            f"FROM {qual}kya_redteam_findings "
             "WHERE tenant_id = (:tid)::uuid AND id = :fid"
         ),
         {"tid": tenant_id, "fid": finding_id},
@@ -619,10 +643,12 @@ def list_findings(
     if severity:
         clauses.append("severity = :sev")
         params["sev"] = severity
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     rows = db.execute(
         text(
             f"SELECT {_SELECT_FINDING_COLS} "
-            "FROM prov_schema.kya_redteam_findings "
+            f"FROM {qual}kya_redteam_findings "
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY id DESC LIMIT :lim"
         ),

@@ -30,8 +30,7 @@ TENANT = "00000000-0000-0000-0000-0000000000aa"
 
 @pytest.fixture
 def db():
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None})
+    eng = create_engine("sqlite:///:memory:")
     session = sessionmaker(bind=eng)()
     init_storage(session)
     yield session
@@ -448,7 +447,7 @@ def test_cross_backend_smoke_runs_against_postgres():
     with eng.begin() as conn:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS prov_schema"))
         conn.execute(text(
-            "DROP TABLE IF EXISTS prov_schema.kya_delegation_violations"))
+            "DROP TABLE IF EXISTS kya_delegation_violations CASCADE"))
     db = sessionmaker(bind=eng)()
     init_storage(db)
     try:
@@ -458,7 +457,7 @@ def test_cross_backend_smoke_runs_against_postgres():
         # raw text() statements must use nextval() explicitly).
         for days, parent in ((1, "P_pg_active"), (45, "P_pg_stable")):
             db.execute(text(
-                "INSERT INTO prov_schema.kya_delegation_violations "
+                "INSERT INTO kya_delegation_violations "
                 "(id, tenant_id, sub_invocation_id, parent_invocation_id, "
                 " parent_agent_key, sub_agent_key, violation_kind, "
                 " detail, mode_active, blocked, created_at) "

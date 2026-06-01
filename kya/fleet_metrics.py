@@ -347,15 +347,22 @@ def recompute_fleet_gauges(db) -> dict:
     Safe to call from any worker; the metric library handles cross-
     worker convergence via multiprocess_mode='mostrecent'.
     """
+    from ._portable import qual_for_raw_sql, qual_for_raw_sql_decisions
+
     init_metrics()
     summary = {"ok": True}
+    # `qual` for KYA tables (kya_redteam_*); `dq` for decisions
+    # tables (tenants, decision_approvals, governance_incidents,
+    # custom_agents) which live in the veldt-decisions schema.
+    qual = qual_for_raw_sql(db)
+    dq = qual_for_raw_sql_decisions(db)
 
     # tenants_total{status}
     if TENANTS_TOTAL is not None:
         try:
             rows = db.execute(
                 text(
-                    "SELECT tenant_status, COUNT(*) FROM prov_schema.tenants GROUP BY tenant_status"
+                    f"SELECT tenant_status, COUNT(*) FROM {dq}tenants GROUP BY tenant_status"
                 )
             ).fetchall()
             for status, n in rows:
@@ -373,7 +380,7 @@ def recompute_fleet_gauges(db) -> dict:
             rows = db.execute(
                 text(
                     "SELECT tenant_id, COUNT(*) "
-                    "FROM prov_schema.decision_approvals "
+                    f"FROM {dq}decision_approvals "
                     "WHERE status = 'pending_approval' "
                     "GROUP BY tenant_id"
                 )
@@ -392,7 +399,7 @@ def recompute_fleet_gauges(db) -> dict:
             rows = db.execute(
                 text(
                     "SELECT tenant_id, severity, COUNT(*) "
-                    "FROM prov_schema.governance_incidents "
+                    f"FROM {dq}governance_incidents "
                     "WHERE resolution_status IN ('open', 'investigating') "
                     "GROUP BY tenant_id, severity"
                 )
@@ -414,7 +421,7 @@ def recompute_fleet_gauges(db) -> dict:
             rows = db.execute(
                 text(
                     "SELECT tenant_id, verified_status, COUNT(*) "
-                    "FROM prov_schema.kya_redteam_targets "
+                    f"FROM {qual}kya_redteam_targets "
                     "GROUP BY tenant_id, verified_status"
                 )
             ).fetchall()
@@ -435,7 +442,7 @@ def recompute_fleet_gauges(db) -> dict:
             rows = db.execute(
                 text(
                     "SELECT tenant_id, COUNT(*) "
-                    "FROM prov_schema.kya_redteam_runs "
+                    f"FROM {qual}kya_redteam_runs "
                     "WHERE status IN ('queued', 'running') "
                     "GROUP BY tenant_id"
                 )
@@ -457,7 +464,7 @@ def recompute_fleet_gauges(db) -> dict:
                     # Queue depth = runs in 'queued' state (not yet picked up).
                     queued_row = db.execute(
                         text(
-                            "SELECT COUNT(*) FROM prov_schema.kya_redteam_runs "
+                            f"SELECT COUNT(*) FROM {qual}kya_redteam_runs "
                             "WHERE status = 'queued'"
                         )
                     ).fetchone()
@@ -477,7 +484,7 @@ def recompute_fleet_gauges(db) -> dict:
                     "SELECT tenant_id, "
                     "       jsonb_array_elements_text(COALESCE(definition->'compliance_scope', '[]'::jsonb)) AS regime, "
                     "       COUNT(*) "
-                    "FROM prov_schema.custom_agents "
+                    f"FROM {dq}custom_agents "
                     "WHERE definition IS NOT NULL "
                     "GROUP BY tenant_id, regime"
                 )

@@ -42,7 +42,8 @@ majority.
 Cross-backend portability
 -------------------------
 Uses only ANSI SQL plus the schema-prefix convention shared with the
-rest of the package (`prov_schema.` on PG, default ns elsewhere).
+rest of the package (the configured KYA schema on PG, default ns
+elsewhere — controlled by ``KYA_VERSIONS_SCHEMA``).
 The aggregation step is done in Python on the already-narrow result
 set (filtered to the longer of window_days vs stable_days_to_promote)
 so dialect-specific date arithmetic is avoided.
@@ -92,9 +93,8 @@ DEFAULT_SPIKE_THRESHOLD = 100
 
 def _schema_prefix(db) -> str:
     try:
-        return ("prov_schema."
-                if db.get_bind().dialect.name == "postgresql"
-                else "")
+        from ._portable import qual_for_raw_sql
+        return qual_for_raw_sql(db)
     except Exception:
         return ""
 

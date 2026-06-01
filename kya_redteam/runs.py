@@ -66,8 +66,12 @@ _STALE_S = 300  # 5 minutes — heartbeats older than this mean the worker is de
 
 # ── DDL ─────────────────────────────────────────────────────────────
 
-_RUNS_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_runs (
+# NOTE: DDL templates below are reference-only; the live ensure_table()
+# path uses portable Table objects from kya._legacy_tables. The {prefix}
+# placeholder is filled at call-time via qual_for_raw_sql() so the DDL
+# is dialect-aware if anyone resurrects the raw-SQL path.
+_RUNS_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {prefix}kya_redteam_runs (
     id                      SERIAL PRIMARY KEY,
     tenant_id               UUID NOT NULL,
     run_id                  UUID NOT NULL UNIQUE,
@@ -85,7 +89,7 @@ CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_runs (
     last_heartbeat_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     prompts_sent            INT NOT NULL DEFAULT 0,
     findings_count          INT NOT NULL DEFAULT 0,
-    severity_buckets        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    severity_buckets        JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     attacker_tokens_estimated INT NOT NULL DEFAULT 0,
     target_errors           INT NOT NULL DEFAULT 0,
     posted_event_ids        JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -97,13 +101,13 @@ CREATE TABLE IF NOT EXISTS prov_schema.kya_redteam_runs (
 );
 """
 
-_RUNS_IDX = """
+_RUNS_IDX_TEMPLATE = """
 CREATE INDEX IF NOT EXISTS idx_kya_redteam_runs_tenant_agent
-    ON prov_schema.kya_redteam_runs (tenant_id, agent_key);
+    ON {prefix}kya_redteam_runs (tenant_id, agent_key);
 CREATE INDEX IF NOT EXISTS idx_kya_redteam_runs_campaign
-    ON prov_schema.kya_redteam_runs (tenant_id, campaign_id);
+    ON {prefix}kya_redteam_runs (tenant_id, campaign_id);
 CREATE INDEX IF NOT EXISTS idx_kya_redteam_runs_status
-    ON prov_schema.kya_redteam_runs (tenant_id, status);
+    ON {prefix}kya_redteam_runs (tenant_id, status);
 """
 
 _MIGRATIONS: list = []
@@ -216,9 +220,11 @@ def create_run(
 
 def set_running(db, run_id: str) -> None:
     """Transition queued->running. Idempotent."""
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     db.execute(
         text(
-            "UPDATE prov_schema.kya_redteam_runs "
+            f"UPDATE {qual}kya_redteam_runs "
             "SET status = 'running', last_heartbeat_at = now() "
             "WHERE run_id = (:rid)::uuid AND status IN ('queued','running')"
         ),
@@ -248,10 +254,12 @@ def heartbeat(db, state: HeartbeatState) -> None:
     if (now - state.last_hb_at) < _HEARTBEAT_MIN_INTERVAL_S:
         return
     state.last_hb_at = now
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     try:
         db.execute(
             text(
-                "UPDATE prov_schema.kya_redteam_runs "
+                f"UPDATE {qual}kya_redteam_runs "
                 "SET last_heartbeat_at = now() "
                 "WHERE run_id = (:rid)::uuid"
             ),
@@ -307,10 +315,12 @@ def update_run_progress(
         params["pe"] = _json.dumps([posted_event_id])
     if len(set_clauses) == 1:
         return  # only the heartbeat clause; nothing to update
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     try:
         db.execute(
             text(
-                "UPDATE prov_schema.kya_redteam_runs "
+                f"UPDATE {qual}kya_redteam_runs "
                 f"SET {', '.join(set_clauses)} "
                 "WHERE run_id = (:rid)::uuid"
             ),
@@ -347,9 +357,11 @@ def request_cancel(db, run_id: str, *, by_user_id: str | None) -> bool:
     just refreshes the Valkey TTL.
     """
     ensure_table(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     result = db.execute(
         text(
-            "UPDATE prov_schema.kya_redteam_runs "
+            f"UPDATE {qual}kya_redteam_runs "
             "SET cancel_requested = true, "
             "    cancel_requested_by = "
             "      CASE WHEN :uid = '' THEN NULL ELSE (:uid)::uuid END, "
@@ -390,9 +402,11 @@ def is_cancel_requested(run_id: str) -> bool:
 
 def is_cancel_requested_db(db, run_id: str) -> bool:
     """DB-backed cancel check — fallback when Valkey is missing."""
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     row = db.execute(
         text(
-            "SELECT cancel_requested FROM prov_schema.kya_redteam_runs "
+            f"SELECT cancel_requested FROM {qual}kya_redteam_runs "
             "WHERE run_id = (:rid)::uuid"
         ),
         {"rid": run_id},
@@ -417,9 +431,11 @@ def finalize_run(
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status}")
     ensure_table(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     db.execute(
         text(
-            "UPDATE prov_schema.kya_redteam_runs "
+            f"UPDATE {qual}kya_redteam_runs "
             "SET status = :st, finished_at = now(), "
             "    error_message = :err "
             "WHERE run_id = (:rid)::uuid"
@@ -463,9 +479,11 @@ def _sign_run_attestation(db, tenant_id: str, run: dict) -> int | None:
             },
             metadata={"source": "kya_redteam_run_finalize"},
         )
+        from kya._portable import qual_for_raw_sql
+        qual = qual_for_raw_sql(db)
         db.execute(
             text(
-                "UPDATE prov_schema.kya_redteam_runs "
+                f"UPDATE {qual}kya_redteam_runs "
                 "SET attestation_id = :aid "
                 "WHERE run_id = (:rid)::uuid"
             ),
@@ -525,10 +543,12 @@ def _row_to_run(r) -> dict:
 
 def get_run(db, tenant_id: str, run_id: str) -> dict | None:
     ensure_table(db)
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     row = db.execute(
         text(
             f"SELECT {_SELECT_COLS} "
-            "FROM prov_schema.kya_redteam_runs "
+            f"FROM {qual}kya_redteam_runs "
             "WHERE tenant_id = (:tid)::uuid AND run_id = (:rid)::uuid"
         ),
         {"tid": tenant_id, "rid": run_id},
@@ -556,10 +576,12 @@ def list_runs(
     if status:
         clauses.append("status = :st")
         params["st"] = status
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     rows = db.execute(
         text(
             f"SELECT {_SELECT_COLS} "
-            "FROM prov_schema.kya_redteam_runs "
+            f"FROM {qual}kya_redteam_runs "
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY id DESC LIMIT :lim"
         ),
@@ -599,9 +621,11 @@ def reconcile_stale_runs(db) -> dict:
         logger.debug("[REDTEAM-RUNS] reconcile skipped — another worker holds the lock")
         db.commit()
         return {"swept": 0, "run_ids": [], "lock_held_elsewhere": True}
+    from kya._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     result = db.execute(
         text(
-            "UPDATE prov_schema.kya_redteam_runs "
+            f"UPDATE {qual}kya_redteam_runs "
             "SET status = 'failed', "
             "    finished_at = now(), "
             "    error_message = COALESCE(error_message, '') || "

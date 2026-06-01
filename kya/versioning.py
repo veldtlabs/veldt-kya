@@ -11,15 +11,17 @@ that copies an older one, rather than mutating history.
 Backend portability
 -------------------
 ORM-driven DDL — SQLAlchemy emits dialect-correct types automatically:
-    PostgreSQL → JSONB (indexable), schema=KYA_VERSIONS_SCHEMA (default
-                 'prov_schema' for Veldt deployments)
-    SQLite     → JSON (text), default schema
-    MySQL      → JSON, default schema
-    Oracle     → NCLOB, default schema
+    PostgreSQL -> JSONB (indexable), schema = KYA_VERSIONS_SCHEMA env
+                  (default: dialect's default namespace; set to a name
+                  like the legacy Veldt value to pin to a schema)
+    SQLite     -> JSON (text), default schema
+    MySQL      -> JSON, default schema
+    Oracle     -> NCLOB, default schema
 
 SDK consumers running on non-PG backends leave KYA_VERSIONS_SCHEMA unset
-and get the table in their default namespace. Veldt's existing PG table
-in prov_schema continues to work because create_all is idempotent.
+and get the table in their default namespace. Veldt deployments that
+relied on the legacy default schema must set KYA_VERSIONS_SCHEMA
+explicitly so create_all reuses the existing tables.
 
 Public API
 ----------
@@ -63,7 +65,9 @@ logger = logging.getLogger(__name__)
 
 # Schema qualifier — PG only. Empty/unset means default namespace (SQLite,
 # MySQL, Oracle, or PG installs that don't use a dedicated schema).
-_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA", "prov_schema") or None
+# v0.1.6 default is None; legacy deployments must set KYA_VERSIONS_SCHEMA
+# explicitly to pin to their existing schema.
+_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
 
 
 def _require_sqlalchemy() -> None:
@@ -138,9 +142,10 @@ def _bind_schema(bind) -> None:
 def ensure_table(db) -> None:
     """Create the versions table + index if absent. Idempotent.
 
-    Dialect-aware: PostgreSQL deployments land in `prov_schema` (override
-    via KYA_VERSIONS_SCHEMA env); SQLite/MySQL/Oracle/DuckDB get the table
-    in the default namespace.
+    Dialect-aware: PostgreSQL deployments land in the configured KYA
+    schema (set via KYA_VERSIONS_SCHEMA env; defaults to the dialect's
+    default namespace); SQLite/MySQL/Oracle/DuckDB get the table in the
+    default namespace.
 
     Uses the session's connection (not a fresh engine connection) so DDL
     participates in the same transaction — required by backends like

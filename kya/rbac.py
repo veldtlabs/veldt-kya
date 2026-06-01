@@ -176,9 +176,8 @@ def active_rbac_mode() -> str:
 
 def _schema_prefix(db) -> str:
     try:
-        return ("prov_schema."
-                if db.get_bind().dialect.name == "postgresql"
-                else "")
+        from ._portable import qual_for_raw_sql
+        return qual_for_raw_sql(db)
     except Exception:
         return ""
 

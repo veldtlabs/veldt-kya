@@ -25,8 +25,14 @@ TENANT = "00000000-0000-0000-0000-000000000ccc"
 
 @pytest.fixture
 def db():
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None})
+    # v0.1.6 changed the default KYA schema from "prov_schema" to None.
+    # On SQLite the tables now have schema=None natively, so the
+    # legacy schema_translate_map={"prov_schema": None} hack is no
+    # longer needed -- and applying it conflicts with the inner
+    # schema_translate_map={None: None} that create_legacy_tables
+    # applies per call (SQLAlchemy rejects switching between maps
+    # that have different key sets within one session).
+    eng = create_engine("sqlite:///:memory:")
     session = sessionmaker(bind=eng)()
     init_storage(session)
     yield session

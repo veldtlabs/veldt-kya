@@ -1201,9 +1201,11 @@ def health_check(db) -> dict[str, Any]:
     else:
         try:
             from sqlalchemy import inspect as _inspect
+
+            from ._portable import dialect_schema_qualifier
             insp = _inspect(db.connection())
             dialect = db.get_bind().dialect.name
-            schema = "prov_schema" if dialect == "postgresql" else None
+            schema = dialect_schema_qualifier() if dialect == "postgresql" else None
             existing = set(insp.get_table_names(schema=schema))
             for name in ("kya_tenant_cost_budgets", "kya_budget_changes",
                          "kya_cost_events"):

@@ -39,8 +39,7 @@ TENANT = "11111111-2222-3333-4444-portable42"
 
 @pytest.fixture
 def sqlite_db():
-    eng = create_engine("sqlite:///:memory:").execution_options(
-        schema_translate_map={"prov_schema": None})
+    eng = create_engine("sqlite:///:memory:")
     db = sessionmaker(bind=eng)()
     init_storage(db)
     yield db

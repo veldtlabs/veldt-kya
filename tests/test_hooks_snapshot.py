@@ -25,8 +25,7 @@ TENANT = "00000000-0000-0000-0000-000000000bbb"
 def db_factory(tmp_path):
     """Yields a session_factory backed by a fresh on-disk sqlite db."""
     url = f"sqlite:///{tmp_path / 'kya.db'}"
-    eng = create_engine(url).execution_options(
-        schema_translate_map={"prov_schema": None})
+    eng = create_engine(url)
     SessionLocal = sessionmaker(bind=eng)
     # Initialize tables once
     with SessionLocal() as db:

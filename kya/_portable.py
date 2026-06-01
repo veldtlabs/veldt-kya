@@ -26,9 +26,13 @@ Usage in a module that owns a raw DDL table:
         _TABLE.metadata.create_all(bind=bind, tables=[_TABLE])
         db.commit()
 
-Behavior contracts:
-- `KYA_VERSIONS_SCHEMA` env unset → schema defaults to "prov_schema"
-  (Veldt prod). Set to "" (empty) on SDK installs to disable.
+Behavior contracts (v0.1.6+):
+- `KYA_VERSIONS_SCHEMA` env unset → KYA tables (kya_*, agent_versions)
+  land in the dialect's default schema (public on PG). Set to
+  "prov_schema" to keep the legacy v0.1.5 location.
+- `KYA_DECISIONS_SCHEMA` env unset → veldt-decisions tables
+  (governance_*, decision_approvals, tenants, custom_agents) land in
+  "prov_schema". Set to a different value or "" to override.
 - All ID columns become BIGINT on PG/MySQL/DuckDB, INTEGER on SQLite.
 - Sequences are created on PG/DuckDB; ignored on SQLite/MySQL (which
   fall back to their native autoincrement).
@@ -55,13 +59,46 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 
 def dialect_schema_qualifier() -> str | None:
-    """Return the schema name to use for KYA tables.
+    """Return the schema name to use for KYA-owned tables (every
+    table named ``kya_*`` or ``agent_versions``).
 
-    Veldt prod default: "prov_schema". SDK consumers disable by setting
-    KYA_VERSIONS_SCHEMA="" (empty string).
+    Default: None -- KYA tables land in the dialect's default schema
+    (``public`` on PostgreSQL, ``main`` on SQLite, the active
+    database on MySQL/DuckDB). Customers who want to isolate KYA
+    tables under a named schema set ``KYA_VERSIONS_SCHEMA`` in their
+    environment.
+
+    BREAKING CHANGE in 0.1.6: prior versions defaulted to
+    ``"prov_schema"`` (a legacy from when KYA was packaged inside
+    the veldt-decisions monorepo). Upgraders running on the same
+    database instance should set
+    ``KYA_VERSIONS_SCHEMA=prov_schema`` to keep their existing KYA
+    tables addressable.
     """
     if "KYA_VERSIONS_SCHEMA" in os.environ:
         return os.environ["KYA_VERSIONS_SCHEMA"] or None
+    return None
+
+
+def decisions_schema_qualifier() -> str | None:
+    """Return the schema name for **non-KYA** veldt-decisions tables
+    that KYA reads from (``governance_incidents``,
+    ``governance_audit_log``, ``governance_policies``,
+    ``decision_approvals``, ``tenants``, ``custom_agents``,
+    ``kya_redteam_*``, ``decision_attestations``).
+
+    These tables aren't owned by KYA -- they live in veldt-decisions
+    deployments and KYA's compliance / rogue / fleet-metrics readers
+    just FROM them. Splitting this from ``dialect_schema_qualifier``
+    means a customer running KYA tables under one schema and the
+    decisions tables under another won't silently break.
+
+    Default: ``"prov_schema"`` (the historical veldt-decisions
+    deployment location). Override with ``KYA_DECISIONS_SCHEMA``.
+    Set to empty string to land in the dialect's default.
+    """
+    if "KYA_DECISIONS_SCHEMA" in os.environ:
+        return os.environ["KYA_DECISIONS_SCHEMA"] or None
     return "prov_schema"
 
 
@@ -104,6 +141,34 @@ def qual_for_raw_sql(db_or_bind) -> str:
     if dialect != "postgresql":
         return ""
     schema = dialect_schema_qualifier()
+    return f"{schema}." if schema else ""
+
+
+def qual_for_raw_sql_decisions(db_or_bind) -> str:
+    """Like ``qual_for_raw_sql`` but for **veldt-decisions** monorepo
+    tables (``governance_incidents``, ``governance_audit_log``,
+    ``governance_policies``, ``decision_approvals``, ``tenants``,
+    ``custom_agents``, ``decision_attestations``, etc.) that KYA's
+    compliance / rogue / fleet-metrics readers join against.
+
+    Reads ``KYA_DECISIONS_SCHEMA`` env var (default ``"prov_schema"``)
+    instead of ``KYA_VERSIONS_SCHEMA``, so a customer can put KYA
+    tables in one schema and the legacy decisions tables in another.
+
+    Use:
+
+        from ._portable import qual_for_raw_sql_decisions
+        dq = qual_for_raw_sql_decisions(db)
+        db.execute(text(f"FROM {dq}governance_incidents WHERE ..."))
+    """
+    bind = (
+        db_or_bind.get_bind()
+        if hasattr(db_or_bind, "get_bind") else db_or_bind
+    )
+    dialect = bind.dialect.name if hasattr(bind, "dialect") else None
+    if dialect != "postgresql":
+        return ""
+    schema = decisions_schema_qualifier()
     return f"{schema}." if schema else ""
 
 

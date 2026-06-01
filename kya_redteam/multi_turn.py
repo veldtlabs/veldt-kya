@@ -928,8 +928,12 @@ def _maybe_create_incident(
 ):
     try:
         from sqlalchemy import text as _sa_text
+
+        from kya._portable import qual_for_raw_sql, qual_for_raw_sql_decisions
+        qual = qual_for_raw_sql(db)
+        dq = qual_for_raw_sql_decisions(db)
         row = db.execute(_sa_text(
-            "INSERT INTO prov_schema.governance_incidents "
+            f"INSERT INTO {dq}governance_incidents "
             "  (tenant_id, model_id, severity, action_taken, "
             "   resolution_status, resolved_by, audit_log_id) "
             "VALUES ((:tid)::uuid, :mid, :sev, :act, 'open', NULL, NULL) "
@@ -940,7 +944,7 @@ def _maybe_create_incident(
         }).fetchone()
         incident_id = int(row[0])
         db.execute(_sa_text(
-            "UPDATE prov_schema.kya_redteam_findings "
+            f"UPDATE {qual}kya_redteam_findings "
             "SET promoted_incident_id = :iid "
             "WHERE id = :fid AND tenant_id = (:tid)::uuid"
         ), {"iid": incident_id, "fid": finding_id, "tid": tenant_id})

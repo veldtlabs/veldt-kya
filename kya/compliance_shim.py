@@ -49,21 +49,10 @@ from .external_emitters import emit_event
 logger = logging.getLogger(__name__)
 
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS prov_schema.kya_breach_notifications (
-    id             SERIAL PRIMARY KEY,
-    tenant_id      UUID NOT NULL,
-    incident_id    INTEGER NOT NULL,
-    regime         TEXT NOT NULL,
-    format         TEXT NOT NULL,
-    notified_at    TIMESTAMP NOT NULL DEFAULT NOW(),
-    destinations   INTEGER NOT NULL DEFAULT 0,
-    payload_summary JSONB,
-    UNIQUE (incident_id, regime)
-);
-CREATE INDEX IF NOT EXISTS idx_kya_breach_notify_tenant
-    ON prov_schema.kya_breach_notifications (tenant_id, notified_at DESC);
-"""
+# NOTE: DDL is no longer maintained here. The kya_breach_notifications
+# table is owned by `kya._legacy_tables` so the schema qualifier and
+# dialect-specific types are handled centrally (see
+# create_legacy_tables() for the dispatch logic).
 
 
 def ensure_table(db: Session) -> None:
@@ -112,7 +101,7 @@ def _ensure_metrics():
 # ── The shim ────────────────────────────────────────────────────────
 
 
-def _candidate_query() -> str:
+def _candidate_query(qual: str) -> str:
     """SQL: open incidents that may have crossed at least one regime's SLA.
 
     Returns the policy's regulation_tags so the caller can decide which
@@ -120,7 +109,7 @@ def _candidate_query() -> str:
     is "older than the smallest SLA in the matrix", and Python decides
     per-row what to emit.
     """
-    return """
+    return f"""
         SELECT i.id           AS incident_id,
                i.tenant_id    AS tenant_id,
                i.severity     AS severity,
@@ -129,8 +118,8 @@ def _candidate_query() -> str:
                i.model_id     AS agent_key,
                i.audit_log_id AS audit_log_id,
                p.regulation_tags AS regulation_tags
-        FROM prov_schema.governance_incidents i
-        JOIN prov_schema.governance_policies  p ON p.id = i.policy_id
+        FROM {qual}governance_incidents i
+        JOIN {qual}governance_policies  p ON p.id = i.policy_id
         WHERE i.resolution_status = 'open'
           AND i.created_at < :cutoff
           AND p.regulation_tags IS NOT NULL
@@ -140,9 +129,11 @@ def _candidate_query() -> str:
 
 
 def _already_notified(db: Session, incident_id: int, regime: str) -> bool:
+    from ._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     row = db.execute(
         text(
-            "SELECT 1 FROM prov_schema.kya_breach_notifications "
+            f"SELECT 1 FROM {qual}kya_breach_notifications "
             "WHERE incident_id = :iid AND regime = :reg"
         ),
         {"iid": incident_id, "reg": regime},
@@ -160,10 +151,12 @@ def _record_notification(
     summary: dict,
 ) -> bool:
     """Idempotent insert. Returns True if a new row was created."""
+    from ._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
     try:
         db.execute(
-            text("""
-            INSERT INTO prov_schema.kya_breach_notifications
+            text(f"""
+            INSERT INTO {qual}kya_breach_notifications
               (tenant_id, incident_id, regime, format, destinations, payload_summary)
             VALUES ((:tid)::uuid, :iid, :reg, :fmt, :dst, CAST(:sum AS jsonb))
             ON CONFLICT (incident_id, regime) DO NOTHING
@@ -203,6 +196,7 @@ def run_once(db: Session) -> dict:
     Returns a summary dict {scanned, regimes_evaluated, emitted, skipped,
     errors} suitable for /health-style logging.
     """
+
     _ensure_metrics()
     now = datetime.now(timezone.utc)
     # Cheapest pre-filter: include any incident older than the smallest
@@ -210,7 +204,13 @@ def run_once(db: Session) -> dict:
     min_window_h = min(v["window_hours"] for v in REGIME_BREACH_NOTIFY.values())
     cutoff = now - timedelta(hours=min_window_h)
 
-    rows = db.execute(text(_candidate_query()), {"cutoff": cutoff}).mappings().all()
+    # governance_incidents + governance_policies live in the
+    # veldt-decisions schema, NOT the KYA schema -- use the decisions
+    # qualifier so customers running KYA and decisions in different
+    # schemas don't break.
+    from ._portable import qual_for_raw_sql_decisions
+    dq = qual_for_raw_sql_decisions(db)
+    rows = db.execute(text(_candidate_query(dq)), {"cutoff": cutoff}).mappings().all()
     summary = {
         "scanned": len(rows),
         "regimes_evaluated": 0,
@@ -347,10 +347,12 @@ def get_notification_history(
     limit: int = 100,
 ) -> list[dict]:
     """Tenant-scoped query for the dashboard: 'What did we tell whom?'"""
-    sql = """
+    from ._portable import qual_for_raw_sql
+    qual = qual_for_raw_sql(db)
+    sql = f"""
         SELECT id, incident_id, regime, format, destinations,
                notified_at, payload_summary
-        FROM prov_schema.kya_breach_notifications
+        FROM {qual}kya_breach_notifications
         WHERE tenant_id = (:tid)::uuid
     """
     params: dict[str, Any] = {"tid": str(tenant_id)}
