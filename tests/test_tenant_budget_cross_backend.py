@@ -123,7 +123,7 @@ def test_ensure_tables_creates_three_tables(db):
     # PG keeps tables in prov_schema; other dialects strip via the
     # fixture's schema_translate_map and use the default namespace.
     dialect = db.get_bind().dialect.name
-    schema = "prov_schema" if dialect == "postgresql" else None
+    schema = None  # v0.1.6: tables go to dialect default (public on PG)
     table_names = insp.get_table_names(schema=schema)
     assert "kya_tenant_cost_budgets" in table_names
     assert "kya_budget_changes" in table_names

@@ -457,7 +457,7 @@ def test_cross_backend_smoke_runs_against_postgres():
         # raw text() statements must use nextval() explicitly).
         for days, parent in ((1, "P_pg_active"), (45, "P_pg_stable")):
             db.execute(text(
-                "INSERT INTO prov_schema.kya_delegation_violations "
+                "INSERT INTO kya_delegation_violations "
                 "(id, tenant_id, sub_invocation_id, parent_invocation_id, "
                 " parent_agent_key, sub_agent_key, violation_kind, "
                 " detail, mode_active, blocked, created_at) "

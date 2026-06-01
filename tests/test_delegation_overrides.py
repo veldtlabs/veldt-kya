@@ -348,7 +348,7 @@ def test_per_kind_override_routes_violations_to_different_modes(db,
     # in block mode; tool_widening in observe. Use the dialect-aware
     # schema prefix so this query works on PG (prov_schema.) AND on
     # sqlite/duckdb/mysql (default ns).
-    _sp = ("prov_schema."
+    _sp = (""
            if db.get_bind().dialect.name == "postgresql" else "")
     rows = db.execute(text(
         f"SELECT violation_kind, mode_active, blocked "
