@@ -94,7 +94,13 @@ jobs:
       - name: Capture live SITL frames
         env:
           OUT: /tmp/mavlink-sitl.json
-          TIMEOUT: "180"
+          # 300s heartbeat-wait: GHA ubuntu-latest runners have ~2
+          # cores and no GPU; ArduCopter's first-boot pipeline
+          # (param load -> EKF init -> home fix -> motor cal) is
+          # CPU-bound and slower than dev laptops. 180s was tight
+          # on prior runs; 300s leaves headroom without making CI
+          # silently sluggish.
+          TIMEOUT: "300"
           MISSION: "30"
         run: python scripts/mavlink_sitl_live_capture.py
 

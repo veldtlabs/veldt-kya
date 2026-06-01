@@ -73,6 +73,57 @@ def cleanup_container(name: str) -> None:
         pass
 
 
+def dump_container_diagnostics(name: str) -> None:
+    """Dump container state + logs to stderr. Called on heartbeat
+    timeout so a CI failure tells us WHY SITL didn't boot rather
+    than the bare ``no HEARTBEAT within Ns`` line.
+
+    The 4 cheap signals worth emitting:
+      * ``docker ps -a`` row -- tells us if the container exited,
+        is still Running, or never started (Created).
+      * ``docker inspect`` State.* -- the structured truth
+        (ExitCode, OOMKilled, Error). docker ps elides this.
+      * ``docker logs`` tail (last 200 lines) -- the actual stdout
+        from sim_vehicle.py / arducopter. EKF init failures,
+        missing-frame parser errors, and license-check refusals
+        all surface here.
+      * ``docker logs --stderr`` separately, so a stderr-only
+        crash (segfault, GLIBC mismatch) isn't drowned out by
+        chatty stdout.
+
+    Best-effort throughout -- a diagnostics failure must not mask
+    the original error.
+    """
+    print(
+        f"\n── dumping diagnostics for container {name!r} ──",
+        file=sys.stderr,
+    )
+    for label, cmd in [
+        ("ps -a", ["docker", "ps", "-a", "--filter", f"name={name}"]),
+        ("inspect state",
+         ["docker", "inspect", "--format",
+          "Status={{.State.Status}} "
+          "ExitCode={{.State.ExitCode}} "
+          "OOMKilled={{.State.OOMKilled}} "
+          "Error={{.State.Error}}",
+          name]),
+        ("logs (tail 200)", ["docker", "logs", "--tail", "200", name]),
+    ]:
+        try:
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=15,
+            )
+            print(f"── {label} ──", file=sys.stderr)
+            if r.stdout:
+                print(r.stdout, file=sys.stderr)
+            if r.stderr:
+                print(r.stderr, file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"  (diagnostics {label!r} failed: {e})",
+                  file=sys.stderr)
+    print("── end diagnostics ──\n", file=sys.stderr)
+
+
 # ── Preflight ────────────────────────────────────────────────────
 
 
@@ -124,6 +175,7 @@ def preflight(out_path: Path) -> None:
 
 def wait_for_heartbeat(
     *, host: str, port: int, timeout: int,
+    container_name: str | None = None,
 ):  # type: ignore[no-untyped-def]
     """Block until SITL emits its first HEARTBEAT or ``timeout``
     seconds elapse. Returns the live pymavlink connection.
@@ -132,6 +184,11 @@ def wait_for_heartbeat(
     timeout=5)`` wakes every 5s, so the actual maximum wait is
     ``timeout + 5s``. The 5s wake-up bound keeps the loop
     responsive to SIGINT during local debugging.
+
+    On timeout, if ``container_name`` is provided, dumps the
+    container's ``docker logs`` + ``docker inspect`` before exit
+    so CI can see WHY SITL didn't emit heartbeat -- an opaque
+    "no HEARTBEAT in 300s" line is impossible to debug.
     """
     from pymavlink import mavutil  # noqa: PLC0415
 
@@ -148,6 +205,8 @@ def wait_for_heartbeat(
                 f"comp={msg.get_srcComponent()}"
             )
             return conn
+    if container_name:
+        dump_container_diagnostics(container_name)
     die(f"no HEARTBEAT within {timeout}s")
 
 
@@ -229,6 +288,7 @@ __all__ = [
     "die",
     "run",
     "cleanup_container",
+    "dump_container_diagnostics",
     "preflight",
     "wait_for_heartbeat",
     "capture",

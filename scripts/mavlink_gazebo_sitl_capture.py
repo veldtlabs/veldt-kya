@@ -288,6 +288,7 @@ def main() -> int:
         conn = wait_for_heartbeat(
             host=MAVLINK_HOST, port=MAVLINK_PORT,
             timeout=BOOT_TIMEOUT,
+            container_name=CONTAINER_NAME,
         )
         run_demo_mission(conn)
         frames = capture(conn, CAPTURE_SECONDS)
