@@ -37,6 +37,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import threading
 from typing import Any as _Any
 
 
@@ -171,6 +172,11 @@ _AUTONOMOUS_SYSTEM_FIELDS = (
 # agent vocabulary) so every kind hashes against something
 # deterministic -- a typo'd kind degrades to "compute the hash like
 # an agent" rather than raising.
+#
+# When ``KYA_HASH_STRICT_KIND=1|true|yes|on`` is set in the
+# environment, ``hashed_fields_for`` raises ``KeyError`` instead of
+# silently degrading. Strict mode catches typos that would otherwise
+# produce meaningless fingerprints.
 _HASHED_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
     "agent":             _HASHED_FIELDS,
     "user":              _HASHED_FIELDS,
@@ -187,18 +193,51 @@ _HASHED_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
     "autonomous_system": _AUTONOMOUS_SYSTEM_FIELDS,
 }
 
+# Guards registry reads + writes. CPython's GIL makes the underlying
+# dict ops atomic today, but free-threaded Python 3.13+ removes that
+# guarantee -- a concurrent ``register_hashed_fields`` + ``canonical_hash``
+# can race. The lock costs ~50ns per call (uncontended) and the
+# registry is read once per canonical_hash, so the overhead is
+# negligible at any realistic load.
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _strict_kind_mode() -> bool:
+    """Read the ``KYA_HASH_STRICT_KIND`` env var on every call so
+    test setup can toggle it without re-importing the module."""
+    raw = os.environ.get("KYA_HASH_STRICT_KIND", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
 
 def hashed_fields_for(principal_kind: str | None) -> tuple[str, ...]:
     """Look up the identity field set for a principal kind.
 
     Unknown / None kind falls back to the agent vocabulary so a
-    miscategorised definition still hashes deterministically. Used
-    by :func:`canonical_hash` when a caller passes
-    ``principal_kind=``.
+    miscategorised definition still hashes deterministically -- the
+    fail-soft default that lets vendor-registered kinds work even
+    when the vendor forgot to call ``register_hashed_fields``.
+
+    Strict mode
+    -----------
+    Set ``KYA_HASH_STRICT_KIND=1`` (or ``true`` / ``yes`` / ``on``)
+    to make this function raise ``KeyError`` on an unknown kind
+    instead of degrading. Recommended for audit-grade deployments
+    where a typo'd kind producing a meaningless fingerprint would
+    be worse than a hard failure.
     """
     if not principal_kind:
         return _HASHED_FIELDS
-    return _HASHED_FIELDS_BY_KIND.get(principal_kind, _HASHED_FIELDS)
+    with _REGISTRY_LOCK:
+        fields = _HASHED_FIELDS_BY_KIND.get(principal_kind)
+    if fields is not None:
+        return fields
+    if _strict_kind_mode():
+        raise KeyError(
+            f"unknown principal_kind {principal_kind!r}; strict "
+            f"mode is enabled (KYA_HASH_STRICT_KIND). Register the "
+            f"kind via register_hashed_fields() or disable strict "
+            f"mode.")
+    return _HASHED_FIELDS
 
 
 def register_hashed_fields(
@@ -210,7 +249,8 @@ def register_hashed_fields(
     matching identity hashing.
 
     Fields are validated as a tuple of non-empty strings. The
-    registry mutation is process-local.
+    registry mutation is process-local and thread-safe (guarded by
+    a module-level lock).
     """
     if not isinstance(fields, tuple):
         raise TypeError("fields must be a tuple of strings")
@@ -218,7 +258,8 @@ def register_hashed_fields(
         if not isinstance(f, str) or not f:
             raise ValueError(
                 f"every field must be a non-empty string; got {f!r}")
-    _HASHED_FIELDS_BY_KIND[principal_kind] = fields
+    with _REGISTRY_LOCK:
+        _HASHED_FIELDS_BY_KIND[principal_kind] = fields
 
 
 # Ownership / accountability metadata. NOT in the identity hash by

@@ -466,6 +466,253 @@ class TestSnapshotPrincipal:
         assert row["definition"]["firmware_version"] == "v1"
 
 
+class TestFingerprintBatch:
+    """Architectural fix A1: batch-fetch optimisation. The batch
+    path must yield IDENTICAL fingerprints to the per-call path
+    (correctness), and must execute fewer DB round-trips
+    (the actual performance win)."""
+
+    def _setup_fleet(self, db, n_drones=3):
+        """Seed the fleet with one agent + N drones, each with a
+        lineage entry and one edge."""
+        from kya import (
+            add_principal_edge,
+            record_principal_signal,
+            snapshot_agent,
+            snapshot_principal,
+        )
+        snapshot_agent(db, tenant_id="t", agent_key="planner",
+                       definition={"agent_key": "planner",
+                                   "tools": ["sql"]})
+        for i in range(n_drones):
+            pid = f"uav_{i:03d}"
+            snapshot_principal(
+                db, tenant_id="t",
+                principal_kind="drone", principal_id=pid,
+                definition={"firmware_version": "v1",
+                            "airframe": "quad"},
+            )
+            record_principal_signal(
+                db, tenant_id="t",
+                principal_kind="drone", principal_id=pid,
+                signal_kind="trust_clean",
+                attributes={"lineage": [
+                    {"kind": "agent", "id": "planner"}]},
+            )
+            add_principal_edge(
+                db, tenant_id="t",
+                parent_kind="agent", parent_id="planner",
+                child_kind="drone", child_id=pid,
+            )
+
+    def test_batch_yields_identical_fingerprints(self):
+        """For each principal, principal_fingerprint(_batch=...)
+        must produce the same fingerprint as the un-batched call."""
+        from kya import build_fingerprint_batch, principal_fingerprint
+        db = _fresh_db()
+        self._setup_fleet(db, n_drones=5)
+        pairs = [("agent", "planner")] + [
+            ("drone", f"uav_{i:03d}") for i in range(5)]
+
+        batch = build_fingerprint_batch(
+            db, tenant_id="t", principals=pairs)
+
+        for kind, pid in pairs:
+            fp_batch = principal_fingerprint(
+                db, tenant_id="t",
+                principal_kind=kind, principal_id=pid,
+                _batch=batch)
+            fp_no_batch = principal_fingerprint(
+                db, tenant_id="t",
+                principal_kind=kind, principal_id=pid)
+            assert fp_batch["fingerprint"] == fp_no_batch["fingerprint"], (
+                f"batch vs non-batch fingerprint mismatch for "
+                f"{kind}:{pid}: {fp_batch} != {fp_no_batch}")
+
+    def test_batch_covers_definition_and_lineage_and_edges(self):
+        """The batch object must surface all three input sources
+        a fingerprint depends on."""
+        from kya import build_fingerprint_batch
+        db = _fresh_db()
+        self._setup_fleet(db, n_drones=2)
+
+        batch = build_fingerprint_batch(db, tenant_id="t")
+        # All snapshots reachable
+        assert ("agent", "planner") in batch.latest_definitions
+        assert ("drone", "uav_000") in batch.latest_definitions
+        assert ("drone", "uav_001") in batch.latest_definitions
+        # Trust rows for the drones (the agent has no signal)
+        assert ("drone", "uav_000") in batch.trust_attributes
+        # Edge ancestors per drone
+        assert batch.ancestors_by_principal[("drone", "uav_000")] == [
+            {"kind": "agent", "id": "planner"}]
+
+    def test_batch_query_count_lower_than_per_call(self):
+        """Concrete proof of A1's fix: the batch path issues
+        roughly O(N) DB executes (one bulk snapshot read + one
+        bulk trust read + N walk_ancestors), while N per-call
+        invocations issue O(3N). For a 10-principal fleet that's
+        a measurable difference."""
+        from kya import build_fingerprint_batch, principal_fingerprint
+        db = _fresh_db()
+        self._setup_fleet(db, n_drones=10)
+        pairs = [("agent", "planner")] + [
+            ("drone", f"uav_{i:03d}") for i in range(10)]
+
+        # Count executions during batch path
+        batch_count = {"n": 0}
+        engine = db.bind
+        from sqlalchemy import event
+
+        def _count(*_args, **_kwargs):
+            batch_count["n"] += 1
+
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            batch = build_fingerprint_batch(
+                db, tenant_id="t", principals=pairs)
+            for kind, pid in pairs:
+                principal_fingerprint(
+                    db, tenant_id="t",
+                    principal_kind=kind, principal_id=pid,
+                    _batch=batch)
+            batch_n = batch_count["n"]
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+
+        # Count executions during per-call path
+        per_call_count = {"n": 0}
+
+        def _count2(*_args, **_kwargs):
+            per_call_count["n"] += 1
+
+        event.listen(engine, "before_cursor_execute", _count2)
+        try:
+            for kind, pid in pairs:
+                principal_fingerprint(
+                    db, tenant_id="t",
+                    principal_kind=kind, principal_id=pid)
+            per_call_n = per_call_count["n"]
+        finally:
+            event.remove(engine, "before_cursor_execute", _count2)
+
+        # The batch path MUST issue fewer queries than per-call.
+        # Hard ceiling at half so a future small regression
+        # surfaces. 11 principals * 3+ queries per call = 33+;
+        # batch is 2 bulk + 11 walks = 13 -> ~2.5x speedup.
+        assert batch_n < per_call_n, (
+            f"batch query count ({batch_n}) must be < per-call "
+            f"({per_call_n}) -- otherwise A1 is not actually fixed")
+        assert batch_n * 2 <= per_call_n, (
+            f"batch query count ({batch_n}) should be roughly "
+            f"<=half per-call ({per_call_n}); got ratio "
+            f"{per_call_n / batch_n:.1f}x")
+
+
+class TestStrictKindMode:
+    """KYA_HASH_STRICT_KIND opt-in (architectural fix A4). Default
+    behaviour falls back to the agent vocabulary on unknown kind;
+    strict mode raises so a typo'd kind can't produce a meaningless
+    fingerprint."""
+
+    def setup_method(self):
+        # Ensure no env contamination between tests.
+        import os
+        os.environ.pop("KYA_HASH_STRICT_KIND", None)
+
+    def teardown_method(self):
+        import os
+        os.environ.pop("KYA_HASH_STRICT_KIND", None)
+
+    def test_default_falls_back_to_agent_vocab(self):
+        from kya.integrity import _HASHED_FIELDS, hashed_fields_for
+        assert hashed_fields_for("totally_unknown_kind") == _HASHED_FIELDS
+
+    def test_strict_raises_on_unknown(self):
+        import os
+        os.environ["KYA_HASH_STRICT_KIND"] = "1"
+        from kya.integrity import hashed_fields_for
+        with pytest.raises(KeyError, match="strict mode"):
+            hashed_fields_for("totally_unknown_kind")
+
+    def test_strict_still_accepts_known_kinds(self):
+        import os
+        os.environ["KYA_HASH_STRICT_KIND"] = "true"
+        from kya.integrity import hashed_fields_for
+        # Known kinds still work in strict mode
+        assert hashed_fields_for("drone") is not None
+        assert hashed_fields_for("agent") is not None
+
+    def test_strict_after_register(self):
+        """A kind registered via register_hashed_fields() is
+        accepted even in strict mode."""
+        import os
+        os.environ["KYA_HASH_STRICT_KIND"] = "yes"
+        from kya.integrity import (
+            hashed_fields_for,
+            register_hashed_fields,
+        )
+        register_hashed_fields("test_strict_kind",
+                               ("field_a", "field_b"))
+        assert hashed_fields_for("test_strict_kind") == (
+            "field_a", "field_b")
+
+
+class TestRegistryThreadSafety:
+    """Architectural fix A3: registry mutations + reads are guarded
+    by a module-level lock so free-threaded Python (3.13+) is
+    race-safe. CPython GIL makes the underlying dict / set ops
+    atomic today, but the lock keeps the contract explicit."""
+
+    def test_concurrent_register_hashed_fields(self):
+        """Many threads registering distinct kinds at once -- no
+        lost writes, no exceptions."""
+        import threading
+        from kya.integrity import (
+            hashed_fields_for,
+            register_hashed_fields,
+        )
+        N = 32
+
+        def worker(i: int):
+            register_hashed_fields(
+                f"concurrent_kind_{i}",
+                (f"field_{i}_a", f"field_{i}_b"),
+            )
+
+        threads = [threading.Thread(target=worker, args=(i,))
+                   for i in range(N)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # Every registered kind is reachable
+        for i in range(N):
+            assert hashed_fields_for(f"concurrent_kind_{i}") == (
+                f"field_{i}_a", f"field_{i}_b")
+
+    def test_concurrent_register_principal_kind(self):
+        """Same test for the principal-kinds registry."""
+        import threading
+        from kya import (
+            is_valid_principal_kind,
+            register_principal_kind,
+        )
+        N = 32
+
+        def worker(i: int):
+            register_principal_kind(f"race_kind_{i}")
+
+        threads = [threading.Thread(target=worker, args=(i,))
+                   for i in range(N)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        for i in range(N):
+            assert is_valid_principal_kind(f"race_kind_{i}")
+
+
 class TestCanonicalHashDeterminism:
     """Regression for Day-2 review C2: datetime values inside a
     definition must hash identically across PG / SQLite even when

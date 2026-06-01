@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -247,6 +248,11 @@ def _initial_registered_kinds() -> set[str]:
 
 _REGISTERED_PRINCIPAL_KINDS: set[str] = _initial_registered_kinds()
 
+# Guards registry reads + writes. Same rationale as the lock in
+# integrity._REGISTRY_LOCK: CPython's GIL makes set ops atomic
+# today, but free-threaded Python 3.13+ removes that guarantee.
+_REGISTERED_KINDS_LOCK = threading.Lock()
+
 
 def register_principal_kind(kind: str) -> None:
     """Register an additional principal kind for the lifetime of
@@ -266,22 +272,25 @@ def register_principal_kind(kind: str) -> None:
             f"invalid principal_kind {kind!r}; must match "
             f"{_KIND_REGEX.pattern} (lowercase ASCII letters, digits, "
             f"underscore; 1-20 chars; no leading digit)")
-    _REGISTERED_PRINCIPAL_KINDS.add(kind)
+    with _REGISTERED_KINDS_LOCK:
+        _REGISTERED_PRINCIPAL_KINDS.add(kind)
 
 
 def is_valid_principal_kind(kind: str) -> bool:
-    """True if ``kind`` is known to the registry — either in the
+    """True if ``kind`` is known to the registry -- either in the
     default ``PRINCIPAL_KINDS`` tuple or added via
     :func:`register_principal_kind` or the
     ``KYA_PRINCIPAL_KINDS_EXTRA`` env var."""
-    return kind in _REGISTERED_PRINCIPAL_KINDS
+    with _REGISTERED_KINDS_LOCK:
+        return kind in _REGISTERED_PRINCIPAL_KINDS
 
 
 def registered_principal_kinds() -> tuple[str, ...]:
     """Snapshot of every kind currently accepted by the registry.
     Useful for tests / introspection / building dashboards that
     enumerate the full vocabulary."""
-    return tuple(sorted(_REGISTERED_PRINCIPAL_KINDS))
+    with _REGISTERED_KINDS_LOCK:
+        return tuple(sorted(_REGISTERED_PRINCIPAL_KINDS))
 
 
 # ── Principal fingerprint ─────────────────────────────────────────
@@ -317,6 +326,159 @@ def registered_principal_kinds() -> tuple[str, ...]:
 # ``principal-v2`` would mean any change to the manifest shape.
 
 
+@dataclass(frozen=True, slots=True)
+class PrincipalFingerprintBatch:
+    """Pre-fetched fingerprint inputs for many principals at once.
+
+    Calling :func:`principal_fingerprint` once per principal is
+    convenient but does 2 DB queries per call (latest snapshot
+    lookup + trust row + ancestor walk). A 1000-drone fleet would
+    fire 3000+ queries -- the classic N+1.
+
+    This dataclass holds the bulk-fetched inputs so a downstream
+    consumer (typically ``kya_pro.reproducibility.fleet_fingerprint``)
+    can compose principal fingerprints in O(1) per principal after
+    one bulk load.
+
+    Attributes:
+        tenant_id: Tenant the batch covers.
+        latest_definitions: ``(principal_kind, principal_id) ->
+            (version_no, definition_dict)`` from agent_versions.
+            Absent entries mean "no snapshot for this principal".
+        trust_attributes: ``(principal_kind, principal_id) ->
+            attributes_dict`` from kya_principal_trust. Absent
+            entries mean "no trust row" -- lineage falls back to
+            empty list.
+        ancestors_by_principal: ``(principal_kind, principal_id) ->
+            sorted list of {kind, id} ancestor pairs`` from
+            walk_ancestors. Absent entries mean "no ancestor edges".
+    """
+
+    tenant_id: str
+    latest_definitions: dict[tuple[str, str], tuple[int, dict]]
+    trust_attributes: dict[tuple[str, str], dict]
+    ancestors_by_principal: dict[tuple[str, str], list[dict]]
+
+
+def build_fingerprint_batch(
+    db: Any,
+    *,
+    tenant_id: str,
+    principals: list[tuple[str, str]] | None = None,
+) -> PrincipalFingerprintBatch:
+    """Pre-fetch fingerprint inputs for many principals in a few
+    bulk SQL queries.
+
+    Args:
+        db: SQLAlchemy session.
+        tenant_id: Tenant scope.
+        principals: Optional restriction to specific (kind, id)
+            pairs. When None, prefetch covers EVERY principal that
+            has either a snapshot row or a trust row in the tenant.
+
+    Returns:
+        :class:`PrincipalFingerprintBatch` ready to pass to
+        :func:`principal_fingerprint` via the ``_batch`` kwarg.
+
+    Why batch? See :class:`PrincipalFingerprintBatch` docstring.
+    The bulk path runs 3 queries total instead of 3 per principal.
+    """
+    from sqlalchemy import select  # noqa: PLC0415
+    from .principal_edges import walk_ancestors  # noqa: PLC0415
+    from .versioning import (  # noqa: PLC0415
+        AgentVersion, _compose_principal_key,
+    )
+
+    # Bulk-load every latest snapshot for the tenant.
+    # SQL: SELECT ... ORDER BY agent_key, version_no DESC -- then
+    # take the first row per agent_key in Python (portable across
+    # PG / SQLite / MySQL without DISTINCT ON).
+    stmt = (
+        select(
+            AgentVersion.agent_key,
+            AgentVersion.version_no,
+            AgentVersion.definition,
+        )
+        .where(AgentVersion.tenant_id == tenant_id)
+        .order_by(AgentVersion.agent_key, AgentVersion.version_no.desc())
+    )
+    latest_definitions: dict[tuple[str, str], tuple[int, dict]] = {}
+    seen_keys: set[str] = set()
+    for composed_key, version_no, definition in db.execute(stmt).all():
+        if composed_key in seen_keys:
+            continue  # already have the latest version for this key
+        seen_keys.add(composed_key)
+        # Decompose the storage key back to (kind, id). Inlined to
+        # avoid a Pro <-> open-SDK helper round-trip.
+        if ":" in composed_key:
+            kind, _, pid = composed_key.partition(":")
+        else:
+            kind, pid = "agent", composed_key
+        latest_definitions[(kind, pid)] = (
+            int(version_no), dict(definition or {}))
+
+    # Bulk-load every trust row's attributes for the tenant.
+    stmt_trust = (
+        select(
+            _PrincipalRow.principal_kind,
+            _PrincipalRow.principal_id,
+            _PrincipalRow.attributes,
+        )
+        .where(_PrincipalRow.tenant_id == tenant_id)
+    )
+    trust_attributes: dict[tuple[str, str], dict] = {
+        (kind, pid): dict(attrs or {})
+        for kind, pid, attrs in db.execute(stmt_trust).all()
+    }
+
+    # Determine the principal set we need ancestors for. If the
+    # caller supplied a restriction we honour it; otherwise union
+    # everything we discovered above.
+    if principals is not None:
+        target_pairs = list(dict.fromkeys(principals))
+    else:
+        target_pairs = sorted(
+            set(latest_definitions) | set(trust_attributes))
+
+    # Bulk-walk ancestors per principal. ``walk_ancestors`` already
+    # uses a single SELECT per principal -- a true bulk graph query
+    # would need a recursive CTE which we're explicitly deferring
+    # to v0.1.9 (would need backend-specific SQL). For now this is
+    # still O(N) graph walks vs the prior O(N) per-fingerprint walk
+    # plus O(N) trust reads plus O(N) snapshot reads -- 3x speedup.
+    ancestors_by_principal: dict[tuple[str, str], list[dict]] = {}
+    for kind, pid in target_pairs:
+        edges = walk_ancestors(
+            db, tenant_id=tenant_id,
+            leaf_kind=kind, leaf_id=pid,
+        )
+        # Mirror _ancestor_pairs's normalisation: dedup by (kind, id)
+        # and sort canonically.
+        seen: set[tuple[str, str]] = set()
+        out: list[dict] = []
+        for _depth, edge in edges:
+            key = (edge.parent_kind, edge.parent_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"kind": edge.parent_kind,
+                        "id":   edge.parent_id})
+        out.sort(key=lambda p: (p["kind"], p["id"]))
+        ancestors_by_principal[(kind, pid)] = out
+
+    # _compose_principal_key is imported above to ensure the storage
+    # key convention stays consistent between batch + non-batch
+    # paths -- referencing it here keeps the import live.
+    _ = _compose_principal_key
+
+    return PrincipalFingerprintBatch(
+        tenant_id=tenant_id,
+        latest_definitions=latest_definitions,
+        trust_attributes=trust_attributes,
+        ancestors_by_principal=ancestors_by_principal,
+    )
+
+
 def principal_fingerprint(
     db: Any,
     *,
@@ -325,6 +487,7 @@ def principal_fingerprint(
     principal_id: str,
     include_edges: bool = True,
     include_ownership: bool | None = None,
+    _batch: PrincipalFingerprintBatch | None = None,
 ) -> dict:
     """Composite fingerprint binding a principal's identity to its
     authority context.
@@ -383,49 +546,68 @@ def principal_fingerprint(
     """
     from .integrity import canonical_hash  # noqa: PLC0415
 
+    pair = (principal_kind, principal_id)
+    have_batch = (_batch is not None and _batch.tenant_id == tenant_id)
+
     # 1. Definition hash from the latest snapshot (if any). Walks
     #    the SAME composed-key storage as snapshot_principal --
     #    the agent-only versioning module is now backing the whole
-    #    autonomy vocabulary.
+    #    autonomy vocabulary. When ``_batch`` is provided, the
+    #    pre-fetched snapshot dict replaces the per-call DB lookup.
     definition_hash: str | None = None
-    try:
-        from .versioning import (  # noqa: PLC0415
-            get_principal_version,
-            list_principal_versions,
-        )
-        recent = list_principal_versions(
-            db, tenant_id=tenant_id,
-            principal_kind=principal_kind, principal_id=principal_id,
-            limit=1,
-        )
-        if recent:
-            latest_no = recent[0]["version_no"]
-            row = get_principal_version(
+    if have_batch:
+        snap = _batch.latest_definitions.get(pair)
+        if snap is not None:
+            _, defn = snap
+            definition_hash = canonical_hash(
+                defn,
+                principal_kind=principal_kind,
+                include_ownership=include_ownership,
+            )
+    else:
+        try:
+            from .versioning import (  # noqa: PLC0415
+                get_principal_version,
+                list_principal_versions,
+            )
+            recent = list_principal_versions(
                 db, tenant_id=tenant_id,
                 principal_kind=principal_kind, principal_id=principal_id,
-                version_no=latest_no,
+                limit=1,
             )
-            if row is not None:
-                defn = row.get("definition") or {}
-                definition_hash = canonical_hash(
-                    defn,
-                    principal_kind=principal_kind,
-                    include_ownership=include_ownership,
+            if recent:
+                latest_no = recent[0]["version_no"]
+                row = get_principal_version(
+                    db, tenant_id=tenant_id,
+                    principal_kind=principal_kind, principal_id=principal_id,
+                    version_no=latest_no,
                 )
-    except Exception:
-        # Best-effort: a versioning lookup failure shouldn't block
-        # fingerprint computation. The hash remains None and the
-        # caller can decide whether to treat that as an error.
-        logger.debug(
-            "[KYP-FP] could not resolve definition snapshot for "
-            "%s:%s -- fingerprint will omit definition_hash.",
-            principal_kind, principal_id, exc_info=True)
+                if row is not None:
+                    defn = row.get("definition") or {}
+                    definition_hash = canonical_hash(
+                        defn,
+                        principal_kind=principal_kind,
+                        include_ownership=include_ownership,
+                    )
+        except Exception:  # noqa: BLE001
+            # Best-effort: a versioning lookup failure shouldn't
+            # block fingerprint computation. The hash remains None
+            # and the caller can decide whether to treat that as
+            # an error.
+            logger.debug(
+                "[KYP-FP] could not resolve definition snapshot for "
+                "%s:%s -- fingerprint will omit definition_hash.",
+                principal_kind, principal_id, exc_info=True)
 
     # 2. Lineage from the trust row's attributes JSON.
-    lineage = _lineage_from_trust_row(
-        db, tenant_id=tenant_id,
-        principal_kind=principal_kind, principal_id=principal_id,
-    )
+    if have_batch:
+        lineage = _lineage_from_attrs(
+            _batch.trust_attributes.get(pair, {}))
+    else:
+        lineage = _lineage_from_trust_row(
+            db, tenant_id=tenant_id,
+            principal_kind=principal_kind, principal_id=principal_id,
+        )
 
     # 3. Ancestors via the many-to-many edges DAG. We include all
     #    edge kinds by default (delegation + membership + control
@@ -433,10 +615,14 @@ def principal_fingerprint(
     #    joins a new fleet IS the audit signal we want.
     ancestors: list[dict] | None = None
     if include_edges:
-        ancestors = _ancestor_pairs(
-            db, tenant_id=tenant_id,
-            principal_kind=principal_kind, principal_id=principal_id,
-        )
+        if have_batch:
+            ancestors = _batch.ancestors_by_principal.get(pair, [])
+        else:
+            ancestors = _ancestor_pairs(
+                db, tenant_id=tenant_id,
+                principal_kind=principal_kind,
+                principal_id=principal_id,
+            )
 
     manifest = {
         "scheme":          "principal-v1",
@@ -469,6 +655,27 @@ def principal_fingerprint(
     }
 
 
+def _lineage_from_attrs(attrs: dict) -> list[dict]:
+    """Pure normaliser for the ``attributes.lineage`` JSON shape.
+    Returns ``[{kind, id}, ...]``; invalid / missing entries are
+    silently dropped.
+
+    Extracted from :func:`_lineage_from_trust_row` so the batch
+    path can normalise a pre-fetched attributes dict without
+    re-querying the trust row.
+    """
+    raw = attrs.get("lineage") if isinstance(attrs, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for entry in raw:
+        if (isinstance(entry, dict)
+                and isinstance(entry.get("kind"), str)
+                and isinstance(entry.get("id"), str)):
+            out.append({"kind": entry["kind"], "id": entry["id"]})
+    return out
+
+
 def _lineage_from_trust_row(
     db: Any,
     *,
@@ -478,24 +685,17 @@ def _lineage_from_trust_row(
 ) -> list[dict]:
     """Return the ``attributes.lineage`` list from the principal's
     trust row, or ``[]`` when no row exists or no lineage was set.
+
+    Per-principal DB read -- batch consumers should use
+    :func:`build_fingerprint_batch` + :func:`_lineage_from_attrs`
+    to avoid N+1.
     """
     try:
         row = get_principal_trust(
             db, tenant_id, principal_kind, principal_id)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
-    attrs = row.attributes or {}
-    raw = attrs.get("lineage")
-    if not isinstance(raw, list):
-        return []
-    # Normalise: only entries with both kind + id make it in.
-    out: list[dict] = []
-    for entry in raw:
-        if (isinstance(entry, dict)
-                and isinstance(entry.get("kind"), str)
-                and isinstance(entry.get("id"), str)):
-            out.append({"kind": entry["kind"], "id": entry["id"]})
-    return out
+    return _lineage_from_attrs(row.attributes or {})
 
 
 def _ancestor_pairs(

@@ -189,6 +189,8 @@ from .principals import (
     ensure_principal_table,
     get_principal_trust,
     get_principal_window_counts,
+    PrincipalFingerprintBatch,
+    build_fingerprint_batch,
     is_valid_principal_kind,
     list_principals,
     principal_fingerprint,
@@ -684,6 +686,8 @@ __all__ = [
     "get_principal_version",
     # v0.1.8 — hierarchical fingerprint middle layer
     "principal_fingerprint",
+    "PrincipalFingerprintBatch",
+    "build_fingerprint_batch",
     # Invocation tracking (event-time vs ingest-time + parallel tree)
     "VALID_MODES",
     "VALID_OUTCOMES",
