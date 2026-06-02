@@ -1,7 +1,16 @@
 # veldt-kya
 
 **KYA (Know Your Agents)** is open-source trust, governance, and
-evidentiary assurance infrastructure for autonomous systems.
+evidentiary assurance for autonomous systems.
+
+KYA treats every autonomous actor as a typed principal:
+
+- **AI agents** &middot; multi-agent systems &middot; agentic RAG
+- **Drones &middot; robots &middot; vehicles &middot; controllers**
+- **PLCs &middot; SCADA &middot; industrial automation**
+- **Humans &middot; service accounts &middot; machine identities**
+
+A single trust ledger spans all of them.
 
 It helps organizations answer:
 
@@ -23,9 +32,16 @@ attribution, policy enforcement, evidentiary provenance, drift
 detection, data-sensitivity controls, and compliance-grade evidence
 chains.
 
-Applicable to LLM agents, multi-agent systems, autonomous workflows,
-agentic RAG, AutoML pipelines, RPA bots, service accounts, and
-machine identities.
+Authority flows along typed delegation edges:
+
+```
+human → controller → agent → drone → actuator
+```
+
+A misbehaving actuator is attributable up the chain — through the
+drone that hosts it, the agent that issued the command, the
+controller that operated the agent, and the human accountable for
+the controller.
 
 ```bash
 pip install veldt-kya
@@ -59,43 +75,43 @@ from kya import (
 )
 
 # 1) Pre-deployment: assess the agent against its declared capabilities
-billing_agent = {
-    "agent_key": "billing_agent",
+mission_planner = {
+    "agent_key": "mission_planner",
     "model": "openai/gpt-4o-mini",
-    "tools": ["read_customer", "issue_credit"],
+    "tools": ["read_telemetry", "modify_route"],
     "human_loop": "in_the_loop",
     "access_level": "write",
     "can_override": False,
     "data_classes": ["pii"],
-    "compliance_scope": ["nydfs_500", "gdpr"],
+    "compliance_scope": ["itar", "gdpr"],
 }
-risk = score_agent(billing_agent)
+risk = score_agent(mission_planner)
 
 # 2) At runtime: record what happened
 gate = "ALLOWED"
 with default_session() as db:
-    snapshot_agent(db, tenant_id="bank-1",
-                   agent_key="billing_agent",
-                   definition=billing_agent)
+    snapshot_agent(db, tenant_id="tenant-alpha",
+                   agent_key="mission_planner",
+                   definition=mission_planner)
 
     inv = record_invocation(
-        db, tenant_id="bank-1",
-        agent_key="billing_agent",
-        principal_kind="agent", principal_id="billing_agent",
+        db, tenant_id="tenant-alpha",
+        agent_key="mission_planner",
+        principal_kind="agent", principal_id="mission_planner",
         mode="observed", outcome="success",
     )
 
-    record_evidence(db, tenant_id="bank-1", invocation_id=inv,
+    record_evidence(db, tenant_id="tenant-alpha", invocation_id=inv,
                     evidence_kind="tool_call",
                     payload={
-                        "tool": "read_customer",
-                        "query": "SELECT ssn, balance FROM customers WHERE id=:cid",
+                        "tool": "read_telemetry",
+                        "vehicle": "uav_001",
                         "data_class": "pii",
                     })
 
     record_principal_signal(
-        db, tenant_id="bank-1",
-        principal_kind="agent", principal_id="billing_agent",
+        db, tenant_id="tenant-alpha",
+        principal_kind="agent", principal_id="mission_planner",
         signal_kind="clean_invocation",
         actor_human_id="user_42",
     )
@@ -104,27 +120,27 @@ with default_session() as db:
     # 3) Governance gate: try a privileged action; min_trust=70 fires
     #    because the agent's trust score has not yet crossed the bar.
     try:
-        require_action(db, tenant_id="bank-1",
+        require_action(db, tenant_id="tenant-alpha",
                        principal_kind="agent",
-                       principal_id="billing_agent",
+                       principal_id="mission_planner",
                        action="kya.budget.write",
                        min_trust=70)
     except AccessDeniedError:
         gate = "BLOCKED"
 
     # 4) Audit time: prove nothing was tampered + read live trust
-    chain = verify_chain(db, tenant_id="bank-1", invocation_id=inv)
+    chain = verify_chain(db, tenant_id="tenant-alpha", invocation_id=inv)
     trust = get_principal_trust(
-        db, tenant_id="bank-1",
-        principal_kind="agent", principal_id="billing_agent",
+        db, tenant_id="tenant-alpha",
+        principal_kind="agent", principal_id="mission_planner",
     )
 
 # 5) Compliance: what controls apply, what's the retention?
-summary = compliance_summary(billing_agent, risk.score)
+summary = compliance_summary(mission_planner, risk.score)
 
 print(f"Principal:        agent:{trust.principal_id}")
 print(f"Risk score:       {risk.score} ({risk.bucket})")
-print(f"Data touched:     {billing_agent['data_classes']}")
+print(f"Data touched:     {mission_planner['data_classes']}")
 print(f"Trust score:      {trust.trust_score} ({trust.bucket})")
 print(f"Evidence chain:   {'valid' if chain['valid'] else 'broken'}  "
       f"(checked {chain['checked']} rows)")
@@ -144,6 +160,70 @@ exactly how it works.
 
 ---
 
+## Across cyber & physical — one ledger, every principal
+
+The same primitives apply to a controller dispatching commands to a
+drone via a planning agent. KYA treats all three as typed principals
+on one ledger.
+
+```python
+from kya import (
+    default_session,
+    snapshot_principal, principal_fingerprint,
+    record_invocation, record_evidence, verify_chain,
+)
+
+with default_session() as db:
+    # 1) Register three typed principals
+    for kind, pid, defn in [
+        ("controller", "mission_controller", {"system_id": 255}),
+        ("agent",      "planner_agent",
+            {"agent_key": "planner_agent",
+             "tools": ["plan_mission", "abort_mission"]}),
+        ("drone",      "uav_001",
+            {"system_id": 1, "vehicle_type": "ArduCopter"}),
+    ]:
+        snapshot_principal(db, tenant_id="tenant-alpha",
+                           principal_kind=kind, principal_id=pid,
+                           definition=defn)
+
+    # 2) The drone executes an ARM command, attributed up the chain
+    inv = record_invocation(db, tenant_id="tenant-alpha",
+                            agent_key="uav_001",
+                            principal_kind="drone", principal_id="uav_001",
+                            mode="observed", outcome="success")
+    record_evidence(db, tenant_id="tenant-alpha", invocation_id=inv,
+                    evidence_kind="tool_call",
+                    payload={"command": "MAV_CMD_COMPONENT_ARM_DISARM",
+                             "delegated_by": "planner_agent",
+                             "via": "mission_controller"})
+    db.commit()
+
+    # 3) Per-principal identity hash + regulator-replayable evidence
+    fp = principal_fingerprint(db, tenant_id="tenant-alpha",
+                               principal_kind="drone",
+                               principal_id="uav_001")
+    ok = verify_chain(db, tenant_id="tenant-alpha", invocation_id=inv)
+
+print(f"chain:       mission_controller -> planner_agent -> uav_001")
+print(f"drone hash:  {fp['fingerprint'][:16]}...")
+print(f"verified:    {ok['valid']}  ({ok['checked']} rows)")
+```
+
+`principal_fingerprint` binds each actor's identity to its authority
+context — same drone definition + different lineage = different
+fingerprint. Fleet-level aggregation (`fleet_fingerprint`), signed
+snapshots, and bit-identical cross-process replay ship in the
+commercial `veldt-kya-pro` overlay.
+
+KYA's principal vocabulary covers fourteen kinds out of the box:
+`agent`, `service_account`, `user`, `machine_identity`,
+`automated_workload`, `controller`, `drone`, `robot`, `vehicle`,
+`plc`, `scada`, `sensor`, `actuator`, `autonomous_system`. Custom
+kinds register via `register_principal_kind()`.
+
+---
+
 ## 1. KYP — Know Your Principal
 
 One trust ledger across humans, agents, and service accounts.
@@ -158,26 +238,26 @@ from kya import (
 )
 
 with default_session() as db:
-    snapshot_agent(db, tenant_id="bank-1",
-                   agent_key="loan_writer",
-                   definition={"agent_key": "loan_writer",
-                               "tools": ["write_loan"]})
+    snapshot_agent(db, tenant_id="tenant-alpha",
+                   agent_key="planner_agent",
+                   definition={"agent_key": "planner_agent",
+                               "tools": ["modify_route"]})
 
     # Signals can come from anywhere: runtime judges, RBAC gates,
     # kernel-level alerts, manual ops decisions. They all converge
     # on one principal ledger.
     for sig in ["clean_invocation", "received_attack", "data_leak"]:
         new = record_principal_signal(
-            db, tenant_id="bank-1",
-            principal_kind="agent", principal_id="loan_writer",
+            db, tenant_id="tenant-alpha",
+            principal_kind="agent", principal_id="planner_agent",
             signal_kind=sig,
         )
         print(f"  after {sig:<22} -> trust={new}")
     db.commit()
 
     trust = get_principal_trust(
-        db, tenant_id="bank-1",
-        principal_kind="agent", principal_id="loan_writer",
+        db, tenant_id="tenant-alpha",
+        principal_kind="agent", principal_id="planner_agent",
     )
 
 print(f"final  trust={trust.trust_score} ({trust.bucket})")
@@ -207,39 +287,39 @@ from kya import (
 )
 
 with default_session() as db:
-    snapshot_agent(db, tenant_id="bank-1",
-                   agent_key="loan_orchestrator",
-                   definition={"agent_key": "loan_orchestrator",
+    snapshot_agent(db, tenant_id="tenant-alpha",
+                   agent_key="mission_controller",
+                   definition={"agent_key": "mission_controller",
                                "tools": ["delegate"]})
 
     # The delegate leaks data, attribution carried in attributes
     record_principal_signal(
-        db, tenant_id="bank-1",
-        principal_kind="agent", principal_id="loan_writer",
+        db, tenant_id="tenant-alpha",
+        principal_kind="agent", principal_id="planner_agent",
         signal_kind="data_leak",
-        attributes={"delegated_by": "loan_orchestrator"},
+        attributes={"delegated_by": "mission_controller"},
     )
 
     # The orchestrator takes a smaller hit for failing to gate
     record_principal_signal(
-        db, tenant_id="bank-1",
-        principal_kind="agent", principal_id="loan_orchestrator",
+        db, tenant_id="tenant-alpha",
+        principal_kind="agent", principal_id="mission_controller",
         signal_kind="governance_block",
-        attributes={"delegate": "loan_writer",
+        attributes={"delegate": "planner_agent",
                     "reason": "delegate_misbehavior"},
     )
     db.commit()
 
-    child = get_principal_trust(db, tenant_id="bank-1",
+    child = get_principal_trust(db, tenant_id="tenant-alpha",
                                 principal_kind="agent",
-                                principal_id="loan_writer")
-    parent = get_principal_trust(db, tenant_id="bank-1",
+                                principal_id="planner_agent")
+    parent = get_principal_trust(db, tenant_id="tenant-alpha",
                                  principal_kind="agent",
-                                 principal_id="loan_orchestrator")
+                                 principal_id="mission_controller")
 
-print(f"child   (loan_writer):       trust={child.trust_score} "
+print(f"child   (planner_agent):       trust={child.trust_score} "
       f"({child.bucket})  signals={child.signal_counts}")
-print(f"parent  (loan_orchestrator): trust={parent.trust_score} "
+print(f"parent  (mission_controller): trust={parent.trust_score} "
       f"({parent.bucket})  signals={parent.signal_counts}")
 print(f"  attribution carried:       {child.attributes}")
 ```
@@ -263,29 +343,29 @@ from kya import (
 
 with default_session() as db:
     inv = record_invocation(
-        db, tenant_id="bank-1",
-        agent_key="loan_writer",
-        principal_kind="agent", principal_id="loan_writer",
+        db, tenant_id="tenant-alpha",
+        agent_key="planner_agent",
+        principal_kind="agent", principal_id="planner_agent",
         mode="observed", outcome="success",
     )
     for kind, payload in [
-        ("prompt",    {"text": "Approve loan #4521"}),
-        ("tool_call", {"tool": "read_credit", "applicant": "id_84"}),
-        ("response",  {"text": "Approved at $25,000 APR 8.2%"}),
+        ("prompt",    {"text": "Authorize mission #4521"}),
+        ("tool_call", {"tool": "read_telemetry", "vehicle": "uav_001"}),
+        ("response",  {"text": "Mission authorized: route alpha-7"}),
     ]:
-        record_evidence(db, tenant_id="bank-1", invocation_id=inv,
+        record_evidence(db, tenant_id="tenant-alpha", invocation_id=inv,
                         evidence_kind=kind, payload=payload)
     db.commit()
-    ok = verify_chain(db, tenant_id="bank-1", invocation_id=inv)
+    ok = verify_chain(db, tenant_id="tenant-alpha", invocation_id=inv)
 
     # Attacker rewrites the approved amount post-hoc
     db.execute(text(
         "UPDATE kya_evidence "
-        "SET payload = json('{\"text\":\"Approved at $250,000\"}') "
+        "SET payload = json('{\"text\":\"Mission authorized: route delta-9\"}') "
         "WHERE invocation_id = :i AND evidence_kind = 'response'"
     ), {"i": inv})
     db.commit()
-    bad = verify_chain(db, tenant_id="bank-1", invocation_id=inv)
+    bad = verify_chain(db, tenant_id="tenant-alpha", invocation_id=inv)
 
 print(f"intact:   valid={ok['valid']}  checked={ok['checked']}")
 print(f"tampered: valid={bad['valid']}  "
@@ -306,8 +386,8 @@ notification windows, and the regulator's citation chain.
 from kya import compliance_summary, REGIME_BREACH_NOTIFY
 
 agent_def = {
-    "agent_key": "billing_agent",
-    "compliance_scope": ["nydfs_500"],
+    "agent_key": "mission_planner",
+    "compliance_scope": ["itar"],
     "data_classes": ["pii"],
 }
 summary = compliance_summary(agent_def, risk_score=100)
@@ -316,7 +396,7 @@ print(f"scope:           {summary['scope']}")
 print(f"retention_days:  {summary['retention_days']}")
 print(f"first control:   {summary['required_controls'][0]['id']}  "
       f"({summary['required_controls'][0]['source']})")
-print(f"NYDFS notify:    {REGIME_BREACH_NOTIFY['nydfs_500']}")
+print(f"ITAR notify:     {REGIME_BREACH_NOTIFY['itar']}")
 ```
 
 Built-in regimes: GDPR, EU AI Act, HIPAA, SOX, PCI, CCPA, GLBA,
@@ -335,44 +415,44 @@ produces the same canonical view + the same risk score.
 ```python
 from kya import normalize_agent_def, score_agent
 
-# Same billing-triage agent, three framework shells:
+# Same mission-triage agent, three framework shells:
 
 oa = normalize_agent_def("openai", {
-    "id": "billing_triage", "model": "gpt-4o-mini",
-    "instructions": "Triage billing tickets",
+    "id": "mission_triage", "model": "gpt-4o-mini",
+    "instructions": "Triage mission requests",
     "tools": [
-        {"type": "function", "function": {"name": "read_billing"}},
-        {"type": "function", "function": {"name": "issue_credit"}},
+        {"type": "function", "function": {"name": "read_telemetry"}},
+        {"type": "function", "function": {"name": "modify_route"}},
     ],
 })
 
 from crewai import Agent
 from crewai.tools import tool as crewai_tool
 
-@crewai_tool("read_billing")
-def read_billing(customer_id: str) -> str:
-    """Read billing records."""
+@crewai_tool("read_telemetry")
+def read_telemetry(vehicle_id: str) -> str:
+    """Read mission telemetry."""
     return ""
 
-@crewai_tool("issue_credit")
-def issue_credit(customer_id: str, amount: float) -> str:
-    """Issue billing credit."""
+@crewai_tool("modify_route")
+def modify_route(vehicle_id: str, waypoints: list) -> str:
+    """Modify mission route."""
     return ""
 
 crew = normalize_agent_def("crewai", Agent(
-    role="Billing Triage", goal="Triage billing tickets",
-    backstory="Senior billing analyst",
-    tools=[read_billing, issue_credit],
+    role="Mission Triage", goal="Triage mission requests",
+    backstory="Senior mission analyst",
+    tools=[read_telemetry, modify_route],
     allow_delegation=False, verbose=False,
 ))
 
 gen = normalize_agent_def("generic", {
-    "agent_key": "billing_triage",
+    "agent_key": "mission_triage",
     "model": "openai/gpt-4o-mini",
-    "tools": ["read_billing", "issue_credit"],
+    "tools": ["read_telemetry", "modify_route"],
     "access_level": "write",
-    "data_classes": ["customer_financial"],
-    "compliance_scope": ["nydfs_500", "pci"],
+    "data_classes": ["operational"],
+    "compliance_scope": ["itar"],
 })
 
 for name, canon in [("OpenAI", oa), ("CrewAI", crew), ("Generic", gen)]:
@@ -435,7 +515,7 @@ from kya import (
 with default_session() as db:
     # One invocation -- the agent's normal work
     inv = record_invocation(
-        db, tenant_id="bank-1",
+        db, tenant_id="tenant-alpha",
         agent_key="research_agent",
         principal_kind="agent", principal_id="research_agent",
         mode="observed", outcome="success",
@@ -443,7 +523,7 @@ with default_session() as db:
     )
 
     # Application-layer evidence: the tool call the agent made
-    record_evidence(db, tenant_id="bank-1", invocation_id=inv,
+    record_evidence(db, tenant_id="tenant-alpha", invocation_id=inv,
                     evidence_kind="tool_call",
                     payload={"tool": "fetch_url",
                              "url": "https://internal-corpus.example.com/doc-42"})
@@ -453,7 +533,7 @@ with default_session() as db:
     # for runtime-security sources (runtime_auditd, runtime_tetragon,
     # runtime_tracee, runtime_osquery, runtime_sysdig, runtime_k8s_audit,
     # runtime_ebpf).
-    record_evidence(db, tenant_id="bank-1", invocation_id=inv,
+    record_evidence(db, tenant_id="tenant-alpha", invocation_id=inv,
                     evidence_kind="runtime_falco",
                     payload={"rule": "Terminal shell in container",
                              "priority": "critical",
@@ -462,7 +542,7 @@ with default_session() as db:
 
     # Route the kernel signal into the principal's trust ledger
     record_principal_signal(
-        db, tenant_id="bank-1",
+        db, tenant_id="tenant-alpha",
         principal_kind="agent", principal_id="research_agent",
         signal_kind="policy_violation",
         attributes={"source": "falco", "mitre": "T1059"},
@@ -476,7 +556,7 @@ with default_session() as db:
         "       coalesce(json_extract(payload,'$.rule'),'-') as rule "
         "FROM kya_evidence WHERE invocation_id = :i ORDER BY id"
     ), {"i": inv}).fetchall()
-    trust = get_principal_trust(db, tenant_id="bank-1",
+    trust = get_principal_trust(db, tenant_id="tenant-alpha",
                                 principal_kind="agent",
                                 principal_id="research_agent")
 
@@ -505,14 +585,14 @@ registration.
 ```python
 from kya import canonical_hash, detect_drift
 
-declared = {"agent_key": "billing_agent",
-            "tools": ["read_customer"],
+declared = {"agent_key": "mission_planner",
+            "tools": ["read_telemetry"],
             "model": "gpt-4o-mini"}
 declared_hash = canonical_hash(declared)
 
 # Someone adds a high-power tool without re-registering
-current = {"agent_key": "billing_agent",
-           "tools": ["read_customer", "shell_exec"],
+current = {"agent_key": "mission_planner",
+           "tools": ["read_telemetry", "shell_exec"],
            "model": "gpt-4o-mini"}
 
 print(f"same def:      drift={detect_drift(declared_hash, declared)}")
