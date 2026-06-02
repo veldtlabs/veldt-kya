@@ -260,6 +260,28 @@ def capture(conn, seconds: int) -> list[dict]:
     return captured
 
 
+def _json_default(obj):
+    """JSON fallback encoder for the bytes-y stuff pymavlink
+    emits in ``msg.to_dict()``.
+
+    pymavlink keeps STATUSTEXT.text, PARAM_SET.param_id, and
+    MISSION_ITEM string fields as ``bytearray`` (raw on-wire
+    bytes). ``json.dumps`` doesn't know how to encode those.
+    Decode as UTF-8 with ``replace`` so a malformed/embedded-NUL
+    byte sequence becomes a U+FFFD sentinel rather than
+    crashing the capture write at the very end of a 30-second
+    run -- which is exactly what bit me locally.
+
+    For raw ``bytes`` we do the same. Anything we don't know,
+    re-raise so we don't silently drop data.
+    """
+    if isinstance(obj, (bytes, bytearray)):
+        return bytes(obj).decode("utf-8", errors="replace")
+    raise TypeError(
+        f"Object of type {type(obj).__name__} is not JSON serializable"
+    )
+
+
 def write_ndjson(frames: list[dict], path: Path) -> None:
     """Write frames as NDJSON to ``path``. One JSON object per
     line, trailing newline (the conventional NDJSON shape).
@@ -272,7 +294,7 @@ def write_ndjson(frames: list[dict], path: Path) -> None:
     existence should also check size > 0 before assuming
     "capture available".
     """
-    lines = "\n".join(json.dumps(f) for f in frames)
+    lines = "\n".join(json.dumps(f, default=_json_default) for f in frames)
     path.write_text(lines + "\n" if lines else "")
 
 
