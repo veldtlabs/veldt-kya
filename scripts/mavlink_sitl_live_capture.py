@@ -50,6 +50,7 @@ from _sitl_common import (  # noqa: E402
     preflight,
     run,
     wait_for_heartbeat,
+    wait_for_port_serving,
     write_ndjson,
 )
 
@@ -295,6 +296,15 @@ def main() -> int:
     preflight(OUT)
     try:
         launch_sitl()
+        # Gate: don't connect pymavlink until arducopter is
+        # actually serving on the inner port. Without this the
+        # connect would EOF immediately on the slow CI runner
+        # and waste the entire heartbeat timeout window.
+        wait_for_port_serving(
+            host=MAVLINK_HOST, port=MAVLINK_PORT,
+            timeout=BOOT_TIMEOUT,
+            container_name=CONTAINER_NAME,
+        )
         conn = wait_for_heartbeat(
             host=MAVLINK_HOST, port=MAVLINK_PORT,
             timeout=BOOT_TIMEOUT,

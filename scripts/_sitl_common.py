@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -182,6 +183,83 @@ def preflight(out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
 
+# ── Wait for ArduCopter inner port to actually be serving ───────
+
+
+def wait_for_port_serving(
+    *, host: str, port: int, timeout: int = 180,
+    container_name: str | None = None,
+) -> None:
+    """Block until <host>:<port> serves at least one TCP byte
+    (not just accepts the connection).
+
+    Why this exists: ``docker run -d`` returns the moment the
+    container is created -- LONG before sim_vehicle.py inside
+    has launched arducopter and arducopter has bound its TCP
+    console. If pymavlink calls ``mavlink_connection`` in that
+    gap, the connection enters one of two failure modes:
+
+      1. Docker's userland proxy accepts the TCP connect
+         (because the host port mapping is live) but the
+         backend isn't ready -- the proxy immediately closes,
+         pymavlink sees EOF, recv_match returns None, and
+         the heartbeat loop spins at ~30 000 EOFs/sec for the
+         full TIMEOUT window. Wall: 5 min lost, log: 500 MB+
+         of "EOF on TCP socket" lines.
+
+      2. The connect itself refuses, but pymavlink retries in
+         the same hot loop.
+
+    Both modes manifest as "no HEARTBEAT in <timeout>s" but
+    waste the timeout window. The actual hang isn't a kya bug
+    or a parser bug -- it's a timing bug in the SITL harness.
+
+    This helper does the right thing: a single short TCP connect
+    + recv(1) per attempt. Returns the moment arducopter emits
+    its first MAVLink magic byte. Sleeps between attempts so we
+    don't pin a core.
+    """
+    print(f"waiting for tcp:{host}:{port} to serve MAVLink bytes ...")
+    deadline = time.time() + timeout
+    attempt = 0
+    last_err: Exception | None = None
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            with socket.create_connection(
+                (host, port), timeout=2,
+            ) as probe:
+                probe.settimeout(2)
+                try:
+                    data = probe.recv(8)
+                except socket.timeout:
+                    data = b""
+            if data:
+                magic = data[0]
+                print(
+                    f"tcp:{host}:{port} serving "
+                    f"(first byte 0x{magic:02x}, "
+                    f"attempt {attempt})"
+                )
+                return
+            # Connect succeeded but backend produced no bytes
+            # in 2s -- docker proxy accepted while arducopter
+            # is still initialising. Keep waiting.
+        except OSError as e:
+            last_err = e
+        time.sleep(2)
+
+    print(
+        f"FAIL: tcp:{host}:{port} never served bytes "
+        f"within {timeout}s "
+        f"(last err: {last_err!r})",
+        file=sys.stderr,
+    )
+    if container_name:
+        dump_container_diagnostics(container_name)
+    die(f"port {host}:{port} never served bytes within {timeout}s")
+
+
 # ── Heartbeat ────────────────────────────────────────────────────
 
 
@@ -342,6 +420,7 @@ __all__ = [
     "cleanup_container",
     "dump_container_diagnostics",
     "preflight",
+    "wait_for_port_serving",
     "wait_for_heartbeat",
     "capture",
     "write_ndjson",
