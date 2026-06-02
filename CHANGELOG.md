@@ -10,6 +10,61 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dedicated `veldt-kya` repo separated from the upstream `veldt-decisions`
   monorepo (open-core split).
 
+## [0.1.8]
+
+### Added
+- **MAVLink parser** for drone / autonomous-systems telemetry
+  (`kya.runtime.parsers.mavlink`). Canonicalizes six core MAVLink
+  message families (HEARTBEAT, COMMAND_LONG, COMMAND_ACK, MISSION_*,
+  PARAM_*, SYS_STATUS) into `AutonomyEvent` records. ArduPilot SITL
+  harness ships in `tests/live/test_mavlink_sitl.py` with hardened CI
+  (port-wait, SHA-pin, drift guard, cross-process replay).
+- **Principal extension** to fourteen typed kinds: `agent`,
+  `service_account`, `user`, `machine_identity`, `automated_workload`,
+  `controller`, `drone`, `robot`, `vehicle`, `plc`, `scada`, `sensor`,
+  `actuator`, `autonomous_system`. Custom kinds register via
+  `register_principal_kind()`.
+- `kya.snapshot_principal(db, *, tenant_id, principal_kind, principal_id,
+  definition, ...)` — immutable definition snapshot for any typed
+  principal. Same storage path as `snapshot_agent` (composed
+  `<kind>:<id>` key) so existing indexes / replication pipelines cover
+  drones / robots / PLCs without forking schema.
+- `kya.principal_fingerprint(db, *, tenant_id, principal_kind,
+  principal_id, ...)` — composite identity hash binding a principal's
+  definition to its delegation lineage. Same definition + different
+  lineage = different fingerprint. Read-only, deterministic.
+- `KYA_HASH_STRICT_KIND` env var: when set, raises on unknown
+  `principal_kind` values instead of silently treating them as `agent`.
+- Many-to-many `kya_principal_edges` table + cycle-safe ancestor /
+  descendant walks (`walk_ancestors`, `walk_descendants`) carrying typed
+  edge kinds (`operates`, `member_of`, `supervises`, `delegates_to`).
+
+### Changed
+- Threading lock added to `_HASHED_FIELDS_BY_KIND` and
+  `_REGISTERED_PRINCIPAL_KINDS` for concurrent custom-kind registration.
+- `canonical_hash` now rejects `principal_id` values containing `:`
+  since `<kind>:<id>` is the storage key composition delimiter.
+- Batch-fetch optimization for `fleet_fingerprint` removes the N+1 query
+  pattern when fingerprinting large fleets.
+
+### Fixed
+- `_discover_principals` cross-source deduplication (the same
+  controller declared by two parsers is now collapsed to one principal).
+- `canonical_hash` datetime nondeterminism (mixed naive / aware values
+  with the same epoch now hash identically).
+- Bridge dispatch source_kind / class mismatch on `RuntimeEvent` vs
+  `AutonomyEvent` routing.
+
+### Docs
+- README refreshed for cross-domain (cyber + physical) positioning. New
+  "Across cyber & physical" example showing `mission_controller →
+  planner_agent → uav_001` chain using `snapshot_principal` +
+  `principal_fingerprint` + `verify_chain`. Hierarchy diagram
+  (`human → controller → agent → drone → actuator`) added near the
+  opener. Financial-domain example names renamed to mission /
+  autonomous-systems wording. `CONTRIBUTING.md` gains a Live SITL run
+  step for MAVLink-touching changes.
+
 ## [0.1.7]
 
 ### Added
