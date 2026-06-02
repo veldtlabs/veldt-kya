@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 # Local import -- shared helpers between the two SITL scripts.
@@ -62,6 +63,7 @@ from _sitl_common import (  # noqa: E402
     cleanup_container,
     cleanup_stale_kya_containers,
     die,
+    drain,
     env_int,
     env_port,
     preflight,
@@ -95,10 +97,28 @@ MAVLINK_PORT = env_port("MAVLINK_PORT", 14550)
 # binaries + sim_vehicle.py at /ardupilot/Tools/autotest/sim_vehicle.py.
 # Verified to boot ArduCopter v4.x against this script's command-line.
 #
-# CI override the SITL_IMAGE env var to pin to a SHA digest for
-# year-over-year reproducibility:
-#   SITL_IMAGE=radarku/ardupilot-sitl@sha256:<digest>
-_SITL_IMAGE_DEFAULT = "radarku/ardupilot-sitl:latest"
+# Pinned by SHA digest, NOT ``:latest``. Reasons:
+#   1. ``:latest`` is mutable -- the 3rd-party publisher can push
+#      a breaking or compromised image and our CI silently picks
+#      it up. Pinning makes the supply-chain footprint
+#      bit-for-bit reproducible.
+#   2. radarku is a community publisher (6 stars). We cannot
+#      revoke their image, but we CAN refuse to trust new
+#      revisions until we've re-verified locally.
+#
+# Bumping the pin: pull the new tag locally, run
+# ``python scripts/mavlink_sitl_live_capture.py`` end-to-end,
+# confirm the 4 live integration tests pass, then update the
+# digest below AND in .github/workflows/mavlink-sitl-live.yml.
+# A workflow step asserts the two literals match -- if you bump
+# one without the other, CI will fail loudly.
+#
+# Override via SITL_IMAGE env var for vendored / mirrored images
+# (e.g. ghcr.io/veldtlabs/...) in a customer deployment.
+_SITL_IMAGE_DEFAULT = (
+    "radarku/ardupilot-sitl@sha256:"
+    "2364ae14e190e4cdd5d0839b3a55e6b5c6a980d9ff0000b1be7b8baae6fd50f1"
+)
 SITL_IMAGE = os.environ.get("SITL_IMAGE", _SITL_IMAGE_DEFAULT)
 
 # Full path to sim_vehicle.py inside the image -- not on PATH by
@@ -177,6 +197,13 @@ def launch_sitl() -> None:
     #                     arducopter TCP console (port 5760).
     cmd = [
         "docker", "run", "-d", "--name", CONTAINER_NAME,
+        # Hardening posture for an SDK marketed on principal-bound
+        # evidence: drop ALL caps + forbid privilege escalation.
+        # arducopter is a userland binary -- it has no legitimate
+        # need for any Linux capability. The TCP port it binds
+        # (5760) is unprivileged. Dropping caps is free.
+        "--cap-drop=ALL",
+        "--security-opt", "no-new-privileges:true",
         "-p", f"{MAVLINK_HOST}:{MAVLINK_PORT}:{_SITL_INNER_PORT}/tcp",
         SITL_IMAGE,
         # Full path -- sim_vehicle.py isn't on PATH in this image.
@@ -200,7 +227,7 @@ def launch_sitl() -> None:
 # ── Scripted mission ─────────────────────────────────────────────
 
 
-def run_scripted_mission(conn) -> list[dict]:
+def run_scripted_mission(conn) -> tuple[list[dict], list[dict]]:
     """Issue a minimal flight cycle so the autopilot emits every
     governance-relevant message family the parser handles:
 
@@ -211,26 +238,32 @@ def run_scripted_mission(conn) -> list[dict]:
         5. COMMAND_LONG takeoff (-> takeoff)
         6. STATUSTEXT will fire naturally during the cycle (-> status)
 
-    Returns the list of dicts representing the OPERATOR-side
-    commands the script just emitted -- one dict per send call,
-    in pymavlink ``to_dict()`` shape.
+    Returns a 2-tuple:
+      * operator_frames: list of dicts for the commands the
+        script JUST emitted (pymavlink to_dict() shape).
+      * inbound_during_mission: list of dicts for the autopilot's
+        return traffic captured INLINE between sends. Drains
+        the TCP buffer during the ~2.5s mission window so the
+        COMMAND_ACK / SET_MODE_ACK / mode-change STATUSTEXT
+        bursts aren't lost to buffer overrun before the
+        post-mission ``capture()`` window starts (the H1 fix
+        from the SITL CI review).
 
-    Why we synthesize them rather than read back from the wire:
-    in normal MAVLink, commands flow from operator -> autopilot
-    and the autopilot ACKs them; the autopilot does NOT echo the
-    original command back. A real KYA deployment hooks into a
-    MAVLink router (mavproxy aircraft hook, ground-station
-    sidecar, etc.) that tees both directions. This script
-    is its own operator -- so we record what we emit, then
-    merge with what the autopilot returns. That gives the
-    integration test the full two-direction view a router
-    would see.
+    Why we synthesize operator frames rather than read back from
+    the wire: in normal MAVLink, commands flow from operator ->
+    autopilot and the autopilot ACKs them; the autopilot does
+    NOT echo the original command back. A real KYA deployment
+    hooks into a MAVLink router (mavproxy aircraft hook, GCS
+    sidecar) that tees both directions. This script is its own
+    operator -- so we record what we emit, then merge with what
+    the autopilot returns.
 
-    The inter-command sleeps are conservative: a cold CI runner
-    needs ~0.5s for SET_MODE to ACK before the next frame fires.
+    The inter-command sleeps are now ``drain`` calls instead of
+    bare ``time.sleep`` so the inter-command intervals double as
+    capture windows. A cold CI runner still needs ~0.5s for
+    SET_MODE to ACK before the next frame fires; that time is
+    now spent reading the socket instead of idle-blocking.
     """
-    import time as _time  # local; never used at module load
-
     from pymavlink import mavutil  # noqa: PLC0415
 
     sysid = conn.target_system or 1
@@ -240,16 +273,22 @@ def run_scripted_mission(conn) -> list[dict]:
     # GCS_SYSID env (a multi-operator test setup would use this).
     gcs_sysid = env_int("GCS_SYSID", 255)
     gcs_compid = env_int("GCS_COMPID", 1)
-    now = _time.time
 
     emitted: list[dict] = []
+    inbound: list[dict] = []
 
     def _record(d: dict) -> None:
         d.setdefault("sysid", gcs_sysid)
         d.setdefault("compid", gcs_compid)
         d["_handled"] = True
-        d["_ts"] = now()
+        d["_ts"] = time.time()
         emitted.append(d)
+
+    def _pause(seconds: float) -> None:
+        """Replace bare time.sleep with an inline drain so the
+        TCP buffer can't overrun. Same wall-clock duration as
+        the old sleep, but now feeding ``inbound``."""
+        inbound.extend(drain(conn, seconds))
 
     # 1. SET_MODE -> GUIDED (custom_mode=4 for ArduCopter)
     print("set_mode GUIDED ...")
@@ -264,7 +303,7 @@ def run_scripted_mission(conn) -> list[dict]:
         "base_mode": mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
         "custom_mode": 4,
     })
-    _time.sleep(0.5)
+    _pause(0.5)
 
     # 2. PARAM_SET FENCE_ENABLE=1
     print("param_set FENCE_ENABLE=1 ...")
@@ -282,12 +321,12 @@ def run_scripted_mission(conn) -> list[dict]:
         "param_value": 1.0,
         "param_type": mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
     })
-    _time.sleep(0.5)
+    _pause(0.5)
 
     # 3. Mission upload (one waypoint)
     print("mission upload ...")
     conn.mav.mission_count_send(sysid, compid, 1)
-    _time.sleep(0.5)
+    _pause(0.5)
     conn.mav.mission_item_int_send(
         sysid, compid,
         0,  # seq
@@ -310,7 +349,7 @@ def run_scripted_mission(conn) -> list[dict]:
         "y": 1491600400,
         "z": 50.0,
     })
-    _time.sleep(0.5)
+    _pause(0.5)
 
     # 4. COMMAND_LONG arm
     print("command_long arm ...")
@@ -329,7 +368,7 @@ def run_scripted_mission(conn) -> list[dict]:
         "param1": 1.0, "param2": 0.0, "param3": 0.0, "param4": 0.0,
         "param5": 0.0, "param6": 0.0, "param7": 0.0,
     })
-    _time.sleep(1.0)
+    _pause(1.0)
 
     # 5. COMMAND_LONG takeoff to 20m
     print("command_long takeoff 20m ...")
@@ -349,7 +388,9 @@ def run_scripted_mission(conn) -> list[dict]:
         "param5": 0.0, "param6": 0.0, "param7": 20.0,
     })
 
-    return emitted
+    # Final small drain to catch the last ACK after takeoff.
+    _pause(0.5)
+    return emitted, inbound
 
 
 # ── Entrypoint ───────────────────────────────────────────────────
@@ -374,23 +415,44 @@ def main() -> int:
             container_name=CONTAINER_NAME,
             transport="tcp",
         )
-        operator_frames = run_scripted_mission(conn)
-        inbound_frames = capture(conn, CAPTURE_SECONDS)
+        operator_frames, inbound_during = run_scripted_mission(conn)
+        inbound_after = capture(conn, CAPTURE_SECONDS)
     finally:
         cleanup_container(CONTAINER_NAME)
 
-    # Stitch operator-emitted commands (what we sent to the
-    # autopilot) ahead of the inbound capture (what the autopilot
-    # sent back). In a real KYA deployment the MAVLink router
-    # tees both directions; we synthesise the same shape here.
+    # Stitch operator emissions + inbound traffic captured DURING
+    # the mission (inline drain between sends) + inbound capture
+    # AFTER the mission. The mission-window drain is the H1 fix:
+    # without it the COMMAND_ACK / SET_MODE_ACK / mode-change
+    # STATUSTEXT bursts that come back during the ~2.5s of mission
+    # sends would sit in pymavlink's TCP recv buffer until the
+    # post-mission ``capture()`` finally reads them -- on slow
+    # CI runners that buffer overruns and loses frames.
+    inbound_frames = inbound_during + inbound_after
     frames = operator_frames + inbound_frames
 
     handled_count = sum(1 for f in frames if f.get("_handled"))
     print(
         f"captured {len(frames)} total frames; "
         f"{handled_count} are governance-relevant "
-        f"({len(operator_frames)} operator + {len(inbound_frames)} inbound)"
+        f"({len(operator_frames)} operator + "
+        f"{len(inbound_during)} inbound-during + "
+        f"{len(inbound_after)} inbound-after)"
     )
+
+    # H1-canary: assert we got non-empty inbound traffic. If the
+    # autopilot booted but emitted nothing back -- or the TCP
+    # buffer overran without us noticing -- the integration test
+    # would otherwise still pass on the synthesised operator
+    # frames alone. Fail explicitly so the next CI run surfaces
+    # the regression instead of silently shrinking coverage.
+    if not inbound_frames:
+        die(
+            "captured ZERO inbound frames -- the autopilot replied "
+            "nothing during/after the mission window. Either SITL "
+            "is hung after heartbeat OR the H1 fix regressed and "
+            "frames are being dropped. Investigate."
+        )
 
     write_ndjson(frames, OUT)
     print(f"wrote {OUT}")

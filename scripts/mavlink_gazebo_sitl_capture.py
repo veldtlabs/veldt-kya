@@ -180,6 +180,11 @@ def launch_gazebo_sitl() -> None:
 
     docker_args = [
         "docker", "run", "-d", "--name", CONTAINER_NAME,
+        # Hardening: same posture as the headless SITL path -- drop
+        # ALL caps, forbid privilege escalation. Gazebo + ArduPilot
+        # are userland binaries; no legitimate cap need.
+        "--cap-drop=ALL",
+        "--security-opt", "no-new-privileges:true",
         "-p", f"{MAVLINK_HOST}:{MAVLINK_PORT}:14550/udp",
     ]
 

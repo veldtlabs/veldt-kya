@@ -130,6 +130,32 @@ class TestLiveSitlCapture:
             f"expected sysid={expected_sysid} from SITL, "
             f"saw: {sysids_seen}")
 
+    def test_inbound_traffic_was_captured(self):
+        """H1 regression guard. The script synthesises 5 OPERATOR
+        frames for the commands it sends; if a future bug makes
+        the inbound capture window silently empty, the other
+        tests can STILL pass off the synthesised frames alone.
+
+        This test pins the assertion that the autopilot replied
+        with non-empty traffic. The 5 synthesised operator frames
+        all carry GCS sysid (255 by default); inbound frames
+        carry the autopilot sysid (1). Counting frames with
+        sysid != gcs_sysid is the cleanest signal.
+        """
+        import os
+        gcs_sysid_int = int(os.environ.get("GCS_SYSID", "255"))
+        frames = _load_frames()
+        inbound = [
+            f for f in frames
+            if f.get("sysid") not in (gcs_sysid_int, None)
+        ]
+        assert len(inbound) > 0, (
+            "ZERO inbound frames in the capture file. The autopilot "
+            "either booted and emitted nothing back, OR the H1 fix "
+            "regressed and the mission-window drain stopped capturing "
+            "inbound traffic. Investigate scripts/_sitl_common.py "
+            "drain() + mavlink_sitl_live_capture.py run_scripted_mission().")
+
     def test_bridge_accepts_every_parsed_event(self):
         """End-to-end: every parsed SITL frame must survive the
         bridge's _validate_event_classification (the C3 fix from

@@ -565,6 +565,44 @@ def wait_for_heartbeat(
 # ── Capture loop ─────────────────────────────────────────────────
 
 
+def _frame_dict(msg) -> dict:  # type: ignore[no-untyped-def]
+    """Build the per-frame dict shape downstream consumers expect.
+    Centralises the to_dict() + sysid/compid + _handled + _ts
+    annotation so the on-wire capture path and the interleaved
+    drain path produce IDENTICAL frame records."""
+    d = msg.to_dict()
+    # pymavlink's to_dict() omits the source sysid/compid -- they
+    # live on the parent message object via the get_src* accessors.
+    d.setdefault("sysid", msg.get_srcSystem())
+    d.setdefault("compid", msg.get_srcComponent())
+    d["_handled"] = msg.get_type() in HANDLED_MESSAGE_TYPES
+    d["_ts"] = time.time()
+    return d
+
+
+def drain(conn, seconds: float) -> list[dict]:
+    """Pull every available MAVLink frame off ``conn`` for
+    ``seconds`` of wall-clock time. Used between mission send
+    calls to catch the COMMAND_ACK / mode-change STATUSTEXT
+    bursts that pymavlink would otherwise drop on TCP-buffer
+    overrun while the mission was busy sending.
+
+    Returns the same per-frame dict shape as ``capture()``.
+    Difference is purely the use site: ``drain`` is for short
+    inline intervals (~0.5s between sends), ``capture`` is for
+    the post-mission window.
+    """
+    out: list[dict] = []
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        timeout = max(0.0, min(0.1, deadline - time.time()))
+        msg = conn.recv_match(blocking=True, timeout=timeout)
+        if msg is None:
+            continue
+        out.append(_frame_dict(msg))
+    return out
+
+
 def capture(conn, seconds: int) -> list[dict]:
     """Read MAVLink frames for ``seconds`` and return each as a
     dict (the shape ``kya.runtime.parsers.mavlink.parse`` consumes).
@@ -701,6 +739,7 @@ __all__ = [
     "wait_for_port_serving",
     "wait_for_heartbeat",
     "capture",
+    "drain",
     "write_ndjson",
     "env_int",
     "env_port",
