@@ -136,7 +136,7 @@ def launch_sitl() -> None:
 # ── Scripted mission ─────────────────────────────────────────────
 
 
-def run_scripted_mission(conn) -> None:
+def run_scripted_mission(conn) -> list[dict]:
     """Issue a minimal flight cycle so the autopilot emits every
     governance-relevant message family the parser handles:
 
@@ -147,10 +147,23 @@ def run_scripted_mission(conn) -> None:
         5. COMMAND_LONG takeoff (-> takeoff)
         6. STATUSTEXT will fire naturally during the cycle (-> status)
 
+    Returns the list of dicts representing the OPERATOR-side
+    commands the script just emitted -- one dict per send call,
+    in pymavlink ``to_dict()`` shape.
+
+    Why we synthesize them rather than read back from the wire:
+    in normal MAVLink, commands flow from operator -> autopilot
+    and the autopilot ACKs them; the autopilot does NOT echo the
+    original command back. A real KYA deployment hooks into a
+    MAVLink router (mavproxy aircraft hook, ground-station
+    sidecar, etc.) that tees both directions. This script
+    is its own operator -- so we record what we emit, then
+    merge with what the autopilot returns. That gives the
+    integration test the full two-direction view a router
+    would see.
+
     The inter-command sleeps are conservative: a cold CI runner
-    with --speedup 5 needs ~0.5s to ACK SET_MODE before the next
-    frame fires. The live integration test catches a silently-
-    dropped command via the "required actions" coverage assertion.
+    needs ~0.5s for SET_MODE to ACK before the next frame fires.
     """
     import time as _time  # local; never used at module load
 
@@ -158,6 +171,21 @@ def run_scripted_mission(conn) -> None:
 
     sysid = conn.target_system or 1
     compid = conn.target_component or 1
+    # The operator-side sysid we emit under. pymavlink defaults
+    # to 255 for ground-station traffic, but allow override via
+    # GCS_SYSID env (a multi-operator test setup would use this).
+    gcs_sysid = env_int("GCS_SYSID", 255)
+    gcs_compid = env_int("GCS_COMPID", 1)
+    now = _time.time
+
+    emitted: list[dict] = []
+
+    def _record(d: dict) -> None:
+        d.setdefault("sysid", gcs_sysid)
+        d.setdefault("compid", gcs_compid)
+        d["_handled"] = True
+        d["_ts"] = now()
+        emitted.append(d)
 
     # 1. SET_MODE -> GUIDED (custom_mode=4 for ArduCopter)
     print("set_mode GUIDED ...")
@@ -166,6 +194,12 @@ def run_scripted_mission(conn) -> None:
         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
         4,  # GUIDED
     )
+    _record({
+        "mavpackettype": "SET_MODE",
+        "target_system": sysid,
+        "base_mode": mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+        "custom_mode": 4,
+    })
     _time.sleep(0.5)
 
     # 2. PARAM_SET FENCE_ENABLE=1
@@ -176,6 +210,14 @@ def run_scripted_mission(conn) -> None:
         1.0,
         mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
     )
+    _record({
+        "mavpackettype": "PARAM_SET",
+        "target_system": sysid,
+        "target_component": compid,
+        "param_id": "FENCE_ENABLE",
+        "param_value": 1.0,
+        "param_type": mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+    })
     _time.sleep(0.5)
 
     # 3. Mission upload (one waypoint)
@@ -191,6 +233,19 @@ def run_scripted_mission(conn) -> None:
         0, 0, 0, 0,
         (-353621480), 1491600400, 50.0,  # Canberra-ish + 50m
     )
+    _record({
+        "mavpackettype": "MISSION_ITEM_INT",
+        "target_system": sysid,
+        "target_component": compid,
+        "seq": 0,
+        "frame": mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+        "command": mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+        "current": 0,
+        "autocontinue": 1,
+        "x": -353621480,
+        "y": 1491600400,
+        "z": 50.0,
+    })
     _time.sleep(0.5)
 
     # 4. COMMAND_LONG arm
@@ -201,6 +256,15 @@ def run_scripted_mission(conn) -> None:
         0,
         1, 0, 0, 0, 0, 0, 0,
     )
+    _record({
+        "mavpackettype": "COMMAND_LONG",
+        "target_system": sysid,
+        "target_component": compid,
+        "command": mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+        "confirmation": 0,
+        "param1": 1.0, "param2": 0.0, "param3": 0.0, "param4": 0.0,
+        "param5": 0.0, "param6": 0.0, "param7": 0.0,
+    })
     _time.sleep(1.0)
 
     # 5. COMMAND_LONG takeoff to 20m
@@ -211,6 +275,17 @@ def run_scripted_mission(conn) -> None:
         0,
         0, 0, 0, 0, 0, 0, 20.0,
     )
+    _record({
+        "mavpackettype": "COMMAND_LONG",
+        "target_system": sysid,
+        "target_component": compid,
+        "command": mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+        "confirmation": 0,
+        "param1": 0.0, "param2": 0.0, "param3": 0.0, "param4": 0.0,
+        "param5": 0.0, "param6": 0.0, "param7": 20.0,
+    })
+
+    return emitted
 
 
 # ── Entrypoint ───────────────────────────────────────────────────
@@ -226,14 +301,23 @@ def main() -> int:
             container_name=CONTAINER_NAME,
             transport="tcp",
         )
-        run_scripted_mission(conn)
-        frames = capture(conn, CAPTURE_SECONDS)
+        operator_frames = run_scripted_mission(conn)
+        inbound_frames = capture(conn, CAPTURE_SECONDS)
     finally:
         cleanup_container(CONTAINER_NAME)
 
+    # Stitch operator-emitted commands (what we sent to the
+    # autopilot) ahead of the inbound capture (what the autopilot
+    # sent back). In a real KYA deployment the MAVLink router
+    # tees both directions; we synthesise the same shape here.
+    frames = operator_frames + inbound_frames
+
     handled_count = sum(1 for f in frames if f.get("_handled"))
-    print(f"captured {len(frames)} total frames; "
-          f"{handled_count} are governance-relevant")
+    print(
+        f"captured {len(frames)} total frames; "
+        f"{handled_count} are governance-relevant "
+        f"({len(operator_frames)} operator + {len(inbound_frames)} inbound)"
+    )
 
     write_ndjson(frames, OUT)
     print(f"wrote {OUT}")

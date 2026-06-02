@@ -254,6 +254,15 @@ def capture(conn, seconds: int) -> list[dict]:
         if msg is None:
             continue
         d = msg.to_dict()
+        # pymavlink's to_dict() omits the source sysid/compid -- they
+        # live on the parent message object via the get_src* accessors,
+        # not in the dialect-generated dict body. Without them the
+        # kya parser sees ``sysid: None compid: None`` on every frame
+        # and can't derive principal hints (which is what burned us
+        # in local SITL probe #2). Use ``setdefault`` so a dialect
+        # that DOES include them in the dict still wins.
+        d.setdefault("sysid", msg.get_srcSystem())
+        d.setdefault("compid", msg.get_srcComponent())
         d["_handled"] = msg.get_type() in HANDLED_MESSAGE_TYPES
         d["_ts"] = time.time()
         captured.append(d)
