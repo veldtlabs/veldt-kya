@@ -88,10 +88,19 @@ _SIM_VEHICLE_PATH = "/ardupilot/Tools/autotest/sim_vehicle.py"
 # Container name -- fixed so cleanup is deterministic.
 CONTAINER_NAME = "kya-mavlink-sitl"
 
-# Loopback only -- SITL UDP must not be reachable from outside the
+# Loopback only -- SITL TCP must not be reachable from outside the
 # host. A laptop on a coffee-shop network would otherwise expose
 # the autopilot to the LAN.
 MAVLINK_HOST = "127.0.0.1"
+
+# Inside-container port that arducopter listens on. Without
+# mavproxy, arducopter SITL emits MAVLink on this TCP port (the
+# canonical "console" port). Earlier we tried mapping UDP 14550,
+# but ``--out udp:...`` is a mavproxy flag and silently does
+# nothing when ``--no-mavproxy`` is set -- nothing was forwarded
+# from 5760 -> 14550, so the host saw no traffic and the parser
+# hung waiting for HEARTBEAT.
+_SITL_INNER_PORT = 5760
 
 
 # ── SITL launch ──────────────────────────────────────────────────
@@ -99,17 +108,18 @@ MAVLINK_HOST = "127.0.0.1"
 
 def launch_sitl() -> None:
     """Start ArduPilot SITL in a Docker container and bind its
-    MAVLink UDP port to the host loopback only."""
+    MAVLink TCP port to the host loopback only."""
     cleanup_container(CONTAINER_NAME)
 
     # SITL command line:
     #   --model quad      quadcopter dynamics
     #   --speedup 5       run 5x real-time for faster CI
     #   --no-mavproxy     don't fork MAVProxy; we read MAVLink
-    #                     directly via pymavlink
+    #                     directly via pymavlink against the
+    #                     arducopter TCP console (port 5760).
     cmd = [
         "docker", "run", "-d", "--name", CONTAINER_NAME,
-        "-p", f"{MAVLINK_HOST}:{MAVLINK_PORT}:14550/udp",
+        "-p", f"{MAVLINK_HOST}:{MAVLINK_PORT}:{_SITL_INNER_PORT}/tcp",
         SITL_IMAGE,
         # Full path -- sim_vehicle.py isn't on PATH in this image.
         _SIM_VEHICLE_PATH,
@@ -117,9 +127,6 @@ def launch_sitl() -> None:
         "--model", "quad",
         "--speedup", "5",
         "--no-mavproxy",
-        # SITL emits MAVLink on UDP 14550 inside the container; the
-        # -p above maps that to MAVLINK_PORT on the host loopback.
-        "--out", "udp:127.0.0.1:14550",
     ]
     result = run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -217,6 +224,7 @@ def main() -> int:
             host=MAVLINK_HOST, port=MAVLINK_PORT,
             timeout=BOOT_TIMEOUT,
             container_name=CONTAINER_NAME,
+            transport="tcp",
         )
         run_scripted_mission(conn)
         frames = capture(conn, CAPTURE_SECONDS)

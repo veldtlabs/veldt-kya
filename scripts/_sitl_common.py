@@ -108,6 +108,18 @@ def dump_container_diagnostics(name: str) -> None:
           "Error={{.State.Error}}",
           name]),
         ("logs (tail 200)", ["docker", "logs", "--tail", "200", name]),
+        # ArduCopter binary logs to /tmp/ArduCopter.log INSIDE the
+        # container when no controlling terminal is attached
+        # ("RiTW: Window access not found, logging to ..."). That
+        # file holds the real boot trace -- EKF/IMU/GPS init,
+        # MAVLink listener start, etc. ``docker logs`` would show
+        # only sim_vehicle.py's wrapper output, which is useless.
+        # Tail the last 100 lines to surface the failure mode
+        # without flooding the CI log.
+        ("ArduCopter.log (tail 100)",
+         ["docker", "exec", name,
+          "sh", "-c", "tail -n 100 /tmp/ArduCopter.log 2>&1 || "
+                      "echo '(no /tmp/ArduCopter.log)'"]),
     ]:
         try:
             r = subprocess.run(
@@ -176,9 +188,16 @@ def preflight(out_path: Path) -> None:
 def wait_for_heartbeat(
     *, host: str, port: int, timeout: int,
     container_name: str | None = None,
+    transport: str = "udp",
 ):  # type: ignore[no-untyped-def]
     """Block until SITL emits its first HEARTBEAT or ``timeout``
     seconds elapse. Returns the live pymavlink connection.
+
+    ``transport`` is either "udp" (mavproxy-forwarded UDP, e.g.
+    Gazebo path) or "tcp" (direct arducopter TCP console, e.g.
+    the live SITL path when running with ``--no-mavproxy``).
+    Picking the wrong one is a silent timeout -- pymavlink will
+    happily open a port that no one writes to and wait forever.
 
     Implementation note: the inner ``recv_match(blocking=True,
     timeout=5)`` wakes every 5s, so the actual maximum wait is
@@ -192,7 +211,9 @@ def wait_for_heartbeat(
     """
     from pymavlink import mavutil  # noqa: PLC0415
 
-    conn_str = f"udp:{host}:{port}"
+    if transport not in {"udp", "tcp"}:
+        die(f"unsupported transport={transport!r}; use 'udp' or 'tcp'")
+    conn_str = f"{transport}:{host}:{port}"
     print(f"connecting to {conn_str} ...")
     conn = mavutil.mavlink_connection(conn_str)
 
