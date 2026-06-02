@@ -28,22 +28,45 @@ _DEFAULT_CAPTURE = Path("/tmp/mavlink-sitl.json")
 _CAPTURE_PATH = Path(os.environ.get("MAVLINK_SITL_CAPTURE", _DEFAULT_CAPTURE))
 
 
-def _load_frames() -> list[dict]:
+def _load_all_entries() -> list[dict]:
+    """Raw NDJSON load -- includes any ``_meta`` records the
+    capture script may have prepended."""
     if not _CAPTURE_PATH.exists():
         pytest.skip(
             f"no SITL capture at {_CAPTURE_PATH}; run "
             "`scripts/mavlink_sitl_live_capture.py` first or set "
             "MAVLINK_SITL_CAPTURE to an existing capture file.")
-    frames = [
+    raw = [
         json.loads(line)
         for line in _CAPTURE_PATH.read_text().splitlines()
         if line.strip()
     ]
-    if not frames:
+    if not raw:
         pytest.skip(
             f"SITL capture at {_CAPTURE_PATH} exists but is empty "
             "-- re-run the capture script.")
-    return frames
+    return raw
+
+
+def _load_frames() -> list[dict]:
+    """MAVLink frames only -- strips ``_meta`` header so existing
+    parser-shape assertions don't see it."""
+    return [e for e in _load_all_entries() if not e.get("_meta")]
+
+
+def _load_meta() -> dict:
+    """The ``_meta: "header"`` record the capture script writes
+    at the top of the NDJSON. Single source of truth for
+    ``gcs_sysid`` + phase counts so tests don't need their own
+    copy of the env vars -- the writer wrote the values it used
+    and the reader reads them back."""
+    for entry in _load_all_entries():
+        if entry.get("_meta") == "header":
+            return entry
+    pytest.skip(
+        f"capture at {_CAPTURE_PATH} has no _meta header; "
+        "regenerate with the current capture script.")
+    return {}  # for type checker; pytest.skip raises
 
 
 # ── Live tests ──────────────────────────────────────────────────
@@ -131,30 +154,50 @@ class TestLiveSitlCapture:
             f"saw: {sysids_seen}")
 
     def test_inbound_traffic_was_captured(self):
-        """H1 regression guard. The script synthesises 5 OPERATOR
-        frames for the commands it sends; if a future bug makes
-        the inbound capture window silently empty, the other
-        tests can STILL pass off the synthesised frames alone.
+        """H1 regression guard, READ FROM ``_meta`` header (single
+        source of truth with the writer).
 
-        This test pins the assertion that the autopilot replied
-        with non-empty traffic. The 5 synthesised operator frames
-        all carry GCS sysid (255 by default); inbound frames
-        carry the autopilot sysid (1). Counting frames with
-        sysid != gcs_sysid is the cleanest signal.
+        The script's writer side already dies on either
+        ``inbound_during`` or ``inbound_after`` being empty, but
+        this test exists as a defense-in-depth check that catches
+        the regression even if a future change weakens the
+        writer-side assertion.
+
+        Critically, the writer wrote the SAME ``gcs_sysid`` it
+        stamped on each operator frame -- so the reader doesn't
+        need an env var to know which sysid was "operator". This
+        closes the H1 review finding's env-consistency hole.
         """
-        import os
-        gcs_sysid_int = int(os.environ.get("GCS_SYSID", "255"))
+        meta = _load_meta()
+
+        # Phase counts both > 0 -- splits the canary so a future
+        # drain() regression isn't masked by post-mission capture.
+        assert meta.get("inbound_during_count", 0) > 0, (
+            "ZERO inbound frames DURING the mission window per "
+            "the capture _meta. drain() in _sitl_common may have "
+            "regressed -- the COMMAND_ACK / mode-change STATUSTEXT "
+            "bursts are no longer being drained between sends.")
+        assert meta.get("inbound_after_count", 0) > 0, (
+            "ZERO inbound frames AFTER the mission window per "
+            "the capture _meta. capture() may have regressed -- "
+            "or the autopilot crashed after the final command.")
+
+        # Cross-check the meta counts against the actual sysid
+        # distribution. The meta says "we wrote N inbound frames";
+        # confirm at least that many frames carry a non-GCS sysid.
+        gcs_sysid = meta["gcs_sysid"]
         frames = _load_frames()
-        inbound = [
+        inbound_observed = [
             f for f in frames
-            if f.get("sysid") not in (gcs_sysid_int, None)
+            if f.get("sysid") not in (gcs_sysid, None)
         ]
-        assert len(inbound) > 0, (
-            "ZERO inbound frames in the capture file. The autopilot "
-            "either booted and emitted nothing back, OR the H1 fix "
-            "regressed and the mission-window drain stopped capturing "
-            "inbound traffic. Investigate scripts/_sitl_common.py "
-            "drain() + mavlink_sitl_live_capture.py run_scripted_mission().")
+        expected_total_inbound = (
+            meta["inbound_during_count"] + meta["inbound_after_count"]
+        )
+        assert len(inbound_observed) >= expected_total_inbound, (
+            f"_meta promised {expected_total_inbound} inbound frames "
+            f"but only {len(inbound_observed)} carry non-GCS sysid. "
+            f"meta + writer have drifted out of sync.")
 
     def test_bridge_accepts_every_parsed_event(self):
         """End-to-end: every parsed SITL frame must survive the

@@ -78,10 +78,23 @@ jobs:
         # fail loudly if they don't match.
         run: |
           set -e
-          PIN_IN_SCRIPT=$(grep -oE '[0-9a-f]{64}' \
-              scripts/mavlink_sitl_live_capture.py | head -n1)
-          PIN_IN_WORKFLOW=$(grep -oE '[0-9a-f]{64}' \
-              .github/workflows/mavlink-sitl-live.yml | head -n1)
+          # Regex tolerates both lowercase + uppercase hex --
+          # Docker accepts either form on the CLI, and a future
+          # contributor pasting an uppercase digest from
+          # ``docker inspect`` shouldn't silently bypass the
+          # guard. Normalize to lowercase before comparing.
+          #
+          # DRIFT-GUARD WARNING: if either file grows another
+          # 64-char hex literal (a content hash, key fingerprint,
+          # etc.), this ``head -n1`` will pick the wrong one. See
+          # the inline comment near _SITL_IMAGE_DEFAULT in the
+          # script; add a sentinel here too if you change it.
+          PIN_IN_SCRIPT=$(grep -oE '[0-9a-fA-F]{64}' \
+              scripts/mavlink_sitl_live_capture.py | \
+              head -n1 | tr 'A-F' 'a-f')
+          PIN_IN_WORKFLOW=$(grep -oE '[0-9a-fA-F]{64}' \
+              .github/workflows/mavlink-sitl-live.yml | \
+              head -n1 | tr 'A-F' 'a-f')
           if [ -z "$PIN_IN_SCRIPT" ] || [ -z "$PIN_IN_WORKFLOW" ]; then
             echo "::error::failed to extract SHA digest from one or both files"
             echo "  script:   ${PIN_IN_SCRIPT:-<empty>}"

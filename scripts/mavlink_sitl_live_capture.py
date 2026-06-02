@@ -82,6 +82,13 @@ OUT = Path(os.environ.get("OUT", "/tmp/mavlink-sitl.json"))
 BOOT_TIMEOUT = env_int("TIMEOUT", 120)
 CAPTURE_SECONDS = env_int("MISSION", 30)
 MAVLINK_PORT = env_port("MAVLINK_PORT", 14550)
+# Operator (ground-station) sysid/compid we emit under. Module-level
+# so the capture script and the integration test BOTH consume the
+# same value via the NDJSON _meta header -- without this, a
+# GCS_SYSID env var set for the capture step but not the pytest
+# step would silently miscount inbound frames (the H1 review finding).
+GCS_SYSID = env_int("GCS_SYSID", 255)
+GCS_COMPID = env_int("GCS_COMPID", 1)
 
 # ArduPilot SITL container.
 #
@@ -115,6 +122,14 @@ MAVLINK_PORT = env_port("MAVLINK_PORT", 14550)
 #
 # Override via SITL_IMAGE env var for vendored / mirrored images
 # (e.g. ghcr.io/veldtlabs/...) in a customer deployment.
+#
+# DRIFT-GUARD INVARIANT: this file must contain EXACTLY ONE
+# 64-char lowercase-hex literal (the image digest below). The CI
+# drift guard step greps the first ``[0-9a-fA-F]{64}`` match and
+# compares it against the workflow's literal. If you add another
+# SHA-256-shape hex literal (e.g. for a different image, a
+# content fingerprint), update the workflow's regex to anchor on
+# the ``radarku/`` prefix so the right one is picked.
 _SITL_IMAGE_DEFAULT = (
     "radarku/ardupilot-sitl@sha256:"
     "2364ae14e190e4cdd5d0839b3a55e6b5c6a980d9ff0000b1be7b8baae6fd50f1"
@@ -268,18 +283,16 @@ def run_scripted_mission(conn) -> tuple[list[dict], list[dict]]:
 
     sysid = conn.target_system or 1
     compid = conn.target_component or 1
-    # The operator-side sysid we emit under. pymavlink defaults
-    # to 255 for ground-station traffic, but allow override via
-    # GCS_SYSID env (a multi-operator test setup would use this).
-    gcs_sysid = env_int("GCS_SYSID", 255)
-    gcs_compid = env_int("GCS_COMPID", 1)
 
     emitted: list[dict] = []
     inbound: list[dict] = []
 
     def _record(d: dict) -> None:
-        d.setdefault("sysid", gcs_sysid)
-        d.setdefault("compid", gcs_compid)
+        # Read module-level GCS_SYSID / GCS_COMPID so the NDJSON
+        # _meta header (written from main()) and the sysid stamped
+        # on each frame agree by construction. See HIGH review fix.
+        d.setdefault("sysid", GCS_SYSID)
+        d.setdefault("compid", GCS_COMPID)
         d["_handled"] = True
         d["_ts"] = time.time()
         emitted.append(d)
@@ -428,8 +441,7 @@ def main() -> int:
     # sends would sit in pymavlink's TCP recv buffer until the
     # post-mission ``capture()`` finally reads them -- on slow
     # CI runners that buffer overruns and loses frames.
-    inbound_frames = inbound_during + inbound_after
-    frames = operator_frames + inbound_frames
+    frames = operator_frames + inbound_during + inbound_after
 
     handled_count = sum(1 for f in frames if f.get("_handled"))
     print(
@@ -440,21 +452,50 @@ def main() -> int:
         f"{len(inbound_after)} inbound-after)"
     )
 
-    # H1-canary: assert we got non-empty inbound traffic. If the
-    # autopilot booted but emitted nothing back -- or the TCP
-    # buffer overran without us noticing -- the integration test
-    # would otherwise still pass on the synthesised operator
-    # frames alone. Fail explicitly so the next CI run surfaces
-    # the regression instead of silently shrinking coverage.
-    if not inbound_frames:
+    # H1-canary, SPLIT into two phases. The combined
+    # ``inbound_during + inbound_after`` check would mask an H1
+    # regression: if drain() silently broke and returned [], the
+    # post-mission capture window still picks up 30s of HEARTBEAT
+    # at 1Hz and would keep the combined count > 0. The split
+    # checks ensure both phases are individually non-empty.
+    if not inbound_during:
         die(
-            "captured ZERO inbound frames -- the autopilot replied "
-            "nothing during/after the mission window. Either SITL "
-            "is hung after heartbeat OR the H1 fix regressed and "
-            "frames are being dropped. Investigate."
+            "captured ZERO inbound frames DURING the mission "
+            "window. drain() in _sitl_common may have regressed, "
+            "or the autopilot stopped emitting between sends. "
+            "Without the during-mission drain, COMMAND_ACK / "
+            "mode-change STATUSTEXT can be lost to TCP-buffer "
+            "overrun on slow CI runners."
+        )
+    if not inbound_after:
+        die(
+            "captured ZERO inbound frames AFTER the mission "
+            "window. capture() may have regressed, OR the "
+            "autopilot crashed after the final command. The "
+            "post-mission window is normally dominated by "
+            "HEARTBEAT (1Hz) + attitude streams; zero frames "
+            "here is suspicious."
         )
 
-    write_ndjson(frames, OUT)
+    # _meta header line so the integration test can validate
+    # phase counts + the operator sysid by construction, NOT
+    # via a separately-set env var. Embeds the same GCS_SYSID
+    # value the operator frames were stamped with -- single
+    # source of truth.
+    meta = {
+        "_meta": "header",
+        "schema_version": 1,
+        "gcs_sysid": GCS_SYSID,
+        "gcs_compid": GCS_COMPID,
+        "operator_count": len(operator_frames),
+        "inbound_during_count": len(inbound_during),
+        "inbound_after_count": len(inbound_after),
+    }
+
+    # Prepend the _meta header so the file's first non-empty line
+    # is JSON describing the rest. Downstream loaders that don't
+    # know about _meta can just filter ``f.get("_meta") is None``.
+    write_ndjson([meta, *frames], OUT)
     print(f"wrote {OUT}")
 
     if handled_count == 0:

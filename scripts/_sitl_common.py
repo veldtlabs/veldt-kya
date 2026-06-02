@@ -557,6 +557,14 @@ def wait_for_heartbeat(
                 f"comp={msg.get_srcComponent()}"
             )
             return conn
+    # H4 review fix: close the connection so a future caller that
+    # retries this helper doesn't trip "address in use" on the
+    # next mavlink_connection. OS would reap on process exit, but
+    # explicit close is cheap and survives a long-lived harness.
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
     if container_name:
         dump_container_diagnostics(container_name)
     die(f"no HEARTBEAT within {timeout}s")
@@ -594,9 +602,16 @@ def drain(conn, seconds: float) -> list[dict]:
     """
     out: list[dict] = []
     deadline = time.time() + seconds
-    while time.time() < deadline:
-        timeout = max(0.0, min(0.1, deadline - time.time()))
-        msg = conn.recv_match(blocking=True, timeout=timeout)
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        # Cap inner recv at 0.1s so we exit the loop promptly
+        # when ``seconds`` is small (e.g. the 0.5s inter-send
+        # gaps in the live SITL mission).
+        msg = conn.recv_match(
+            blocking=True, timeout=min(0.1, remaining),
+        )
         if msg is None:
             continue
         out.append(_frame_dict(msg))

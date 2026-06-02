@@ -169,6 +169,21 @@ def _revoke_x11_from_docker() -> None:
 
 def launch_gazebo_sitl() -> None:
     """Start ArduPilot SITL + Gazebo in a single Docker container."""
+    # H6 fix from the SITL CI review: on macOS / Windows with
+    # HEADLESS unset, Gazebo would boot, find no display, and
+    # silently stall -- the X11 mount branch is Linux-only. Fail
+    # fast with a clear message instead of letting the user hang
+    # waiting for a heartbeat that will never arrive.
+    if not HEADLESS and sys.platform != "linux":
+        die(
+            "Gazebo visible mode is supported only on Linux. "
+            "On macOS / Windows either:\n"
+            "  * set KYA_GAZEBO_HEADLESS=1 (no rendering, capture "
+            "still works);\n"
+            "  * OR wire XQuartz (macOS) / VcXsrv (Windows) "
+            "manually + export DISPLAY before running this script."
+        )
+
     # (C) Stale-sweep abandoned gazebo containers (Ctrl-C leakage).
     cleanup_stale_kya_containers(prefix=_CONTAINER_PREFIX)
     cleanup_container(CONTAINER_NAME)
