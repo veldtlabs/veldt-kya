@@ -48,8 +48,12 @@ Public API
     detect_principal_burst_anomalies(...) -> list (Valkey, no DB)
 """
 
+import hashlib
+import json
 import logging
 import os
+import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -77,12 +81,717 @@ logger = logging.getLogger(__name__)
 
 from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_for_trust
 
-PRINCIPAL_KINDS = ("user", "agent", "service_account")
+#: Canonical principal kinds. Additive over time — never remove or
+#: rename a value, because existing rows depend on the literal string.
+#:
+#: KYA models *governed autonomy*: any actor that can take an
+#: autonomous action is a principal, and the same evidence /
+#: attribution / trust model applies regardless of what kind of
+#: thing the actor is. The vocabulary is flat and granular because a
+#: drone's lineage can include an AI agent, so the two must be
+#: distinguishable.
+#:
+#: Existing kinds (since v0.1.0):
+#:     ``user``             — human operators
+#:     ``agent``            — software AI agents (LLM-driven or rule-driven)
+#:     ``service_account``  — non-human service identity (k8s SA, machine credential)
+#:
+#: Autonomy kinds (added v0.1.8):
+#:     ``drone``             — UAS (ArduPilot, PX4, ...)
+#:     ``robot``             — physical robotic systems (industrial arms, AGVs)
+#:     ``vehicle``           — ground / surface / sub-surface autonomous vehicles
+#:     ``plc``               — programmable logic controllers (individual
+#:                             devices on a factory floor or in field RTUs)
+#:     ``scada``             — supervisory control + data acquisition stacks
+#:                             (Citect / Wonderware / Ignition operator
+#:                             consoles, HMIs, historians). A SCADA system
+#:                             is the supervisory layer ABOVE one or more
+#:                             ``plc`` principals; modelled separately
+#:                             because the governance questions differ
+#:                             (operator-console identity, network command
+#:                             flow vs. PLC firmware + program drift)
+#:     ``controller``        — mission / fleet orchestrators that aren't AI agents
+#:     ``sensor``            — IoT sensors emitting trust-relevant signals
+#:     ``actuator``          — end effectors (servos, grippers, valves)
+#:     ``lakehouse_job``     — autonomous data pipelines / scheduled jobs
+#:     ``machine_identity``  — generic machine identity catch-all
+#:     ``autonomous_system`` — *composed* principal representing a whole
+#:                             mission / fleet / cell whose members are
+#:                             themselves principals. Example: ``mission_alpha``
+#:                             whose ``attributes.lineage`` lists the human
+#:                             operator, the controller, the planner agent,
+#:                             and each drone. Use this kind when you want
+#:                             to score / sign at the system level alongside
+#:                             per-member rows.
+#:
+#: The ``attributes`` JSON column on ``kya_principal_trust`` carries
+#: kind-specific metadata + the authority chain. Convention:
+#:
+#:     attributes = {
+#:         "asset_type": "drone",                  # human-readable kind
+#:         "protocol":   "mavlink",                # transport / dialect
+#:         "platform":   "ardupilot",              # vendor / firmware
+#:         "lineage": [                            # delegation chain, root first
+#:             {"kind": "user",        "id": "op_jane"},
+#:             {"kind": "controller",  "id": "mission_alpha"},
+#:             {"kind": "agent",       "id": "planner_v2"}
+#:         ],
+#:         # ... any protocol-specific fields (sysid/compid, node_id, ...)
+#:     }
+#:
+#: Recording lineage is OPTIONAL — leaving it out keeps the row as a
+#: top-level principal. When present it lets the bridge propagate
+#: trust deltas up the chain and lets evidence packs cover an entire
+#: authority graph in one signed deliverable.
+#:
+#: Composite actions / interactions
+#: --------------------------------
+#: An action authorized by a user *through* an agent *on* a drone is
+#: NOT modeled as a single "composite principal" — that would lose
+#: attributability. Instead, every action has:
+#:
+#:     * one **primary principal**  — the immediate actor whose
+#:       trust score moves, e.g. ``drone:uav_002``
+#:     * a **lineage** carried in ``attributes.lineage`` — every
+#:       upstream party with shared accountability
+#:     * an optional **actor_human_id** column — the ultimate human
+#:       on the hook (set when known; helps regulators read the
+#:       trust ledger in plain language)
+#:
+#: Peer-to-peer messages between principals (agent-to-agent talk)
+#: write two evidence rows joined by a shared ``correlation_id``; no
+#: synthetic "interaction principal" is created. This keeps the
+#: ledger interpretable: every row names exactly one accountable
+#: actor, and joint accountability is reconstructed by walking
+#: lineage + correlation_id rather than hidden inside an opaque
+#: composite key.
+#:
+#: Identifier scopes (top-down)
+#: ----------------------------
+#: Every action in KYA is reachable through a stack of identifiers,
+#: each answering a different question:
+#:
+#:     ``tenant_id``                  -- whose data is this?
+#:     ``principal_kind`` + ``principal_id``
+#:                                    -- who/what acted? (the actor)
+#:     autonomous_system principal    -- what composed system does
+#:                                       this actor structurally belong to?
+#:                                       (resolved via ``kya.principal_edges``
+#:                                       ``walk_ancestors``)
+#:     ``correlation_id``             -- which specific operation /
+#:                                       session / mission run was this?
+#:                                       (lives on kya_invocations +
+#:                                       kya_evidence; ties actions across
+#:                                       principals)
+#:     ``invocation_id``              -- which call?
+#:     ``evidence_id``                -- which signed row?
+#:
+#: For a drone shared across two missions, ``walk_ancestors`` finds
+#: both ``autonomous_system`` umbrellas; ``correlation_id`` on the
+#: invocation row picks the specific mission run the action belonged
+#: to. No new "operation_id" / "session_id" column is needed —
+#: ``correlation_id`` already covers cross-principal session
+#: grouping.
+PRINCIPAL_KINDS: tuple[str, ...] = (
+    # Existing
+    "user",
+    "agent",
+    "service_account",
+    # Autonomy (v0.1.8)
+    "drone",
+    "robot",
+    "vehicle",
+    "plc",
+    "scada",
+    "controller",
+    "sensor",
+    "actuator",
+    "lakehouse_job",
+    "machine_identity",
+    "autonomous_system",
+)
 
-# Schema qualifier — PG only. Defaults to None (= dialect's default
+# ── Runtime extensibility ───────────────────────────────────────────
+#
+# Vendors / integrators can register new principal kinds without
+# modifying KYA source. Two paths:
+#
+#   1) Env var (declarative, no code):
+#        KYA_PRINCIPAL_KINDS_EXTRA=swarm,satellite,iot_gateway
+#
+#   2) Programmatic at startup (for SDK users):
+#        from kya.principals import register_principal_kind
+#        register_principal_kind("swarm")
+#
+# Both feed the same in-process registry. Validation reads the
+# registry rather than the static ``PRINCIPAL_KINDS`` tuple, so an
+# unknown kind passed to ``record_principal_signal`` is only
+# rejected if it isn't in the *registered* set.
+#
+# Naming rules (enforced by ``register_principal_kind``):
+#   * lowercase ASCII letters, digits, underscores
+#   * length 1..20 (matches the VARCHAR(20) column width)
+#   * cannot start with a digit
+#
+# These rules keep the wire format predictable for downstream
+# consumers (dashboards, exports, attack-chain rules).
+
+_KIND_REGEX = re.compile(r"^[a-z][a-z0-9_]{0,19}$")
+
+
+def _initial_registered_kinds() -> set[str]:
+    extras: set[str] = set()
+    raw = os.environ.get("KYA_PRINCIPAL_KINDS_EXTRA", "").strip()
+    if raw:
+        for k in raw.split(","):
+            k = k.strip()
+            if k and _KIND_REGEX.match(k):
+                extras.add(k)
+            elif k:
+                logger.warning(
+                    "[KYP-KINDS] ignoring malformed extra kind %r from "
+                    "KYA_PRINCIPAL_KINDS_EXTRA — must match %s",
+                    k, _KIND_REGEX.pattern,
+                )
+    return set(PRINCIPAL_KINDS) | extras
+
+
+_REGISTERED_PRINCIPAL_KINDS: set[str] = _initial_registered_kinds()
+
+# Guards registry reads + writes. Same rationale as the lock in
+# integrity._REGISTRY_LOCK: CPython's GIL makes set ops atomic
+# today, but free-threaded Python 3.13+ removes that guarantee.
+_REGISTERED_KINDS_LOCK = threading.Lock()
+
+
+def register_principal_kind(kind: str) -> None:
+    """Register an additional principal kind for the lifetime of
+    this process.
+
+    Idempotent. Raises ``ValueError`` if the kind violates the
+    naming rules (lowercase ASCII / digits / underscore, length
+    1..20, no leading digit).
+
+    Use this at SDK startup to add domain-specific principal kinds
+    that your fleet emits but that aren't in the default vocabulary
+    yet. For deploy-time declaration without code changes, prefer
+    the ``KYA_PRINCIPAL_KINDS_EXTRA`` env var.
+    """
+    if not isinstance(kind, str) or not _KIND_REGEX.match(kind):
+        raise ValueError(
+            f"invalid principal_kind {kind!r}; must match "
+            f"{_KIND_REGEX.pattern} (lowercase ASCII letters, digits, "
+            f"underscore; 1-20 chars; no leading digit)")
+    with _REGISTERED_KINDS_LOCK:
+        _REGISTERED_PRINCIPAL_KINDS.add(kind)
+
+
+def is_valid_principal_kind(kind: str) -> bool:
+    """True if ``kind`` is known to the registry -- either in the
+    default ``PRINCIPAL_KINDS`` tuple or added via
+    :func:`register_principal_kind` or the
+    ``KYA_PRINCIPAL_KINDS_EXTRA`` env var."""
+    with _REGISTERED_KINDS_LOCK:
+        return kind in _REGISTERED_PRINCIPAL_KINDS
+
+
+def registered_principal_kinds() -> tuple[str, ...]:
+    """Snapshot of every kind currently accepted by the registry.
+    Useful for tests / introspection / building dashboards that
+    enumerate the full vocabulary."""
+    with _REGISTERED_KINDS_LOCK:
+        return tuple(sorted(_REGISTERED_PRINCIPAL_KINDS))
+
+
+# ── Principal fingerprint ─────────────────────────────────────────
+#
+# The middle layer of the hierarchical fingerprint chain:
+#
+#     definition_hash  ->  principal_fingerprint
+#                            (this module)
+#                          ->  fleet_fingerprint  (Pro)
+#                                ->  pack_fingerprint  (Pro)
+#
+# A principal fingerprint binds a principal's identity (definition
+# hash) to its place in the authority graph (lineage + edges). Two
+# principals with the same definition but different parents have
+# DIFFERENT principal fingerprints, because their authority context
+# differs -- and that authority context is part of what regulators
+# care about. ("Same drone firmware, but moved from mission_alpha to
+# mission_beta -- that's a governance event.")
+#
+# The fingerprint is composed at read time from three sources, all
+# already canonical:
+#
+#   1. The latest snapshot's ``canonical_hash(definition,
+#      principal_kind=kind)`` -- WHAT the principal is.
+#   2. ``attributes.lineage`` from the trust row -- WHO authorized
+#      it (single primary chain).
+#   3. Optionally, the parents resolved via ``walk_ancestors`` on
+#      the many-to-many edges table -- WHO ELSE has authority
+#      (when the principal is shared / leased).
+#
+# The fingerprint is SHA-256 over a canonical-JSON manifest of
+# those three sources, scheme-tagged ``principal-v1``. Bumping to
+# ``principal-v2`` would mean any change to the manifest shape.
+
+
+@dataclass(frozen=True, slots=True)
+class PrincipalFingerprintBatch:
+    """Pre-fetched fingerprint inputs for many principals at once.
+
+    Calling :func:`principal_fingerprint` once per principal is
+    convenient but does 2 DB queries per call (latest snapshot
+    lookup + trust row + ancestor walk). A 1000-drone fleet would
+    fire 3000+ queries -- the classic N+1.
+
+    This dataclass holds the bulk-fetched inputs so a downstream
+    consumer (typically ``kya_pro.reproducibility.fleet_fingerprint``)
+    can compose principal fingerprints in O(1) per principal after
+    one bulk load.
+
+    Attributes:
+        tenant_id: Tenant the batch covers.
+        latest_definitions: ``(principal_kind, principal_id) ->
+            (version_no, definition_dict)`` from agent_versions.
+            Absent entries mean "no snapshot for this principal".
+        trust_attributes: ``(principal_kind, principal_id) ->
+            attributes_dict`` from kya_principal_trust. Absent
+            entries mean "no trust row" -- lineage falls back to
+            empty list.
+        ancestors_by_principal: ``(principal_kind, principal_id) ->
+            sorted list of {kind, id} ancestor pairs`` from
+            walk_ancestors. Absent entries mean "no ancestor edges".
+    """
+
+    tenant_id: str
+    latest_definitions: dict[tuple[str, str], tuple[int, dict]]
+    trust_attributes: dict[tuple[str, str], dict]
+    ancestors_by_principal: dict[tuple[str, str], list[dict]]
+
+
+def build_fingerprint_batch(
+    db: Any,
+    *,
+    tenant_id: str,
+    principals: list[tuple[str, str]] | None = None,
+) -> PrincipalFingerprintBatch:
+    """Pre-fetch fingerprint inputs for many principals in a few
+    bulk SQL queries.
+
+    Args:
+        db: SQLAlchemy session.
+        tenant_id: Tenant scope.
+        principals: Optional restriction to specific (kind, id)
+            pairs. When None, prefetch covers EVERY principal that
+            has either a snapshot row or a trust row in the tenant.
+
+    Returns:
+        :class:`PrincipalFingerprintBatch` ready to pass to
+        :func:`principal_fingerprint` via the ``_batch`` kwarg.
+
+    Why batch? See :class:`PrincipalFingerprintBatch` docstring.
+    The bulk path runs 3 queries total instead of 3 per principal.
+    """
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from .principal_edges import walk_ancestors  # noqa: PLC0415
+    from .versioning import (  # noqa: PLC0415
+        AgentVersion,
+        _compose_principal_key,
+    )
+
+    # Bulk-load every latest snapshot for the tenant.
+    # SQL: SELECT ... ORDER BY agent_key, version_no DESC -- then
+    # take the first row per agent_key in Python (portable across
+    # PG / SQLite / MySQL without DISTINCT ON).
+    stmt = (
+        select(
+            AgentVersion.agent_key,
+            AgentVersion.version_no,
+            AgentVersion.definition,
+        )
+        .where(AgentVersion.tenant_id == tenant_id)
+        .order_by(AgentVersion.agent_key, AgentVersion.version_no.desc())
+    )
+    latest_definitions: dict[tuple[str, str], tuple[int, dict]] = {}
+    seen_keys: set[str] = set()
+    for composed_key, version_no, definition in db.execute(stmt).all():
+        if composed_key in seen_keys:
+            continue  # already have the latest version for this key
+        seen_keys.add(composed_key)
+        # Decompose the storage key back to (kind, id). Inlined to
+        # avoid a Pro <-> open-SDK helper round-trip.
+        if ":" in composed_key:
+            kind, _, pid = composed_key.partition(":")
+        else:
+            kind, pid = "agent", composed_key
+        latest_definitions[(kind, pid)] = (
+            int(version_no), dict(definition or {}))
+
+    # Bulk-load every trust row's attributes for the tenant.
+    stmt_trust = (
+        select(
+            _PrincipalRow.principal_kind,
+            _PrincipalRow.principal_id,
+            _PrincipalRow.attributes,
+        )
+        .where(_PrincipalRow.tenant_id == tenant_id)
+    )
+    trust_attributes: dict[tuple[str, str], dict] = {
+        (kind, pid): dict(attrs or {})
+        for kind, pid, attrs in db.execute(stmt_trust).all()
+    }
+
+    # Determine the principal set we need ancestors for. If the
+    # caller supplied a restriction we honour it; otherwise union
+    # everything we discovered above.
+    if principals is not None:
+        target_pairs = list(dict.fromkeys(principals))
+    else:
+        target_pairs = sorted(
+            set(latest_definitions) | set(trust_attributes))
+
+    # Bulk-walk ancestors per principal. ``walk_ancestors`` already
+    # uses a single SELECT per principal -- a true bulk graph query
+    # would need a recursive CTE which we're explicitly deferring
+    # to v0.1.9 (would need backend-specific SQL). For now this is
+    # still O(N) graph walks vs the prior O(N) per-fingerprint walk
+    # plus O(N) trust reads plus O(N) snapshot reads -- 3x speedup.
+    ancestors_by_principal: dict[tuple[str, str], list[dict]] = {}
+    for kind, pid in target_pairs:
+        edges = walk_ancestors(
+            db, tenant_id=tenant_id,
+            leaf_kind=kind, leaf_id=pid,
+        )
+        # Mirror _ancestor_pairs's normalisation: dedup by (kind, id)
+        # and sort canonically.
+        seen: set[tuple[str, str]] = set()
+        out: list[dict] = []
+        for _depth, edge in edges:
+            key = (edge.parent_kind, edge.parent_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"kind": edge.parent_kind,
+                        "id":   edge.parent_id})
+        out.sort(key=lambda p: (p["kind"], p["id"]))
+        ancestors_by_principal[(kind, pid)] = out
+
+    # _compose_principal_key is imported above to ensure the storage
+    # key convention stays consistent between batch + non-batch
+    # paths -- referencing it here keeps the import live.
+    _ = _compose_principal_key
+
+    return PrincipalFingerprintBatch(
+        tenant_id=tenant_id,
+        latest_definitions=latest_definitions,
+        trust_attributes=trust_attributes,
+        ancestors_by_principal=ancestors_by_principal,
+    )
+
+
+def principal_fingerprint(
+    db: Any,
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+    include_edges: bool = True,
+    include_ownership: bool | None = None,
+    _batch: PrincipalFingerprintBatch | None = None,
+) -> dict:
+    """Composite fingerprint binding a principal's identity to its
+    authority context.
+
+    Args:
+        db: SQLAlchemy session.
+        tenant_id: Tenant scope (required).
+        principal_kind: One of :data:`PRINCIPAL_KINDS` (or a registered
+            extension). Drives field selection in :func:`canonical_hash`.
+        principal_id: Stable opaque id within (tenant, kind).
+        include_edges: When True (default), walk :func:`walk_ancestors`
+            on the many-to-many edges table and include every ancestor
+            ``(kind, id)`` in the manifest. When False, only the
+            ``attributes.lineage`` single-chain hint contributes.
+            Set False when you intentionally want to compare two
+            principals that share a definition + lineage but
+            differ in edge membership.
+        include_ownership: Forwarded to ``canonical_hash`` so callers
+            in strict-audit mode get a fingerprint that responds to
+            ownership transitions.
+
+    Returns:
+        Dict shape::
+
+            {
+                "fingerprint":     "<sha256 hex>",
+                "scheme":          "principal-v1",
+                "principal_kind":  str,
+                "principal_id":    str,
+                "definition_hash": "<sha256 hex>" | None,
+                "lineage":         [{"kind": str, "id": str}, ...],
+                "ancestors":       [{"kind": str, "id": str}, ...] | None,
+                "include_ownership": bool,
+            }
+
+        ``definition_hash`` is ``None`` when the principal has no
+        snapshot yet (the trust row was created by a signal before
+        any explicit definition was recorded). The fingerprint stays
+        well-defined -- it just covers lineage + ancestors only.
+
+    The function is read-only -- it never writes to the DB. Same
+    inputs always yield the same fingerprint, which is the contract
+    fleet_fingerprint depends on for reproducibility.
+
+    Note on ``tenant_id`` semantics
+    -------------------------------
+    ``tenant_id`` scopes the DB queries but is INTENTIONALLY NOT
+    in the hash. Two tenants running identical principals (same
+    definition + same lineage + same edges) will produce the SAME
+    principal_fingerprint -- this matches the
+    :func:`kya_pro.reproducibility.fleet_fingerprint` policy and
+    enables cross-tenant similarity detection (e.g. "the same
+    drone configuration is deployed across these N customers").
+    A regulator who needs tenant-distinct fingerprints must
+    compose ``(tenant_id, principal_fingerprint)`` themselves.
+    """
+    from .integrity import canonical_hash  # noqa: PLC0415
+
+    pair = (principal_kind, principal_id)
+    have_batch = (_batch is not None and _batch.tenant_id == tenant_id)
+
+    # 1. Definition hash from the latest snapshot (if any). Walks
+    #    the SAME composed-key storage as snapshot_principal --
+    #    the agent-only versioning module is now backing the whole
+    #    autonomy vocabulary. When ``_batch`` is provided, the
+    #    pre-fetched snapshot dict replaces the per-call DB lookup.
+    definition_hash: str | None = None
+    if have_batch:
+        snap = _batch.latest_definitions.get(pair)
+        if snap is not None:
+            _, defn = snap
+            definition_hash = canonical_hash(
+                defn,
+                principal_kind=principal_kind,
+                include_ownership=include_ownership,
+            )
+    else:
+        try:
+            from .versioning import (  # noqa: PLC0415
+                get_principal_version,
+                list_principal_versions,
+            )
+            recent = list_principal_versions(
+                db, tenant_id=tenant_id,
+                principal_kind=principal_kind, principal_id=principal_id,
+                limit=1,
+            )
+            if recent:
+                latest_no = recent[0]["version_no"]
+                row = get_principal_version(
+                    db, tenant_id=tenant_id,
+                    principal_kind=principal_kind, principal_id=principal_id,
+                    version_no=latest_no,
+                )
+                if row is not None:
+                    defn = row.get("definition") or {}
+                    definition_hash = canonical_hash(
+                        defn,
+                        principal_kind=principal_kind,
+                        include_ownership=include_ownership,
+                    )
+        except Exception:  # noqa: BLE001
+            # Best-effort: a versioning lookup failure shouldn't
+            # block fingerprint computation. The hash remains None
+            # and the caller can decide whether to treat that as
+            # an error.
+            logger.debug(
+                "[KYP-FP] could not resolve definition snapshot for "
+                "%s:%s -- fingerprint will omit definition_hash.",
+                principal_kind, principal_id, exc_info=True)
+
+    # 2. Lineage from the trust row's attributes JSON.
+    if have_batch:
+        lineage = _lineage_from_attrs(
+            _batch.trust_attributes.get(pair, {}))
+    else:
+        lineage = _lineage_from_trust_row(
+            db, tenant_id=tenant_id,
+            principal_kind=principal_kind, principal_id=principal_id,
+        )
+
+    # 3. Ancestors via the many-to-many edges DAG. We include all
+    #    edge kinds by default (delegation + membership + control
+    #    + ...) because a fingerprint that changes when a drone
+    #    joins a new fleet IS the audit signal we want.
+    ancestors: list[dict] | None = None
+    if include_edges:
+        if have_batch:
+            ancestors = _batch.ancestors_by_principal.get(pair, [])
+        else:
+            ancestors = _ancestor_pairs(
+                db, tenant_id=tenant_id,
+                principal_kind=principal_kind,
+                principal_id=principal_id,
+            )
+
+    manifest = {
+        "scheme":          "principal-v1",
+        "principal_kind":  principal_kind,
+        "principal_id":    principal_id,
+        "definition_hash": definition_hash,
+        "lineage":         lineage,
+        "ancestors":       ancestors,
+        "include_ownership": _ownership_recorded(include_ownership),
+    }
+
+    # Coerce any datetimes inside the manifest to ISO-UTC strings so
+    # the fingerprint is backend-independent (see _canonicalise_for_hash
+    # in integrity.py for the rationale). default=str would serialise
+    # tz-aware vs naive datetimes inconsistently across PG/SQLite.
+    from .integrity import _canonicalise_for_hash  # noqa: PLC0415
+    canonical_bytes = json.dumps(
+        _canonicalise_for_hash(manifest),
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "fingerprint":     hashlib.sha256(canonical_bytes).hexdigest(),
+        "scheme":          "principal-v1",
+        "principal_kind":  principal_kind,
+        "principal_id":    principal_id,
+        "definition_hash": definition_hash,
+        "lineage":         lineage,
+        "ancestors":       ancestors,
+        "include_ownership": manifest["include_ownership"],
+    }
+
+
+def _lineage_from_attrs(attrs: dict) -> list[dict]:
+    """Pure normaliser for the ``attributes.lineage`` JSON shape.
+    Returns ``[{kind, id}, ...]``; invalid / missing entries are
+    silently dropped.
+
+    Extracted from :func:`_lineage_from_trust_row` so the batch
+    path can normalise a pre-fetched attributes dict without
+    re-querying the trust row.
+    """
+    raw = attrs.get("lineage") if isinstance(attrs, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for entry in raw:
+        if (isinstance(entry, dict)
+                and isinstance(entry.get("kind"), str)
+                and isinstance(entry.get("id"), str)):
+            out.append({"kind": entry["kind"], "id": entry["id"]})
+    return out
+
+
+def _lineage_from_trust_row(
+    db: Any,
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+) -> list[dict]:
+    """Return the ``attributes.lineage`` list from the principal's
+    trust row, or ``[]`` when no row exists or no lineage was set.
+
+    Per-principal DB read -- batch consumers should use
+    :func:`build_fingerprint_batch` + :func:`_lineage_from_attrs`
+    to avoid N+1.
+    """
+    try:
+        row = get_principal_trust(
+            db, tenant_id, principal_kind, principal_id)
+    except Exception:  # noqa: BLE001
+        return []
+    return _lineage_from_attrs(row.attributes or {})
+
+
+def _ancestor_pairs(
+    db: Any,
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+) -> list[dict]:
+    """Walk the many-to-many edges DAG upward and return sorted
+    ``[{"kind": ..., "id": ...}]`` ancestor pairs. Sorted so the
+    manifest is canonical regardless of DAG iteration order.
+    """
+    try:
+        from .principal_edges import walk_ancestors  # noqa: PLC0415
+    except ImportError:
+        logger.warning(
+            "[KYP-FP] principal_edges module not importable -- "
+            "fingerprint will omit the ancestor set. Install the "
+            "extra or include the module to enable graph-aware "
+            "fingerprints.")
+        return []
+    try:
+        edges = walk_ancestors(
+            db, tenant_id=tenant_id,
+            leaf_kind=principal_kind, leaf_id=principal_id,
+        )
+    except Exception:  # noqa: BLE001 -- defensive: DB error shouldn't break fingerprint
+        logger.debug(
+            "[KYP-FP] walk_ancestors raised for %s:%s; treating "
+            "ancestor set as empty.", principal_kind, principal_id,
+            exc_info=True)
+        return []
+    seen: set[tuple[str, str]] = set()
+    pairs: list[dict] = []
+    for _depth, edge in edges:
+        key = (edge.parent_kind, edge.parent_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append({"kind": edge.parent_kind, "id": edge.parent_id})
+    pairs.sort(key=lambda p: (p["kind"], p["id"]))
+    return pairs
+
+
+def _ownership_recorded(explicit: bool | None) -> bool:
+    """Resolve the recorded ``include_ownership`` flag for the
+    fingerprint manifest. Mirrors integrity._ownership_enabled but
+    re-implemented here to avoid an import cycle.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    raw = os.environ.get("KYA_HASH_OWNER_FIELDS", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+# Schema qualifier -- PG only. Defaults to None (= dialect's default
 # namespace) as of v0.1.6; set KYA_VERSIONS_SCHEMA in the environment
 # to pin tables to a named schema.
-_PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
+#
+# Security: this value gets string-formatted into raw SQL by
+# _apply_idp_binding_migrations (legacy ALTER-TABLE migration path)
+# so it MUST be validated as a strict PostgreSQL identifier --
+# otherwise a hostile environment variable could inject SQL. The
+# regex matches lowercase + digit + underscore PG identifiers up
+# to 63 chars (PG's name-length limit). An invalid value disables
+# the schema qualifier (falls back to dialect default) with a
+# logged warning rather than carrying a tainted value forward.
+_PG_SCHEMA_REGEX = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+def _validate_pg_schema(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    if _PG_SCHEMA_REGEX.match(raw):
+        return raw
+    logger.warning(
+        "[KYP] KYA_VERSIONS_SCHEMA=%r failed validation (must match "
+        "%s); ignoring and using dialect default schema.",
+        raw, _PG_SCHEMA_REGEX.pattern,
+    )
+    return None
+
+
+_PG_SCHEMA = _validate_pg_schema(os.getenv("KYA_VERSIONS_SCHEMA"))
 
 
 def _require_sqlalchemy() -> None:
@@ -493,8 +1202,12 @@ def record_principal_signal(
     Trade-off: under high contention two concurrent signals can race on
     `signal_counts`; mitigated by application-level retry if needed.
     """
-    if principal_kind not in PRINCIPAL_KINDS:
-        logger.debug("[KYP] unknown principal_kind=%s — defaulting to 'user'", principal_kind)
+    if not is_valid_principal_kind(principal_kind):
+        logger.debug(
+            "[KYP] unregistered principal_kind=%s -- defaulting to 'user'. "
+            "Register via KYA_PRINCIPAL_KINDS_EXTRA or "
+            "register_principal_kind() to keep the original kind.",
+            principal_kind)
         principal_kind = "user"
     if occurred_at is None:
         occurred_at = datetime.now(timezone.utc)
@@ -533,7 +1246,10 @@ def record_principal_signal(
         _inproc_lock = None
 
     last_exc: Exception | None = None
-    for attempt in range(30):
+    # 10 retries handle the worst contention observed in the load test
+    # (20 workers x 50 ops on the same principal -> 99% land). If you
+    # raise this, also raise the ``attempt == 9`` bailout below.
+    for attempt in range(10):
         stmt = (
             select(_PrincipalRow)
             .where(_PrincipalRow.tenant_id == tenant_id)
@@ -660,7 +1376,7 @@ def record_principal_clean(
     Mirrors the same upsert + Valkey + gauge plumbing as
     `record_principal_signal` so behavior stays symmetric.
     """
-    if principal_kind not in PRINCIPAL_KINDS:
+    if not is_valid_principal_kind(principal_kind):
         principal_kind = "user"
     if occurred_at is None:
         occurred_at = datetime.now(timezone.utc)

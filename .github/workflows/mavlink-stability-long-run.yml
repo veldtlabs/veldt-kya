@@ -1,0 +1,86 @@
+# Long-running stability profile for the MAVLink collector.
+#
+# **OFF by default.** Manual-trigger only (`workflow_dispatch`).
+# No push trigger, no schedule, no PR trigger. The workflow is
+# parked here as a future capability for when a customer
+# deployment needs the stability profile -- not run on every
+# release because:
+#
+#   * It takes an hour per run (timeout-minutes: 75)
+#   * It burns Actions minutes for a signal nobody currently
+#     needs (no production customer, no SLO to defend)
+#   * Memory + fd growth thresholds need tuning against a real
+#     workload before they're meaningful pass/fail gates
+#
+# To run: go to Actions tab on GitHub, select this workflow,
+# click "Run workflow", choose a branch. Override DURATION
+# (seconds) or RATE_HZ via the workflow_dispatch inputs.
+
+name: mavlink-stability-long-run
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: "How long to stream frames (seconds). Default 3600 (1h)."
+        required: false
+        default: "3600"
+        type: string
+      rate_hz:
+        description: "Synthetic frame rate (Hz). Default 50 (typical drone telemetry)."
+        required: false
+        default: "50"
+        type: string
+      memory_growth_mb_cap:
+        description: "Fail if RSS grows beyond this many MB."
+        required: false
+        default: "100"
+        type: string
+      fd_growth_cap:
+        description: "Fail if file-descriptor count grows beyond this."
+        required: false
+        default: "20"
+        type: string
+
+# Default-deny GITHUB_TOKEN scope.
+permissions:
+  contents: read
+
+jobs:
+  stability:
+    name: 1-hour stability profile
+    runs-on: ubuntu-latest
+    # 1h synthetic stream + 15min boot/teardown/profiling overhead
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install kya + profiling deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install psutil pytest
+
+      - name: Run stability profile
+        env:
+          DURATION_SECONDS: ${{ github.event.inputs.duration_seconds }}
+          RATE_HZ: ${{ github.event.inputs.rate_hz }}
+          MEMORY_GROWTH_MB_CAP: ${{ github.event.inputs.memory_growth_mb_cap }}
+          FD_GROWTH_CAP: ${{ github.event.inputs.fd_growth_cap }}
+        run: python scripts/mavlink_stability_long_run.py
+
+      - name: Upload stability profile on completion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stability-profile
+          path: /tmp/stability-*.json
+          if-no-files-found: ignore
+          retention-days: 30

@@ -1,0 +1,173 @@
+# MAVLink live integration test against ArduPilot SITL.
+#
+# Runs the live capture script (Docker spin of the official
+# ArduPilot SITL container) followed by the parser integration
+# test. Lives in its own workflow because SITL boot can be flaky
+# on hosted runners (network + Docker daemon variance); keeping
+# it out of the gating ``build`` workflow means a SITL hiccup
+# doesn't block every PR.
+#
+# Triggers:
+#   - workflow_dispatch (manual)
+#   - push to main / develop on changes to the MAVLink parser
+#     or the SITL harness itself
+#   - pull_request when those same paths change
+#
+# A green run here proves the parser correctly canonicalises every
+# frame a real ArduPilot autopilot emits during a scripted ARM ->
+# takeoff -> RTL cycle.
+
+name: mavlink-sitl-live
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, develop]
+    paths:
+      - "kya/runtime/parsers/mavlink/**"
+      - "scripts/mavlink_sitl_live_capture.py"
+      - "tests/test_mavlink_sitl_live.py"
+      - ".github/workflows/mavlink-sitl-live.yml"
+  pull_request:
+    paths:
+      - "kya/runtime/parsers/mavlink/**"
+      - "scripts/mavlink_sitl_live_capture.py"
+      - "tests/test_mavlink_sitl_live.py"
+      - ".github/workflows/mavlink-sitl-live.yml"
+
+concurrency:
+  group: mavlink-sitl-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+# Default-deny GITHUB_TOKEN scope. The job only reads the repo and
+# uploads an artefact on failure -- no write to issues, packages,
+# deployments. Defence-in-depth.
+permissions:
+  contents: read
+
+jobs:
+  sitl_live:
+    name: ArduPilot SITL + parser
+    runs-on: ubuntu-latest
+    # SITL boot + scripted mission + capture is ~2 min; 10 min cap
+    # absorbs cold-start container pull (~3 min on a fresh runner).
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install kya + pymavlink
+        run: |
+          python -m pip install --upgrade pip
+          # Editable install + the [mavlink] extra (pymavlink).
+          pip install -e ".[mavlink]"
+          pip install pytest
+
+      - name: Verify SHA-pin matches script default
+        # Drift guard: the SITL image digest is hardcoded in BOTH
+        # this workflow AND scripts/mavlink_sitl_live_capture.py
+        # (the _SITL_IMAGE_DEFAULT constant). If they diverge
+        # the local-dev path and the CI path are silently running
+        # different images -- exactly the supply-chain hole the
+        # pin was added to close. Compare them as strings and
+        # fail loudly if they don't match.
+        run: |
+          set -e
+          # Regex tolerates both lowercase + uppercase hex --
+          # Docker accepts either form on the CLI, and a future
+          # contributor pasting an uppercase digest from
+          # ``docker inspect`` shouldn't silently bypass the
+          # guard. Normalize to lowercase before comparing.
+          #
+          # DRIFT-GUARD WARNING: if either file grows another
+          # 64-char hex literal (a content hash, key fingerprint,
+          # etc.), this ``head -n1`` will pick the wrong one. See
+          # the inline comment near _SITL_IMAGE_DEFAULT in the
+          # script; add a sentinel here too if you change it.
+          PIN_IN_SCRIPT=$(grep -oE '[0-9a-fA-F]{64}' \
+              scripts/mavlink_sitl_live_capture.py | \
+              head -n1 | tr 'A-F' 'a-f')
+          PIN_IN_WORKFLOW=$(grep -oE '[0-9a-fA-F]{64}' \
+              .github/workflows/mavlink-sitl-live.yml | \
+              head -n1 | tr 'A-F' 'a-f')
+          if [ -z "$PIN_IN_SCRIPT" ] || [ -z "$PIN_IN_WORKFLOW" ]; then
+            echo "::error::failed to extract SHA digest from one or both files"
+            echo "  script:   ${PIN_IN_SCRIPT:-<empty>}"
+            echo "  workflow: ${PIN_IN_WORKFLOW:-<empty>}"
+            exit 1
+          fi
+          if [ "$PIN_IN_SCRIPT" != "$PIN_IN_WORKFLOW" ]; then
+            echo "::error::SITL image digest pin DRIFTED between files:"
+            echo "  scripts/mavlink_sitl_live_capture.py: $PIN_IN_SCRIPT"
+            echo "  .github/workflows/mavlink-sitl-live.yml: $PIN_IN_WORKFLOW"
+            echo "Bump both to the same digest. See script docblock."
+            exit 1
+          fi
+          echo "SHA pin OK: $PIN_IN_SCRIPT"
+
+      - name: Pull ArduPilot SITL Docker image (SHA-pinned)
+        # Pre-pull so the capture-script timeout isn't burnt on
+        # the cold image pull. Retry 3x with backoff.
+        #
+        # PIN-BY-DIGEST, not ``:latest``. Two reasons:
+        #   1. Supply chain: radarku is 3rd-party (6 stars). A
+        #      surprise breaking / compromised push to :latest
+        #      would silently land in CI.
+        #   2. Forensics: a CI-green moment a year from now must
+        #      be replayable. The digest is the only artefact
+        #      that survives mutable tag drift.
+        #
+        # Bumping the pin: see scripts/mavlink_sitl_live_capture.py
+        # docblock for the verification ritual. The drift-guard
+        # step above asserts the two literals match.
+        run: |
+          set -e
+          IMAGE="radarku/ardupilot-sitl@sha256:2364ae14e190e4cdd5d0839b3a55e6b5c6a980d9ff0000b1be7b8baae6fd50f1"
+          for attempt in 1 2 3; do
+            if docker pull "$IMAGE"; then
+              # Record the resolved Image ID + Created timestamp
+              # in the workflow log for year-over-year forensic
+              # replay.
+              echo "::group::SITL image identity"
+              docker inspect --format 'ID:      {{.Id}}' "$IMAGE"
+              docker inspect --format 'Created: {{.Created}}' "$IMAGE"
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "pull attempt $attempt failed; backing off..."
+            sleep $((attempt * 10))
+          done
+          echo "all 3 pull attempts failed"
+          exit 1
+
+      - name: Capture live SITL frames
+        env:
+          OUT: /tmp/mavlink-sitl.json
+          # 300s heartbeat-wait: GHA ubuntu-latest runners have ~2
+          # cores and no GPU; ArduCopter's first-boot pipeline
+          # (param load -> EKF init -> home fix -> motor cal) is
+          # CPU-bound and slower than dev laptops. 180s was tight
+          # on prior runs; 300s leaves headroom without making CI
+          # silently sluggish.
+          TIMEOUT: "300"
+          MISSION: "30"
+        run: python scripts/mavlink_sitl_live_capture.py
+
+      - name: Run live integration test
+        env:
+          MAVLINK_SITL_CAPTURE: /tmp/mavlink-sitl.json
+        run: pytest tests/test_mavlink_sitl_live.py -v
+
+      - name: Upload capture artefact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mavlink-sitl-capture
+          path: /tmp/mavlink-sitl.json
+          if-no-files-found: ignore
+          retention-days: 7

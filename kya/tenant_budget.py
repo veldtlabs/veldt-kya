@@ -126,6 +126,13 @@ logger = logging.getLogger(__name__)
 # both the agent and cost_center Valkey counters, so the
 # marketing-team budget enforcement is data-driven rather than
 # requiring a separate write path.
+# Cost events accept the existing three principal kinds plus
+# "tenant" (for tenant-wide roll-up writes). Cost tracking for
+# autonomy principals (drones, robots, ...) flows under their
+# operating ``agent`` / ``controller`` parent in the lineage, so
+# we don't admit autonomy kinds directly to the budget vocabulary
+# — that would fragment cost attribution. Re-evaluate when a
+# customer ships a drone fleet whose runtime cost is per-vehicle.
 _PRINCIPAL_KINDS = frozenset({"tenant", "agent", "user", "service_account"})
 BUDGET_SCOPES = frozenset(
     _PRINCIPAL_KINDS | {"cost_center", "business_unit"}

@@ -166,6 +166,10 @@ VALID_EVIDENCE_KINDS = {
     "runtime_auditd",
     "runtime_k8s_audit",
     "runtime_ebpf",
+    # Autonomy evidence (kya.runtime bridge, autonomy family).
+    # Separate namespace so dashboards / rules can filter by family
+    # without enumerating individual tools.
+    "autonomy_mavlink",
 }
 
 # Retention defaults per regime (days). Used when caller doesn't supply

@@ -166,6 +166,55 @@ def _next_version_no(db, tenant_id: str, agent_key: str) -> int:
     return int(db.execute(stmt).scalar() or 1)
 
 
+_PRINCIPAL_KEY_SEPARATOR = ":"
+
+
+def _compose_principal_key(principal_kind: str, principal_id: str) -> str:
+    """Compose the ``agent_key`` value used to store a non-agent
+    principal's definition in the ``agent_versions`` table.
+
+    Format: ``"<kind>:<id>"``. For ``kind == "agent"`` we return the
+    bare ``principal_id`` so every existing v0.1.7 ``agent_versions``
+    row stays reachable identically -- the storage location for
+    agents does NOT change.
+
+    Length: agent_key is ``String(50)``; the kind names are <=20 chars
+    and the ``":"`` separator costs 1, so non-agent ids are limited
+    to 29 chars max. The check is enforced here rather than at the DB
+    boundary so callers get a clear error message.
+
+    Separator safety: ``principal_id`` must NOT contain ``":"`` --
+    otherwise decomposition (``_decompose_principal_key`` in
+    kya_pro) would split at the wrong colon and yield a wrong
+    ``(kind, id)`` pair (e.g. ``"machine_identity:ip6:::1"`` would
+    decompose to ``("machine_identity", ":::1")``). Rejected here
+    rather than silently corrupting the lookup key.
+    """
+    if principal_kind == "agent":
+        # Agent ids keep their bare-key storage location, but a
+        # colon in an agent id would still confuse downstream
+        # decomposition routines. Reject for consistency.
+        if _PRINCIPAL_KEY_SEPARATOR in principal_id:
+            raise ValueError(
+                f"agent principal_id={principal_id!r} contains "
+                f"reserved separator {_PRINCIPAL_KEY_SEPARATOR!r}; "
+                f"choose an id without colons.")
+        return principal_id
+    if _PRINCIPAL_KEY_SEPARATOR in principal_id:
+        raise ValueError(
+            f"principal_id={principal_id!r} contains reserved "
+            f"separator {_PRINCIPAL_KEY_SEPARATOR!r}; the composed "
+            f"key would be ambiguous to decompose. Choose an id "
+            f"without colons (e.g. use dots, dashes, or underscores).")
+    if len(principal_kind) + 1 + len(principal_id) > 50:
+        raise ValueError(
+            f"composed principal key '{principal_kind}:{principal_id}' "
+            f"exceeds the 50-char agent_key column width. Shorten the "
+            f"principal_id (must be <= {50 - len(principal_kind) - 1} "
+            f"chars for kind {principal_kind!r}).")
+    return f"{principal_kind}{_PRINCIPAL_KEY_SEPARATOR}{principal_id}"
+
+
 def snapshot_agent(
     db,
     tenant_id: str,
@@ -249,6 +298,62 @@ def snapshot_agent(
     except Exception:
         pass
     return version_no
+
+
+def snapshot_principal(
+    db,
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+    definition: dict,
+    created_by: str | None = None,
+    note: str | None = None,
+    occurred_at: datetime | None = None,
+) -> int:
+    """Append an immutable definition snapshot for ANY principal kind.
+
+    For ``principal_kind == "agent"`` this is a direct synonym for
+    :func:`snapshot_agent` (no key rewriting). For non-agent kinds the
+    storage location is the same ``agent_versions`` table, keyed by
+    ``<kind>:<id>``, so the existing storage, indexes, and replication
+    pipelines cover drones / robots / PLCs / etc. without forking
+    schema.
+
+    Returns the assigned ``version_no``.
+
+    A drone whose firmware bumps from ``ardupilot-4.5.1`` to
+    ``ardupilot-4.5.2`` lands as a new immutable row -- ``detect_drift``
+    then fires when a subsequent observation finds the new
+    ``canonical_hash``.
+    """
+    composed = _compose_principal_key(principal_kind, principal_id)
+    return snapshot_agent(
+        db, tenant_id=tenant_id,
+        agent_key=composed, definition=definition,
+        created_by=created_by, note=note, occurred_at=occurred_at,
+    )
+
+
+def list_principal_versions(
+    db, *,
+    tenant_id: str, principal_kind: str, principal_id: str,
+    limit: int = 50,
+) -> list[dict]:
+    """Same semantics as :func:`list_versions` for any principal kind."""
+    composed = _compose_principal_key(principal_kind, principal_id)
+    return list_versions(db, tenant_id=tenant_id,
+                         agent_key=composed, limit=limit)
+
+
+def get_principal_version(
+    db, *,
+    tenant_id: str, principal_kind: str, principal_id: str,
+    version_no: int,
+) -> dict | None:
+    """Same semantics as :func:`get_version` for any principal kind."""
+    composed = _compose_principal_key(principal_kind, principal_id)
+    return get_version(db, tenant_id, composed, version_no)
 
 
 def snapshot_on_first_sight(

@@ -171,16 +171,33 @@ from .phoenix_poll import (
 from .phoenix_poll import (
     is_enabled as phoenix_poll_enabled,
 )
+from .principal_edges import (
+    DEFAULT_EDGE_KIND,
+    PrincipalEdge,
+    add_principal_edge,
+    ensure_principal_edges_table,
+    list_children,
+    list_parents,
+    remove_principal_edge,
+    walk_ancestors,
+    walk_descendants,
+)
 from .principals import (
     PRINCIPAL_KINDS,
+    PrincipalFingerprintBatch,
     PrincipalTrust,
+    build_fingerprint_batch,
     detect_principal_burst_anomalies,
     ensure_principal_table,
     get_principal_trust,
     get_principal_window_counts,
+    is_valid_principal_kind,
     list_principals,
+    principal_fingerprint,
     record_principal_clean,
     record_principal_signal,
+    register_principal_kind,
+    registered_principal_kinds,
 )
 from .requests import (
     RequestSummary,
@@ -468,11 +485,14 @@ from .tenant_budget import (
 )
 from .versioning import (
     ensure_table,
+    get_principal_version,
     get_version,
+    list_principal_versions,
     list_versions,
     rollback_to,
     snapshot_agent,
     snapshot_on_first_sight,
+    snapshot_principal,
 )
 
 __all__ = [
@@ -646,6 +666,28 @@ __all__ = [
     "get_principal_window_counts",
     "detect_principal_burst_anomalies",
     "delegation_trust_weight",
+    # v0.1.8 — extensible principal vocabulary
+    "register_principal_kind",
+    "is_valid_principal_kind",
+    "registered_principal_kinds",
+    # v0.1.8 — many-to-many principal DAG
+    "PrincipalEdge",
+    "DEFAULT_EDGE_KIND",
+    "ensure_principal_edges_table",
+    "add_principal_edge",
+    "remove_principal_edge",
+    "list_children",
+    "list_parents",
+    "walk_descendants",
+    "walk_ancestors",
+    # v0.1.8 — generalised definition versioning
+    "snapshot_principal",
+    "list_principal_versions",
+    "get_principal_version",
+    # v0.1.8 — hierarchical fingerprint middle layer
+    "principal_fingerprint",
+    "PrincipalFingerprintBatch",
+    "build_fingerprint_batch",
     # Invocation tracking (event-time vs ingest-time + parallel tree)
     "VALID_MODES",
     "VALID_OUTCOMES",

@@ -87,12 +87,21 @@ from ._bridge import (
     set_principal_resolver,
 )
 from ._canonical import (
+    AutonomyEvent,
+    AutonomyTool,
+    BoundEvent,
     PrincipalHint,
     PrincipalHintKind,
     ProcessRef,
     RuntimeEvent,
+    RuntimeSecurityTool,
     RuntimeSeverity,
+    SourceKind,
     SourceTool,
+    VehicleRef,
+    decode_mavlink_sysid,
+    encode_mavlink_sysid,
+    source_kind_of,
 )
 from ._registry import (
     RuntimeParserError,
@@ -105,6 +114,7 @@ from ._resolvers import (
     DockerLabelResolver,
     ExplicitBindingCache,
     K8sAnnotationResolver,
+    MavlinkSysidResolver,
     PrincipalResolverChain,
     ProcessUserResolver,
     Resolver,
@@ -115,12 +125,21 @@ from ._resolvers import (
 
 __all__ = [
     # Canonical types
+    "BoundEvent",
     "RuntimeEvent",
+    "AutonomyEvent",
     "ProcessRef",
+    "VehicleRef",
     "PrincipalHint",
     "PrincipalHintKind",
     "RuntimeSeverity",
     "SourceTool",
+    "SourceKind",
+    "RuntimeSecurityTool",
+    "AutonomyTool",
+    "source_kind_of",
+    "encode_mavlink_sysid",
+    "decode_mavlink_sysid",
     # Bridge
     "record_runtime_event",
     "ingest",
@@ -141,6 +160,7 @@ __all__ = [
     "K8sAnnotationResolver",
     "ContainerNameConventionResolver",
     "ProcessUserResolver",
+    "MavlinkSysidResolver",
     "bind_container",
     "unbind_container",
 ]

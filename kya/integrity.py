@@ -33,13 +33,62 @@ Public API
     verify_signature(agent_def, public_key=None) -> dict  # status report
 """
 
+import datetime as _dt
 import hashlib
 import json
 import os
+import threading
+from typing import Any as _Any
 
-# Fields that are part of the "what this agent does" identity. Mutable
-# operational fields (counters, timestamps) are excluded so the hash is
-# stable across runs.
+
+def _canonicalise_for_hash(value: _Any) -> _Any:
+    """Recursively coerce ``value`` into a form whose JSON
+    serialisation is identical across backends.
+
+    Specifically: every ``datetime`` (or ``date``) is coerced to an
+    ISO-8601 string with explicit UTC offset, so a naive datetime
+    that round-tripped through SQLite (tz stripped) hashes the
+    same as the tz-aware datetime PG returns. Without this, the
+    same definition would hash differently on PG vs SQLite -- the
+    nondeterminism that fails the reproducibility contract.
+
+    Non-datetime values pass through. dicts / lists recurse so
+    timestamps nested inside the definition are also canonicalised.
+    """
+    if isinstance(value, _dt.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=_dt.timezone.utc)
+        else:
+            value = value.astimezone(_dt.timezone.utc)
+        return value.isoformat()
+    if isinstance(value, _dt.date):
+        # A bare date has no tz; ISO format is unambiguous.
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _canonicalise_for_hash(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonicalise_for_hash(v) for v in value]
+    return value
+
+# Identity field sets per principal kind.
+#
+# ``canonical_hash`` projects only the keys present in the kind's
+# field set (extra keys in the definition are ignored). Two
+# definitions that agree on every identity field hash identically,
+# even if they differ on operational metadata (timestamps, counters,
+# call history) -- that's the contract that makes drift detection
+# robust against benign telemetry churn.
+#
+# Adding a new field is an additive, backward-compatible change AS
+# LONG AS existing definitions don't already use that key. The
+# rule of thumb: when a new identity field appears, every definition
+# implicitly opts in -- its hash will change for the FIRST recompute
+# after the upgrade. Document the upgrade as a one-time fingerprint
+# rotation, then move on.
+
+# Agent identity (v0.1.0). Kept as a top-level constant for
+# back-compat: callers reading ``kya.integrity._HASHED_FIELDS``
+# continue to see the agent vocabulary they expect.
 _HASHED_FIELDS = (
     "agent_key",
     "name",
@@ -62,9 +111,187 @@ _HASHED_FIELDS = (
     "compliance_scope",
 )
 
+# Autonomy-asset identity fields. Common across drones / robots /
+# vehicles -- firmware revision, kinematic envelope, parameter
+# bundle, geofence, and security caps. A drone firmware bump or a
+# geofence change MUST flip the fingerprint, otherwise an audit
+# trail can't tell two materially-different drones apart.
+_AUTONOMY_ASSET_FIELDS = (
+    "firmware_version",   # firmware build / git SHA
+    "firmware_hash",      # signed binary digest if available
+    "airframe",           # "quad", "hex", "fixed_wing", "rover"
+    "platform",           # vendor / autopilot ("ardupilot", "px4")
+    "model",              # vendor model code ("CubeOrange", "DJI M300")
+    "sensor_set",         # canonical sensor list (sorted)
+    "actuator_set",       # canonical actuator list (sorted)
+    "kinematic_envelope", # max speed / max alt / max payload / etc.
+    "parameter_set_hash", # hash of the full MAVLink param dump
+    "geofence_id",        # active geofence document id
+    "mission_profile",    # named profile in use (e.g. "survey_v3")
+    "approved_modes",     # flight modes the operator has authorised
+    "data_classes",       # what data the asset handles (shared w/ agents)
+    "compliance_scope",   # regulatory regime tags (shared w/ agents)
+)
+
+# PLC / industrial-controller identity fields. The "program" is the
+# IEC 61131-3 logic; firmware + IO map are the operational envelope.
+_PLC_FIELDS = (
+    "firmware_version",
+    "firmware_hash",
+    "model",              # vendor PLC model
+    "platform",           # vendor name
+    "program_hash",       # IEC 61131-3 program digest
+    "io_map_hash",        # tag database hash
+    "approved_modes",     # RUN / PROG / REMOTE
+    "compliance_scope",
+)
+
+# SCADA / supervisory-control-stack identity fields. SCADA sits a
+# layer above PLCs -- it's the operator-facing HMI + historian +
+# command-router stack (Citect, Wonderware, Ignition, etc.). The
+# governance questions are different from a PLC's: SCADA cares
+# about WHICH operator console issued a command, which tag
+# database mediates the read/write, and which protocols are
+# allowed on the wire. The PLC-side caches firmware + program;
+# the SCADA-side caches operator-console identity + supervised
+# PLC membership + protocol allowlist.
+_SCADA_FIELDS = (
+    "platform",           # "citect", "wonderware", "ignition", ...
+    "version",            # vendor product version
+    "operator_console_id", # which HMI / console (room, station id)
+    "historian_endpoint", # time-series DB the system writes to
+    "tag_database_hash",  # canonical hash of the SCADA tag
+                          # definitions (renaming or remapping a tag
+                          # is a governance event in industrial audit)
+    "supervised_plcs",    # sorted list of (kind, id) members this
+                          # SCADA controls -- moving a PLC under a
+                          # different SCADA flips the fingerprint
+    "approved_protocols", # allowlist (e.g. OPC-UA, Modbus-TCP,
+                          # EtherNet/IP); enabling an extra protocol
+                          # is a governance-meaningful change
+    "compliance_scope",
+)
+
+# Service-account / machine-identity fields. Lightweight today;
+# extend additively as IdP integration matures.
+_MACHINE_IDENTITY_FIELDS = (
+    "client_id",
+    "issuer",
+    "scopes",
+    "approved_audiences",
+    "compliance_scope",
+)
+
+# Composed-system identity. Identity = the MEMBERS, by reference.
+# The composer's own metadata is mostly governance (owner, on_call)
+# rather than capability, so the meaningful identity hash for an
+# autonomous_system row is its membership manifest.
+_AUTONOMOUS_SYSTEM_FIELDS = (
+    "name",
+    "description",
+    "mission_profile",
+    "approved_members",   # sorted list of {kind, id} members
+    "compliance_scope",
+)
+
+# Per-kind registry. Lookup fallback is ``_HASHED_FIELDS`` (the
+# agent vocabulary) so every kind hashes against something
+# deterministic -- a typo'd kind degrades to "compute the hash like
+# an agent" rather than raising.
+#
+# When ``KYA_HASH_STRICT_KIND=1|true|yes|on`` is set in the
+# environment, ``hashed_fields_for`` raises ``KeyError`` instead of
+# silently degrading. Strict mode catches typos that would otherwise
+# produce meaningless fingerprints.
+_HASHED_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "agent":             _HASHED_FIELDS,
+    "user":              _HASHED_FIELDS,
+    "service_account":   _MACHINE_IDENTITY_FIELDS,
+    "machine_identity":  _MACHINE_IDENTITY_FIELDS,
+    "drone":             _AUTONOMY_ASSET_FIELDS,
+    "robot":             _AUTONOMY_ASSET_FIELDS,
+    "vehicle":           _AUTONOMY_ASSET_FIELDS,
+    "controller":        _AUTONOMY_ASSET_FIELDS,
+    "sensor":            _AUTONOMY_ASSET_FIELDS,
+    "actuator":          _AUTONOMY_ASSET_FIELDS,
+    "plc":               _PLC_FIELDS,
+    "scada":             _SCADA_FIELDS,
+    "lakehouse_job":     _HASHED_FIELDS,
+    "autonomous_system": _AUTONOMOUS_SYSTEM_FIELDS,
+}
+
+# Guards registry reads + writes. CPython's GIL makes the underlying
+# dict ops atomic today, but free-threaded Python 3.13+ removes that
+# guarantee -- a concurrent ``register_hashed_fields`` + ``canonical_hash``
+# can race. The lock costs ~50ns per call (uncontended) and the
+# registry is read once per canonical_hash, so the overhead is
+# negligible at any realistic load.
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _strict_kind_mode() -> bool:
+    """Read the ``KYA_HASH_STRICT_KIND`` env var on every call so
+    test setup can toggle it without re-importing the module."""
+    raw = os.environ.get("KYA_HASH_STRICT_KIND", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def hashed_fields_for(principal_kind: str | None) -> tuple[str, ...]:
+    """Look up the identity field set for a principal kind.
+
+    Unknown / None kind falls back to the agent vocabulary so a
+    miscategorised definition still hashes deterministically -- the
+    fail-soft default that lets vendor-registered kinds work even
+    when the vendor forgot to call ``register_hashed_fields``.
+
+    Strict mode
+    -----------
+    Set ``KYA_HASH_STRICT_KIND=1`` (or ``true`` / ``yes`` / ``on``)
+    to make this function raise ``KeyError`` on an unknown kind
+    instead of degrading. Recommended for audit-grade deployments
+    where a typo'd kind producing a meaningless fingerprint would
+    be worse than a hard failure.
+    """
+    if not principal_kind:
+        return _HASHED_FIELDS
+    with _REGISTRY_LOCK:
+        fields = _HASHED_FIELDS_BY_KIND.get(principal_kind)
+    if fields is not None:
+        return fields
+    if _strict_kind_mode():
+        raise KeyError(
+            f"unknown principal_kind {principal_kind!r}; strict "
+            f"mode is enabled (KYA_HASH_STRICT_KIND). Register the "
+            f"kind via register_hashed_fields() or disable strict "
+            f"mode.")
+    return _HASHED_FIELDS
+
+
+def register_hashed_fields(
+    principal_kind: str, fields: tuple[str, ...],
+) -> None:
+    """Override or extend the identity field set for a principal
+    kind. Idempotent (last write wins). Useful for vendors who
+    register new kinds via ``register_principal_kind`` and need
+    matching identity hashing.
+
+    Fields are validated as a tuple of non-empty strings. The
+    registry mutation is process-local and thread-safe (guarded by
+    a module-level lock).
+    """
+    if not isinstance(fields, tuple):
+        raise TypeError("fields must be a tuple of strings")
+    for f in fields:
+        if not isinstance(f, str) or not f:
+            raise ValueError(
+                f"every field must be a non-empty string; got {f!r}")
+    with _REGISTRY_LOCK:
+        _HASHED_FIELDS_BY_KIND[principal_kind] = fields
+
+
 # Ownership / accountability metadata. NOT in the identity hash by
-# default -- changing the owner does not change what the agent does.
-# Customers in strict-audit regimes can opt in by passing
+# default -- changing the owner does not change what the principal
+# does. Customers in strict-audit regimes can opt in by passing
 # include_ownership=True to canonical_hash() or by setting the env
 # var KYA_HASH_OWNER_FIELDS=true. In that mode, an ownership change
 # triggers a new definition_hash + new fleet_fingerprint, which
@@ -88,58 +315,87 @@ def _ownership_enabled(explicit: bool | None) -> bool:
 
 
 def canonical_hash(
-    agent_def: dict,
+    definition: dict,
     *,
     include_ownership: bool | None = None,
+    principal_kind: str | None = None,
 ) -> str:
     """SHA256 over a canonical JSON serialization of the identity fields.
 
     Two semantically-equal definitions hash identically. Mutating any
-    identity field (or adding a new tool) changes the hash.
+    identity field (or adding a new tool, or bumping firmware) changes
+    the hash.
 
-    By default the hash covers only "what this agent does" -- prompt,
-    tools, data classes, governance mode, delegation permissions,
-    model, etc. Ownership / accountability metadata (``owner``,
-    ``on_call``, ``escalation``, ``review_status``) is NOT in the hash;
+    By default the hash covers only "what this thing does":
+        * Agents: prompt, tools, data classes, governance mode,
+          delegation permissions, model, etc.
+        * Drones / robots / vehicles: firmware, airframe, sensor set,
+          parameter bundle, geofence, mission profile, approved modes.
+        * PLCs: firmware, program digest, IO map, approved modes.
+        * Service accounts: client_id, issuer, scopes, audiences.
+
+    The field set is selected via ``principal_kind`` against the
+    ``_HASHED_FIELDS_BY_KIND`` registry (extensible at runtime via
+    :func:`register_hashed_fields`). Unknown / None kind falls back
+    to the agent vocabulary, so existing v0.1.7 callers that don't
+    pass ``principal_kind`` get IDENTICAL hashes to v0.1.7.
+
+    Ownership / accountability metadata (``owner``, ``on_call``,
+    ``escalation``, ``review_status``) is NOT in the hash by default;
     a re-org that reassigns an owner does not, by default, count as
-    "the agent changed."
-
-    Customers in strict-audit regimes can opt in to ownership-as-identity
-    by either:
+    "the principal changed." Customers in strict-audit regimes opt
+    in via:
         * ``canonical_hash(defn, include_ownership=True)``
-        * setting the env var ``KYA_HASH_OWNER_FIELDS=true``
-            (the explicit kwarg overrides the env var)
+        * env var ``KYA_HASH_OWNER_FIELDS=true``
+          (the explicit kwarg overrides the env var)
 
-    In that mode, an ownership change treats the agent as a new
-    approval boundary -- ``definition_hash`` changes, downstream
-    ``fleet_fingerprint`` changes, drift detection fires.
+    Args:
+        definition: The principal definition dict. Historically called
+            ``agent_def``; both kwarg names work for back-compat.
+        include_ownership: Fold ownership fields into the hash.
+        principal_kind: Pick the identity field set for this kind.
+            ``None`` (default) uses the agent vocabulary, preserving
+            v0.1.7 hashes exactly.
+
+    Returns:
+        Hex SHA-256 over the canonical-JSON projection.
     """
-    fields = _HASHED_FIELDS
+    fields = hashed_fields_for(principal_kind)
     if _ownership_enabled(include_ownership):
         fields = fields + _OWNERSHIP_FIELDS
-    snapshot = {k: agent_def.get(k) for k in fields if k in agent_def}
-    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+    # Project, then canonicalise datetimes -- otherwise a tz-naive
+    # datetime round-tripped through SQLite would hash differently
+    # from the tz-aware datetime PG returns. ``default=str`` would
+    # serialise these inconsistently; explicit ISO-UTC coercion
+    # makes the hash backend-independent.
+    snapshot = _canonicalise_for_hash(
+        {k: definition.get(k) for k in fields if k in definition})
+    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def detect_drift(
     declared_hash: str,
-    agent_def: dict,
+    definition: dict,
     *,
     include_ownership: bool | None = None,
+    principal_kind: str | None = None,
 ) -> bool:
     """Return True if the declared hash doesn't match the current
     definition's canonical hash. Caller logs + alerts on True.
 
-    ``include_ownership`` is passed through to ``canonical_hash`` --
-    callers that opted into ownership-as-identity at sign-time MUST
-    also opt in here, otherwise drift detection would compare
-    incompatible hashes.
+    ``include_ownership`` and ``principal_kind`` are passed through
+    to :func:`canonical_hash` -- callers that opted into a non-default
+    field set at sign-time MUST also opt in here, otherwise drift
+    detection would compare incompatible hashes.
     """
     if not declared_hash:
         return False
     return canonical_hash(
-        agent_def, include_ownership=include_ownership) != declared_hash
+        definition,
+        include_ownership=include_ownership,
+        principal_kind=principal_kind,
+    ) != declared_hash
 
 
 def lineage_chain(agent_def: dict) -> list[str]:
