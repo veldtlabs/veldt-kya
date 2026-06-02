@@ -34,8 +34,9 @@ KYA targets **Python 3.10+** and runs against PostgreSQL, MySQL, SQLite, and Duc
 3. **Tests**: any new code needs at least one pytest. Run `pytest` locally before opening the PR.
 4. **Style**: we use `ruff` for linting and `mypy` for type checking. Run `ruff check . && ruff format . && mypy kya` before pushing.
 5. **Commits**: keep them focused. Squash on merge is the default.
-6. **CHANGELOG.md**: add an entry under `## Unreleased` describing your change (one line).
-7. **PR description**: fill out the template that auto-loads.
+6. **Live SITL run (MAVLink-only)**: changes under `kya/runtime/parsers/mavlink/`, `scripts/mavlink_sitl_live_capture.py`, or `tests/test_mavlink_sitl_live.py` trigger a Docker-required SITL workflow in CI. Run it locally first — `docker rm -f $(docker ps -aq --filter name=kya-mavlink-) && python scripts/mavlink_sitl_live_capture.py && pytest tests/test_mavlink_sitl_live.py -v`. Unit tests mock subprocess and won't catch container/transport/serialization bugs.
+7. **CHANGELOG.md**: add an entry under `## Unreleased` describing your change (one line).
+8. **PR description**: fill out the template that auto-loads.
 
 ## Things we appreciate
 
