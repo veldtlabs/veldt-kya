@@ -75,10 +75,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _sitl_common import (  # noqa: E402
     capture,
     cleanup_container,
+    cleanup_stale_kya_containers,
     die,
     env_int,
+    env_port,
     preflight,
     run,
+    verify_container_running,
+    verify_host_port_free,
     wait_for_heartbeat,
     write_ndjson,
 )
@@ -89,7 +93,7 @@ from _sitl_common import (  # noqa: E402
 OUT = Path(os.environ.get("OUT", "/tmp/mavlink-gazebo.json"))
 BOOT_TIMEOUT = env_int("TIMEOUT", 180)
 CAPTURE_SECONDS = env_int("MISSION", 60)
-MAVLINK_PORT = env_int("MAVLINK_PORT", 14550)
+MAVLINK_PORT = env_port("MAVLINK_PORT", 14550)
 HEADLESS = os.environ.get("KYA_GAZEBO_HEADLESS", "").strip().lower() in (
     "1", "true", "yes", "on",
 )
@@ -101,7 +105,11 @@ GAZEBO_IMAGE = os.environ.get(
     "khancyr/ardupilot-gazebo:latest",
 )
 
-CONTAINER_NAME = "kya-mavlink-gazebo"
+_CONTAINER_PREFIX = "kya-mavlink-gazebo"
+CONTAINER_NAME = os.environ.get(
+    "KYA_GAZEBO_CONTAINER",
+    f"{_CONTAINER_PREFIX}-{os.getpid()}",
+)
 
 # Loopback only -- same rationale as the headless SITL script.
 MAVLINK_HOST = "127.0.0.1"
@@ -161,7 +169,13 @@ def _revoke_x11_from_docker() -> None:
 
 def launch_gazebo_sitl() -> None:
     """Start ArduPilot SITL + Gazebo in a single Docker container."""
+    # (C) Stale-sweep abandoned gazebo containers (Ctrl-C leakage).
+    cleanup_stale_kya_containers(prefix=_CONTAINER_PREFIX)
     cleanup_container(CONTAINER_NAME)
+    # (A) Port pre-check. Gazebo path uses MAVProxy-bridged UDP
+    # (the bridge image emits MAVLink on UDP 14550 inside the
+    # container), so the probe is a UDP-bind check, not TCP.
+    verify_host_port_free(MAVLINK_HOST, MAVLINK_PORT, protocol="udp")
     _allow_x11_to_docker()
 
     docker_args = [
@@ -186,6 +200,11 @@ def launch_gazebo_sitl() -> None:
     result = run(docker_args, capture_output=True, text=True)
     if result.returncode != 0:
         die(f"docker run failed: {result.stderr}")
+
+    # (B) Container running check -- catch immediate entrypoint
+    # crashes (e.g. image-missing entry script) in <1s rather
+    # than waiting BOOT_TIMEOUT for nothing.
+    verify_container_running(CONTAINER_NAME)
 
 
 # ── Demo mission (visible) ────────────────────────────────────────

@@ -37,6 +37,12 @@ def _import_gazebo_module(env_overrides: dict[str, str] | None = None):
     keys = [
         "OUT", "TIMEOUT", "MISSION", "MAVLINK_PORT",
         "KYA_GAZEBO_HEADLESS", "GAZEBO_IMAGE",
+        # Pop the container-name overrides so a stale env var from
+        # another test or the user's shell can't bleed into the
+        # docker-argv assertion. Even though the live SITL var is
+        # not consumed by the Gazebo script today, a future port
+        # of the hardening would silently fail without this.
+        "KYA_SITL_CONTAINER", "KYA_GAZEBO_CONTAINER",
     ]
     for k in keys:
         saved[k] = os.environ.get(k)
@@ -91,6 +97,9 @@ def _captured_docker_argv(env_overrides: dict[str, str]) -> list[str]:
 
     with patch("subprocess.run", side_effect=_fake_run), \
          patch.object(mod, "cleanup_container"), \
+         patch.object(mod, "cleanup_stale_kya_containers"), \
+         patch.object(mod, "verify_host_port_free"), \
+         patch.object(mod, "verify_container_running"), \
          patch.object(mod, "_allow_x11_to_docker"):
         mod.launch_gazebo_sitl()
 
@@ -293,6 +302,176 @@ class TestEnvIntValidation:
                 sys.path.remove(str(_SCRIPT.parent))
             except ValueError:
                 pass
+
+
+class TestEnvPortValidation:
+    """Review fix for H3: env_port adds an upper-bound check that
+    env_int alone doesn't enforce. Without it, MAVLINK_PORT=99999
+    would burn ~3 min on a wasted image pull before docker run
+    rejected the bind. env_port catches it in microseconds."""
+
+    def test_port_above_max_rejected(self):
+        import os
+        import subprocess
+        os.environ["MAVLINK_PORT"] = "99999"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import sys; sys.path.insert(0, 'scripts'); "
+                 "from _sitl_common import env_port; "
+                 "env_port('MAVLINK_PORT', 14550)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0
+            assert "65535" in result.stderr
+        finally:
+            os.environ.pop("MAVLINK_PORT", None)
+
+    def test_port_at_max_accepted(self):
+        """Boundary: 65535 must pass."""
+        import os
+        os.environ["MAVLINK_PORT"] = "65535"
+        try:
+            sys.modules.pop("_sitl_common", None)
+            sys.path.insert(0, str(_SCRIPT.parent))
+            from _sitl_common import env_port  # noqa: PLC0415
+            assert env_port("MAVLINK_PORT", 14550) == 65535
+        finally:
+            os.environ.pop("MAVLINK_PORT", None)
+            try:
+                sys.path.remove(str(_SCRIPT.parent))
+            except ValueError:
+                pass
+
+    def test_port_zero_rejected(self):
+        """Inherits env_int's positive-only check -- 0 must fail."""
+        import os
+        import subprocess
+        os.environ["MAVLINK_PORT"] = "0"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import sys; sys.path.insert(0, 'scripts'); "
+                 "from _sitl_common import env_port; "
+                 "env_port('MAVLINK_PORT', 14550)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0
+            assert "positive" in result.stderr.lower()
+        finally:
+            os.environ.pop("MAVLINK_PORT", None)
+
+
+class TestStaleSweepPrefixAnchor:
+    """Review fix for HIGH: docker ps name-filter is SUBSTRING.
+    Without post-filtering, a user's adjacent container like
+    ``my-kya-mavlink-sitl-debug`` would be reaped. Anchor on
+    ``startswith(prefix + "-")`` is required."""
+
+    def _run_sweep_with_mock_listing(self, listing_stdout: str,
+                                     now_unix: float,
+                                     prefix: str = "kya-mavlink-sitl"):
+        """Patch subprocess.run so cleanup_stale_kya_containers
+        sees the given docker-ps listing and we capture which
+        names ended up in docker rm calls."""
+        sys.modules.pop("_sitl_common", None)
+        sys.path.insert(0, str(_SCRIPT.parent))
+        from _sitl_common import (  # noqa: PLC0415
+            cleanup_stale_kya_containers,
+        )
+        removed: list[str] = []
+
+        def _fake_run(cmd, *args, **kwargs):
+            r = MagicMock()
+            r.returncode = 0
+            r.stderr = ""
+            # docker ps -a --filter ... --format ... -> listing
+            if (isinstance(cmd, list) and len(cmd) >= 2
+                    and cmd[:2] == ["docker", "ps"]):
+                r.stdout = listing_stdout
+                return r
+            # docker rm -f <name>
+            if (isinstance(cmd, list) and len(cmd) >= 3
+                    and cmd[:3] == ["docker", "rm", "-f"]):
+                removed.append(cmd[3])
+                r.stdout = b""
+                return r
+            r.stdout = ""
+            return r
+
+        with patch("_sitl_common.subprocess.run",
+                   side_effect=_fake_run), \
+             patch("_sitl_common.time.time", return_value=now_unix):
+            cleanup_stale_kya_containers(
+                prefix=prefix, max_age_minutes=60,
+            )
+        try:
+            sys.path.remove(str(_SCRIPT.parent))
+        except ValueError:
+            pass
+        return removed
+
+    # Helper: parse a docker-ps CreatedAt to a unix timestamp so
+    # tests can pick "now" as an exact offset. Using a hardcoded
+    # epoch is fragile and we got it wrong on the first attempt.
+    @staticmethod
+    def _listing_time(created_at: str) -> float:
+        from datetime import datetime
+        # Strip trailing tz-name (e.g. " UTC") -- keep the +0000.
+        import re
+        cleaned = re.sub(r"\s+[A-Z]{1,4}$", "", created_at.strip())
+        return datetime.strptime(
+            cleaned, "%Y-%m-%d %H:%M:%S %z",
+        ).timestamp()
+
+    def test_substring_match_NOT_reaped(self):
+        """The bug the review found: 'my-kya-mavlink-sitl-debug'
+        would match a substring filter but is NOT one of ours."""
+        created_at = "2026-06-01 22:42:58 +0000 UTC"
+        listing = (
+            f"my-kya-mavlink-sitl-debug\t{created_at}\tabc123def456\n"
+        )
+        # 70 minutes after the listed CreatedAt -> well over the
+        # 60-min sweep threshold.
+        now_unix = self._listing_time(created_at) + 70 * 60
+        removed = self._run_sweep_with_mock_listing(
+            listing, now_unix=now_unix,
+        )
+        assert "my-kya-mavlink-sitl-debug" not in removed, (
+            "stale-sweep substring match crossed the prefix "
+            "anchor and would have killed a user's adjacent "
+            "container -- prefix-anchor fix regressed.")
+
+    def test_legit_prefixed_container_reaped(self):
+        """The intended case: 'kya-mavlink-sitl-<pid>' that's
+        an hour old should be removed."""
+        created_at = "2026-06-01 22:42:58 +0000 UTC"
+        listing = (
+            f"kya-mavlink-sitl-12345\t{created_at}\tdef456abc789\n"
+        )
+        now_unix = self._listing_time(created_at) + 70 * 60
+        removed = self._run_sweep_with_mock_listing(
+            listing, now_unix=now_unix,
+        )
+        assert "kya-mavlink-sitl-12345" in removed, (
+            "stale-sweep failed to reap a legitimately-stale "
+            "PID-tagged container; prefix anchor is too tight.")
+
+    def test_fresh_container_NOT_reaped(self):
+        """A parallel-running invocation's container is YOUNG
+        -- never reap a live sibling run."""
+        created_at = "2026-06-01 23:40:00 +0000 UTC"
+        listing = (
+            f"kya-mavlink-sitl-67890\t{created_at}\tfedcba654321\n"
+        )
+        # 2 minutes after listed -- well under the 60-min threshold.
+        now_unix = self._listing_time(created_at) + 2 * 60
+        removed = self._run_sweep_with_mock_listing(
+            listing, now_unix=now_unix,
+        )
+        assert "kya-mavlink-sitl-67890" not in removed, (
+            "stale-sweep killed a young container; age threshold "
+            "(60 min) is broken or being ignored.")
 
 
 class TestDockerDaemonPreflight:

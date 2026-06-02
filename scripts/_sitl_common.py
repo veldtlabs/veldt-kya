@@ -74,6 +74,230 @@ def cleanup_container(name: str) -> None:
         pass
 
 
+def cleanup_stale_kya_containers(
+    *, prefix: str, max_age_minutes: int = 60,
+) -> None:
+    """Reap leftover containers from prior failed / Ctrl-C'd runs.
+
+    A typical leak chain: developer Ctrl-Cs the script BETWEEN
+    ``docker run -d`` and the ``finally: cleanup_container()``
+    clause -- or CI's ``cancel-in-progress`` SIGTERMs the job at
+    the wrong moment. The container survives and holds the host
+    port mapping. Without sweep, the next invocation has to
+    either fail to bind or rely on the user remembering to run
+    ``docker rm -f`` manually.
+
+    Sweep policy: any container whose name starts with
+    ``prefix + "-"`` AND was created more than ``max_age_minutes``
+    ago. The age threshold keeps a CURRENTLY-running parallel
+    invocation safe (its container is fresh) while reaping the
+    leaked ones.
+
+    Prefix anchoring is CRITICAL: ``docker ps --filter name=X``
+    is a SUBSTRING match by default, not a prefix match. Without
+    post-filtering, a user's adjacent container like
+    ``my-kya-mavlink-sitl-debug`` would be silently reaped. We
+    use the docker filter only to narrow the listing and
+    re-verify the prefix in Python.
+
+    Best-effort; failures are printed but don't abort the caller.
+    """
+    # Anchor: we only ever sweep names that are EXACTLY
+    # "<prefix>-<suffix>" -- ``startswith(anchor)`` requires the
+    # trailing hyphen so ``my-kya-mavlink-sitl-debug`` cannot
+    # match ``kya-mavlink-sitl``.
+    anchor = f"{prefix}-"
+    try:
+        listing = subprocess.run(
+            ["docker", "ps", "-a",
+             "--filter", f"name={prefix}",
+             "--format", "{{.Names}}\t{{.CreatedAt}}\t{{.ID}}"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  (stale-sweep listing failed: {e})", file=sys.stderr)
+        return
+
+    now = time.time()
+    threshold = max_age_minutes * 60
+    for line in (listing.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        name, created_at, cid = parts[0], parts[1], parts[2]
+        # H1 review fix: docker ps name filter is substring; re-verify
+        # prefix in Python so we don't reap an adjacent container.
+        if not name.startswith(anchor):
+            continue
+        # Parse the docker ps CreatedAt directly. Format:
+        # "2026-06-01 23:42:58 +0000 UTC". Strip the trailing
+        # " UTC" + parse via strptime so we don't shell back into
+        # docker inspect (which was the per-row hot path the
+        # reviewer flagged for sweep inefficiency).
+        created_ts = _parse_docker_created_at(created_at)
+        if created_ts is None:
+            continue
+        age = now - created_ts
+        if age >= threshold:
+            print(
+                f"  stale-sweep: removing {name!r} "
+                f"(age={int(age)}s, cid={cid[:12]})"
+            )
+            cleanup_container(name)
+
+
+def _parse_docker_created_at(s: str) -> float | None:
+    """Parse ``docker ps`` ``{{.CreatedAt}}`` to a unix timestamp.
+
+    Docker's CreatedAt is essentially:
+      "YYYY-MM-DD HH:MM:SS +TZ TZNAME"  (e.g. "+0000 UTC")
+
+    Returns None on any parse failure -- callers should treat
+    that as "skip this row" not "abort the sweep".
+    """
+    import re
+    from datetime import datetime
+    # Strip trailing tz-name (e.g. " UTC") -- keep the +0000 offset.
+    s = re.sub(r"\s+[A-Z]{1,4}$", "", s.strip())
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+    ):
+        try:
+            return datetime.strptime(s, fmt).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
+def verify_host_port_free(
+    host: str, port: int, *, protocol: str = "tcp",
+) -> None:
+    """Fail-fast guard against silently capturing from someone
+    else's MAVLink stream.
+
+    If something is already listening on ``host:port`` BEFORE we
+    launch our container, the docker port bind will fail with an
+    opaque ``port is already allocated`` error -- OR, more
+    insidiously, the bind might succeed for another reason and
+    the capture script would then collect frames from the OTHER
+    MAVLink emitter (the dev's mavproxy, a stale autopilot
+    container, a forgotten SITL).
+
+    Probe strategy depends on ``protocol``:
+
+      * "tcp" -- open a TCP connection. If the connect succeeds,
+        a listener is accepting; die. ConnectionRefused / timeout
+        / OSError = nothing there, return.
+
+      * "udp" -- attempt to bind a UDP socket to ``(host, port)``.
+        If bind succeeds, nothing is bound there; close and return.
+        If bind fails with EADDRINUSE, someone is bound; die.
+        UDP is connectionless so "is anyone listening" can't be
+        proven by sending alone -- bind-occupancy is the
+        reliable proof.
+
+    Uses a 1s timeout for TCP -- a live listener on loopback
+    answers in microseconds; if it's slower, something is wrong
+    enough that the user should investigate manually anyway.
+    """
+    if protocol == "tcp":
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                pass
+        except (ConnectionRefusedError, socket.timeout, OSError):
+            # The expected case: nothing accepts the connection.
+            return
+        die(
+            f"tcp port {host}:{port} is already in use by ANOTHER "
+            f"process or container. If this is leftover from a "
+            f"previous SITL run, run "
+            f"`docker ps -a --filter name=kya-mavlink-` and remove "
+            f"with `docker rm -f`. If it's mavproxy / another GCS, "
+            f"either stop it or set MAVLINK_PORT to a free port."
+        )
+
+    if protocol == "udp":
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            try:
+                probe.bind((host, port))
+            except OSError as e:
+                # EADDRINUSE -- something already bound this port.
+                # We do NOT swallow other OSErrors; they'd produce
+                # an opaque failure mode users can't action.
+                if e.errno in (
+                    98,  # Linux: EADDRINUSE
+                    48,  # macOS: EADDRINUSE
+                    10048,  # Windows: WSAEADDRINUSE
+                ):
+                    die(
+                        f"udp port {host}:{port} is already bound "
+                        f"by ANOTHER process. If this is leftover "
+                        f"from a previous Gazebo / mavproxy run, "
+                        f"find it with `ss -ulnp | grep {port}` "
+                        f"(Linux) or `lsof -i :{port}` (macOS/BSD)."
+                    )
+                # Some other bind failure -- surface it instead of
+                # silently passing.
+                die(f"udp probe bind failed unexpectedly: {e!r}")
+        finally:
+            probe.close()
+        return
+
+    die(f"verify_host_port_free: unknown protocol={protocol!r}; "
+        f"use 'tcp' or 'udp'.")
+
+
+def verify_container_running(name: str) -> None:
+    """Confirm our just-launched container is actually Running and
+    has the expected port mapping live.
+
+    Why this exists: ``docker run -d`` returns success the moment
+    the container is CREATED, not when it's running. If the
+    image's entrypoint segfaults immediately, the container exits
+    within milliseconds and the script proceeds blissfully to
+    wait_for_port_serving -- which then times out 180s later
+    without ever surfacing the "container died on start" cause.
+
+    A docker-inspect check up front catches that crash in under
+    a second.
+    """
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "--format",
+             "{{.State.Status}}|{{.State.ExitCode}}|"
+             "{{.State.Error}}",
+             name],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception as e:  # noqa: BLE001
+        die(f"failed to inspect container {name!r}: {e}")
+
+    if r.returncode != 0:
+        die(
+            f"container {name!r} not found "
+            f"(docker inspect returned {r.returncode}). "
+            f"docker run may have failed silently."
+        )
+
+    parts = (r.stdout or "").strip().split("|")
+    if len(parts) < 3:
+        die(f"unexpected docker inspect output: {r.stdout!r}")
+    status, exit_code, err = parts[0], parts[1], parts[2]
+
+    if status != "running":
+        # Surface the root cause inline so the user doesn't have
+        # to chase docker logs separately.
+        dump_container_diagnostics(name)
+        die(
+            f"container {name!r} is not Running "
+            f"(Status={status}, ExitCode={exit_code}, "
+            f"Error={err!r}). See diagnostics above."
+        )
+
+
 def dump_container_diagnostics(name: str) -> None:
     """Dump container state + logs to stderr. Called on heartbeat
     timeout so a CI failure tells us WHY SITL didn't boot rather
@@ -99,7 +323,24 @@ def dump_container_diagnostics(name: str) -> None:
         f"\n── dumping diagnostics for container {name!r} ──",
         file=sys.stderr,
     )
-    for label, cmd in [
+
+    # H5: probe whether the container is still Running BEFORE we
+    # run ``docker exec``. Running ``exec`` against an Exited
+    # container produces a noisy "Container is not running" stderr
+    # line that drowns out the real failure cause -- the very
+    # signal we're collecting these diagnostics to surface.
+    is_running = False
+    try:
+        running_probe = subprocess.run(
+            ["docker", "inspect", "--format",
+             "{{.State.Running}}", name],
+            capture_output=True, text=True, timeout=10,
+        )
+        is_running = (running_probe.stdout or "").strip() == "true"
+    except Exception:  # noqa: BLE001
+        is_running = False
+
+    diagnostics: list[tuple[str, list[str]]] = [
         ("ps -a", ["docker", "ps", "-a", "--filter", f"name={name}"]),
         ("inspect state",
          ["docker", "inspect", "--format",
@@ -109,6 +350,8 @@ def dump_container_diagnostics(name: str) -> None:
           "Error={{.State.Error}}",
           name]),
         ("logs (tail 200)", ["docker", "logs", "--tail", "200", name]),
+    ]
+    if is_running:
         # ArduCopter binary logs to /tmp/ArduCopter.log INSIDE the
         # container when no controlling terminal is attached
         # ("RiTW: Window access not found, logging to ..."). That
@@ -116,12 +359,22 @@ def dump_container_diagnostics(name: str) -> None:
         # MAVLink listener start, etc. ``docker logs`` would show
         # only sim_vehicle.py's wrapper output, which is useless.
         # Tail the last 100 lines to surface the failure mode
-        # without flooding the CI log.
-        ("ArduCopter.log (tail 100)",
-         ["docker", "exec", name,
-          "sh", "-c", "tail -n 100 /tmp/ArduCopter.log 2>&1 || "
-                      "echo '(no /tmp/ArduCopter.log)'"]),
-    ]:
+        # without flooding the CI log. Only attempt when the
+        # container is actually Running -- ``docker exec`` against
+        # an Exited container is just noise.
+        diagnostics.append((
+            "ArduCopter.log (tail 100)",
+            ["docker", "exec", name,
+             "sh", "-c", "tail -n 100 /tmp/ArduCopter.log 2>&1 || "
+                        "echo '(no /tmp/ArduCopter.log)'"],
+        ))
+    else:
+        print(
+            "── ArduCopter.log skipped (container not Running) ──",
+            file=sys.stderr,
+        )
+
+    for label, cmd in diagnostics:
         try:
             r = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=15,
@@ -412,12 +665,37 @@ def env_int(name: str, default: int) -> int:
     return val
 
 
+def env_port(name: str, default: int) -> int:
+    """Read a TCP/UDP port from env. Like ``env_int`` but bounds
+    the value to a valid port range.
+
+    H3 review finding: without an upper bound, ``MAVLINK_PORT=99999``
+    burns ~3 min on a wasted image pull before ``docker run`` rejects
+    the bind with an opaque error. The port check catches it in
+    microseconds, before any container work starts.
+
+    Port 0 is rejected by ``env_int`` (positive-only). Ports below
+    1024 are accepted -- they require root, but that's the caller's
+    problem to surface, not ours.
+    """
+    val = env_int(name, default)
+    if val > 65535:
+        die(
+            f"env var {name}={val} is above the maximum TCP/UDP port "
+            f"number (65535). Use 1-65535 inclusive."
+        )
+    return val
+
+
 __all__ = [
     "HANDLED_MESSAGE_TYPES",
     "have",
     "die",
     "run",
     "cleanup_container",
+    "cleanup_stale_kya_containers",
+    "verify_host_port_free",
+    "verify_container_running",
     "dump_container_diagnostics",
     "preflight",
     "wait_for_port_serving",
@@ -425,4 +703,5 @@ __all__ = [
     "capture",
     "write_ndjson",
     "env_int",
+    "env_port",
 ]

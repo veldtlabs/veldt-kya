@@ -22,13 +22,28 @@ Exits non-zero if:
 so the calling CI workflow fails loudly rather than silently.
 
 Environment:
-  OUT           output JSON file path (default /tmp/mavlink-sitl.json)
-  TIMEOUT       SITL boot timeout in seconds (default 120)
-  MISSION       capture duration in seconds (default 30)
-  MAVLINK_PORT  host UDP port to bind (default 14550). Override to
-                run multiple SITL instances in parallel.
-  SITL_IMAGE    override the container image (default is a pinned
-                ArduPilot SITL build; see _SITL_IMAGE_DEFAULT).
+  OUT                  output JSON file path (default /tmp/mavlink-sitl.json)
+  TIMEOUT              SITL boot timeout in seconds (default 120)
+  MISSION              capture duration in seconds (default 30)
+  MAVLINK_PORT         host TCP port to map to the container's
+                       arducopter console port (default 14550).
+                       NOTE: TCP, not UDP -- the rework to
+                       --no-mavproxy means we read arducopter's
+                       direct TCP console at container port 5760.
+                       Override (1-65535) to run multiple SITL
+                       instances in parallel.
+  SITL_IMAGE           override the container image (default is a
+                       pinned ArduPilot SITL build; see
+                       _SITL_IMAGE_DEFAULT).
+  KYA_SITL_CONTAINER   override the container name. Default is
+                       PID-tagged ("kya-mavlink-sitl-<pid>") so
+                       two parallel local invocations don't race
+                       each other's cleanup. Set this only when
+                       a deployment / CI step needs a fixed name.
+  GCS_SYSID            sysid the script emits as the ground-station
+                       (default 255 -- mavproxy convention).
+  GCS_COMPID           compid the script emits as the ground-station
+                       (default 1).
 
 Usage:
   python3 scripts/mavlink_sitl_live_capture.py
@@ -45,10 +60,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _sitl_common import (  # noqa: E402
     capture,
     cleanup_container,
+    cleanup_stale_kya_containers,
     die,
     env_int,
+    env_port,
     preflight,
     run,
+    verify_container_running,
+    verify_host_port_free,
     wait_for_heartbeat,
     wait_for_port_serving,
     write_ndjson,
@@ -60,7 +79,7 @@ from _sitl_common import (  # noqa: E402
 OUT = Path(os.environ.get("OUT", "/tmp/mavlink-sitl.json"))
 BOOT_TIMEOUT = env_int("TIMEOUT", 120)
 CAPTURE_SECONDS = env_int("MISSION", 30)
-MAVLINK_PORT = env_int("MAVLINK_PORT", 14550)
+MAVLINK_PORT = env_port("MAVLINK_PORT", 14550)
 
 # ArduPilot SITL container.
 #
@@ -86,8 +105,20 @@ SITL_IMAGE = os.environ.get("SITL_IMAGE", _SITL_IMAGE_DEFAULT)
 # default in radarku/ardupilot-sitl, but at this canonical location.
 _SIM_VEHICLE_PATH = "/ardupilot/Tools/autotest/sim_vehicle.py"
 
-# Container name -- fixed so cleanup is deterministic.
-CONTAINER_NAME = "kya-mavlink-sitl"
+# Container name. PID-tagged by default so two local invocations
+# don't race each other's cleanup_container() and one doesn't
+# silently kill the other's container. Stable prefix preserves
+# the "docker ps | grep mavlink-sitl" + "docker logs" debugging
+# story.
+#
+# Set ``KYA_SITL_CONTAINER`` to override -- useful for a CI step
+# that wants a fixed name across re-runs, or a deployment that
+# wants a stable name for an external sidecar.
+_CONTAINER_PREFIX = "kya-mavlink-sitl"
+CONTAINER_NAME = os.environ.get(
+    "KYA_SITL_CONTAINER",
+    f"{_CONTAINER_PREFIX}-{os.getpid()}",
+)
 
 # Loopback only -- SITL TCP must not be reachable from outside the
 # host. A laptop on a coffee-shop network would otherwise expose
@@ -109,8 +140,34 @@ _SITL_INNER_PORT = 5760
 
 def launch_sitl() -> None:
     """Start ArduPilot SITL in a Docker container and bind its
-    MAVLink TCP port to the host loopback only."""
+    MAVLink TCP port to the host loopback only.
+
+    Stages:
+      1. (C) Sweep any abandoned ``kya-mavlink-sitl-*`` containers
+         older than 60 min (Ctrl-C / CI-cancel leakage).
+      2. Remove any container with OUR exact name -- a no-op on a
+         fresh runner but defends against re-runs with
+         ``KYA_SITL_CONTAINER`` set to the same value.
+      3. (A) Verify host port is free BEFORE docker run, so a
+         silent capture from someone else's MAVLink stream is
+         impossible.
+      4. ``docker run -d``.
+      5. (B) Inspect the container -- if it crashed on entrypoint,
+         catch it now (sub-second) rather than burning 180s on
+         wait_for_port_serving.
+    """
+    # (C) Stale-sweep first. Won't touch a parallel run's
+    # container -- those are <1 hour old.
+    cleanup_stale_kya_containers(prefix=_CONTAINER_PREFIX)
+
+    # Our exact name -- belt-and-braces.
     cleanup_container(CONTAINER_NAME)
+
+    # (A) Port pre-check. Fail fast with a useful message if
+    # something is already on the host port. TCP because the
+    # live SITL path uses --no-mavproxy and reads arducopter's
+    # TCP console directly (see _SITL_INNER_PORT docs).
+    verify_host_port_free(MAVLINK_HOST, MAVLINK_PORT, protocol="tcp")
 
     # SITL command line:
     #   --model quad      quadcopter dynamics
@@ -132,6 +189,12 @@ def launch_sitl() -> None:
     result = run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         die(f"docker run failed: {result.stderr}")
+
+    # (B) Container running + state check. A 1-second guard
+    # against "docker run accepted, container crashed on entry
+    # to sim_vehicle.py" -- which would otherwise present as a
+    # 180s wait_for_port_serving timeout.
+    verify_container_running(CONTAINER_NAME)
 
 
 # ── Scripted mission ─────────────────────────────────────────────
