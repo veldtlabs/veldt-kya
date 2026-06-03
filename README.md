@@ -336,6 +336,7 @@ one. A single tampered payload anywhere in the chain shows up as a
 hash mismatch — including the exact row that broke.
 
 ```python
+import json
 from sqlalchemy import text
 from kya import (
     default_session, record_invocation, record_evidence, verify_chain,
@@ -358,12 +359,15 @@ with default_session() as db:
     db.commit()
     ok = verify_chain(db, tenant_id="tenant-alpha", invocation_id=inv)
 
-    # Attacker rewrites the approved amount post-hoc
+    # Attacker rewrites the approved amount post-hoc.
+    # Parameter binding is portable across SQLite/PostgreSQL/MySQL/DuckDB --
+    # each dialect handles whatever payload column type it uses (TEXT, JSON,
+    # JSONB) without us needing dialect-specific JSON constructors.
+    tampered = json.dumps({"text": "Mission authorized: route delta-9"})
     db.execute(text(
-        "UPDATE kya_evidence "
-        "SET payload = json('{\"text\":\"Mission authorized: route delta-9\"}') "
+        "UPDATE kya_evidence SET payload = :p "
         "WHERE invocation_id = :i AND evidence_kind = 'response'"
-    ), {"i": inv})
+    ), {"i": inv, "p": tampered})
     db.commit()
     bad = verify_chain(db, tenant_id="tenant-alpha", invocation_id=inv)
 
@@ -387,7 +391,7 @@ from kya import compliance_summary, REGIME_BREACH_NOTIFY
 
 agent_def = {
     "agent_key": "mission_planner",
-    "compliance_scope": ["itar"],
+    "compliance_scope": ["eu_ai_act", "gdpr"],
     "data_classes": ["pii"],
 }
 summary = compliance_summary(agent_def, risk_score=100)
@@ -396,7 +400,7 @@ print(f"scope:           {summary['scope']}")
 print(f"retention_days:  {summary['retention_days']}")
 print(f"first control:   {summary['required_controls'][0]['id']}  "
       f"({summary['required_controls'][0]['source']})")
-print(f"ITAR notify:     {REGIME_BREACH_NOTIFY['itar']}")
+print(f"GDPR notify:     {REGIME_BREACH_NOTIFY['gdpr']}")
 ```
 
 Built-in regimes: GDPR, EU AI Act, HIPAA, SOX, PCI, CCPA, GLBA,
@@ -506,10 +510,9 @@ shell in container" alert flows into the agent's trust ledger and
 attack-chain correlation.
 
 ```python
-from sqlalchemy import text
 from kya import (
     default_session, record_invocation, record_evidence,
-    record_principal_signal, get_principal_trust,
+    record_principal_signal, get_principal_trust, list_evidence,
 )
 
 with default_session() as db:
@@ -549,13 +552,12 @@ with default_session() as db:
     )
     db.commit()
 
-    # Show the correlation: both layers, one principal, one invocation
-    rows = db.execute(text(
-        "SELECT evidence_kind, "
-        "       coalesce(json_extract(payload,'$.tool'),'-') as tool, "
-        "       coalesce(json_extract(payload,'$.rule'),'-') as rule "
-        "FROM kya_evidence WHERE invocation_id = :i ORDER BY id"
-    ), {"i": inv}).fetchall()
+    # Show the correlation: both layers, one principal, one invocation.
+    # `list_evidence` returns Python dicts so we avoid dialect-specific
+    # JSON-path SQL (json_extract vs ->> vs JSON_VALUE) and stay portable
+    # across SQLite/PostgreSQL/MySQL/DuckDB.
+    evidence_rows = list_evidence(db, tenant_id="tenant-alpha",
+                                  invocation_id=inv)
     trust = get_principal_trust(db, tenant_id="tenant-alpha",
                                 principal_kind="agent",
                                 principal_id="research_agent")
@@ -566,8 +568,11 @@ print(f"principal=agent:research_agent  "
 print()
 print(f"  {'evidence_kind':<16}  {'tool':<12}  rule")
 print(f"  {'-'*16}  {'-'*12}  {'-'*30}")
-for r in rows:
-    print(f"  {r[0]:<16}  {r[1]:<12}  {r[2]}")
+for ev in evidence_rows:
+    payload = ev["payload"] if isinstance(ev["payload"], dict) else {}
+    print(f"  {ev['evidence_kind']:<16}  "
+          f"{payload.get('tool', '-'):<12}  "
+          f"{payload.get('rule', '-')}")
 ```
 
 Both layers — the agent's `tool_call` and the kernel's `runtime_falco` — land on the **same invocation_id, the same principal, and the same correlation_id**. The kernel-level signal also flows into the principal's trust ledger, so attack-chain rules can correlate the two timelines without a separate join.
