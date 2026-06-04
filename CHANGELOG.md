@@ -6,9 +6,63 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.9]
+
 ### Added
-- Dedicated `veldt-kya` repo separated from the upstream `veldt-decisions`
-  monorepo (open-core split).
+- **Real-Garak v0.15 adapter** in `kya_redteam.garak_runtime`. Replaces the
+  stub `run_probe_via_garak` with a production implementation that loads
+  Garak probe families via `_plugins.load_plugin`, wraps any KYA HTTP
+  target as a Garak Generator subclass, runs `probe.probe()` under an
+  in-memory `reportfile` buffer (closes a CLI-only side-channel crash),
+  and scores attempts via the probe's `primary_detector`.
+- Multi-generation support: `KyaHttpGenerator._call_model` honors
+  `generations_this_call` and Garak's `supports_multiple_generations=True`
+  contract (prevents N² calls). Operator cost cap via the
+  `KYA_REDTEAM_GARAK_MAX_GENS` env var (default 10) — pads with `None` up
+  to `n_requested` so Garak's harness contract still holds.
+- `GARAK_NATIVE_PROBES` entries now carry a `garak_probe` field mapping
+  each native prompt to its Garak family (`dan`, `encoding`,
+  `sysprompt_extraction`, `promptinject`, `latentinjection`, or `None`
+  for native-only). The orchestrator dispatches by family when
+  real-garak is enabled and emits one finding per Garak hit.
+- **PyRIT adapter observability**: `KyaWrappedChatTarget` tracks
+  `http_sends_total` and `http_send_failures` per instance; counters
+  surface via `run_via_pyrit`'s return dict and feed
+  `report.target_calls` / `report.target_errors` so silent target
+  outages and CrescendoAttack backtracks no longer hide.
+- Regression suites: `tests/test_garak_runtime.py` (22 tests) and
+  `tests/test_pyrit_runtime.py` (14 tests) — covers probe-family
+  resolution, counter semantics, cost-cap padding, RLock concurrency,
+  budget-integration source-level guards.
+
+### Changed
+- **Budget accounting now at real-HTTP granularity** for both Garak and
+  PyRIT paths. Previously `consume_budget` was debited at the dataset-
+  entry or transcript-turn granularity, which under-counted target HTTP
+  calls by the `generations_per_call` factor (Garak) and by Crescendo
+  backtrack rewrites (PyRIT). Both paths now use atomic
+  `consume_budget(tenant_id, limit, n=total_http_sends)`.
+- `_garak_io_lock` upgraded from `threading.Lock` to `threading.RLock`
+  for defensive reentrancy across `probe.probe(generator)` callbacks.
+- PyRIT path now serializes the full attack lifecycle (`set_memory_instance`
+  → `execute_async` → transcript extraction) under
+  `_pyrit_central_memory_lock` (RLock). Closes a cross-run data corruption
+  hole where concurrent workers in `runs.submit_async_run`'s
+  ThreadPoolExecutor would race the `CentralMemory` singleton.
+
+### Fixed
+- **Garak caller bug** in `pyrit_orchestrator.py`: was passing
+  `prompt[:60]` truncated text where a Garak probe spec was required,
+  causing every real-garak call to hit a RuntimeError and silently fall
+  back to native — entire Layer-2 dead code in production. Caller now
+  dispatches by `entry["garak_probe"]` and iterates `gres["hits"]` as
+  typed dicts.
+- `pyrit_orchestrator.py` budget-debit loop collapsed to a single atomic
+  `consume_budget(n=extra)` (was N `INCR` round-trips per dispatch).
+- Silent target-failure observability: `http_target.send` exceptions /
+  `response.error` / empty responses now surface via
+  `http_send_failures` counters rather than being absorbed into a
+  misleading "0 hits = clean" finding count.
 
 ## [0.1.8]
 
