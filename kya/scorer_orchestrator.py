@@ -652,6 +652,213 @@ def register_phoenix_adapter() -> None:
     register_judge("arize_phoenix", _phoenix)
 
 
+# ── Opt-in adapter: multi-LLM judge ensemble ───────────────────────
+#
+# Why a separate ensemble adapter when openai_judge + arize_phoenix
+# already use LLMs:
+#   1. **Cross-provider diversity.** GPT-family, Claude-family, and
+#      Llama-family give independent verdicts. When they disagree,
+#      that's signal — the case is ambiguous and consensus correctly
+#      drops to SPLIT/UNCLEAR rather than being railroaded by one
+#      provider's training bias.
+#   2. **Vendor outage resilience.** If one provider is down or
+#      rate-limited, the others still vote. The orchestrator already
+#      treats ERROR votes as non-counting, so a single-provider
+#      outage doesn't poison the consensus.
+#   3. **No bundled OpenRouter dep.** litellm routes to ANY provider
+#      via standard model strings; KYA stays framework-agnostic.
+#      Customers bring their own provider keys; the adapter picks
+#      whichever default models have keys present (or accepts an
+#      explicit list).
+#
+# This is open-source substrate. The `veldt-kya-pro` pack ships a
+# CURATED 6-model panel + cost-budget instrumentation + cross-
+# provider-disagreement alerting — but the panel mechanics are open
+# and customers can register any litellm-compatible model.
+
+# Default conservative panel: 3 widely-available cheap models, one
+# per major provider. Filtered at registration time to only the ones
+# whose API key is present in env. If the customer wants more, they
+# pass an explicit list to `register_multi_llm_judge_adapter`.
+DEFAULT_MULTI_LLM_MODELS = (
+    ("openai/gpt-4o-mini", "OPENAI_API_KEY"),
+    ("anthropic/claude-3-5-haiku-20241022", "ANTHROPIC_API_KEY"),
+    ("groq/llama-3.3-70b-versatile", "GROQ_API_KEY"),
+)
+
+
+def _sanitize_judge_suffix(model: str) -> str:
+    """Convert a litellm model string into a judge-name suffix that
+    survives the orchestrator's dict-key + log-line use. Replace
+    every non-alphanumeric character with '_' and collapse runs.
+    """
+    out = []
+    prev_was_underscore = False
+    for ch in model:
+        if ch.isalnum():
+            out.append(ch)
+            prev_was_underscore = False
+        elif not prev_was_underscore:
+            out.append("_")
+            prev_was_underscore = True
+    return "".join(out).strip("_")
+
+
+def register_multi_llm_judge_adapter(
+    *,
+    models: list[str] | None = None,
+    dimension: str = "faithfulness",
+    timeout_seconds: float = 8.0,
+    name_prefix: str = "llm_judge",
+) -> list[str]:
+    """Register one judge per LLM model. Each calls
+    ``llm_judge_refusal_or_hallucination`` (the same prompt used by
+    ``openai_judge``) routed via ``litellm`` so any provider works.
+
+    Parameters
+    ----------
+    models
+        Explicit list of litellm-compatible model strings (e.g.
+        ``"openai/gpt-4o-mini"``, ``"anthropic/claude-3-5-haiku-20241022"``,
+        ``"openrouter/meta-llama/llama-3.3-70b-instruct"``). If
+        ``None``, the adapter inspects ``DEFAULT_MULTI_LLM_MODELS``
+        and registers a judge for each model whose corresponding
+        ``*_API_KEY`` env var is present.
+    dimension
+        Consensus pool the judges vote in. Default ``"faithfulness"``
+        because the underlying prompt asks REFUSAL-vs-HALLUCINATION.
+        Override to ``"safety"`` if the customer's prompt has been
+        re-templated for jailbreak-success detection.
+    timeout_seconds
+        Per-model HTTP timeout. The orchestrator's ThreadPoolExecutor
+        parallelizes calls so the panel latency is ``max(per-judge)``
+        not ``sum(per-judge)``.
+    name_prefix
+        Prefix for the registered judge name. Final judge name is
+        ``"{name_prefix}::{sanitized_model}"`` — keeps the per-judge
+        report self-documenting about which model voted what.
+
+    Returns
+    -------
+    list[str]
+        The names of the judges that were actually registered. Empty
+        list if no models were supplied AND no default-panel keys
+        were present in env.
+
+    Failure semantics
+    -----------------
+    - If a model's provider key is missing, its judge votes ``ERROR``
+      at call time (not at registration). The orchestrator skips
+      ERROR votes when computing consensus.
+    - If ``litellm`` is not installed, every multi-LLM judge votes
+      ``ERROR`` with a clear install hint.
+    - One provider outage does NOT block the rest of the panel.
+
+    Examples
+    --------
+    Default conservative panel (auto-filtered by available keys)::
+
+        from kya.scorer_orchestrator import register_multi_llm_judge_adapter
+        register_multi_llm_judge_adapter()
+
+    Premium panel (operator-supplied)::
+
+        register_multi_llm_judge_adapter(models=[
+            "openai/gpt-4o",
+            "anthropic/claude-3-5-sonnet-20241022",
+            "openrouter/meta-llama/llama-3.3-70b-instruct",
+            "openrouter/mistralai/mistral-large",
+            "openrouter/qwen/qwen-2.5-72b-instruct",
+            "openrouter/deepseek/deepseek-chat",
+        ])
+
+    Env override (comma-separated list — overrides defaults)::
+
+        KYA_MULTI_LLM_JUDGE_MODELS=openai/gpt-4o,groq/llama-3.3-70b-versatile
+    """
+    # Env override beats the function default but is overridden by
+    # an explicit `models=` kwarg.
+    if models is None:
+        env_models = os.environ.get(
+            "KYA_MULTI_LLM_JUDGE_MODELS", "").strip()
+        if env_models:
+            models = [m.strip() for m in env_models.split(",")
+                      if m.strip()]
+    if models is None:
+        # Auto-filter: include only defaults whose key is present.
+        models = [
+            m for m, key_env in DEFAULT_MULTI_LLM_MODELS
+            if os.environ.get(key_env)
+        ]
+        if not models:
+            logger.debug(
+                "[KYA-SCORER] register_multi_llm_judge_adapter: no "
+                "provider keys present for the default panel — no "
+                "judges registered. Set OPENAI_API_KEY / "
+                "ANTHROPIC_API_KEY / GROQ_API_KEY, OR pass models=[...] "
+                "explicitly.")
+            return []
+
+    registered: list[str] = []
+    for model_str in models:
+        judge_name = f"{name_prefix}::{_sanitize_judge_suffix(model_str)}"
+        # Capture model_str + name + dimension by default-arg trick so
+        # the closure binds them per loop iteration (Python late
+        # binding gotcha).
+        def _judge_one(
+            input_text: str | None,
+            response: str | None,
+            context: str | None,
+            *,
+            _model: str = model_str,
+            _name: str = judge_name,
+            _dim: str = dimension,
+            _timeout: float = timeout_seconds,
+        ) -> JudgeResult:
+            from kya.fiddler_bridge import llm_judge_refusal_or_hallucination
+            t0 = time.time()
+            if not response:
+                return JudgeResult(
+                    _name, "UNCLEAR", None, None,
+                    int((time.time() - t0) * 1000),
+                    detail={"reason": "no response", "model": _model},
+                    dimension=_dim)
+            verdict_word = llm_judge_refusal_or_hallucination(
+                response, context or "",
+                model=_model,
+                timeout_seconds=_timeout,
+            )
+            latency = int((time.time() - t0) * 1000)
+            if verdict_word is None:
+                return JudgeResult(
+                    _name, "ERROR", None, None, latency,
+                    error=f"llm judge unavailable for model {_model!r} "
+                          "(missing key, provider outage, or litellm "
+                          "not installed)",
+                    detail={"model": _model},
+                    dimension=_dim)
+            if verdict_word == "HALLUCINATION":
+                verdict = "BREACH"
+            elif verdict_word == "REFUSAL":
+                verdict = "OK"
+            else:
+                verdict = "UNCLEAR"
+            return JudgeResult(
+                _name, verdict, raw_score=None, threshold=None,
+                latency_ms=latency,
+                detail={"llm_verdict": verdict_word, "model": _model},
+                dimension=_dim)
+
+        register_judge(judge_name, _judge_one)
+        registered.append(judge_name)
+
+    logger.info(
+        "[KYA-SCORER] multi-LLM judge ensemble registered: %d judges "
+        "across %d models — %s",
+        len(registered), len(registered), registered)
+    return registered
+
+
 # ── DX helper: one-line opt-in adapter registration ────────────────
 
 
@@ -679,6 +886,18 @@ _AVAILABLE_ADAPTERS = (
      "kya.scorer_orchestrator:register_nemo_adapter",
      "pip install nemoguardrails",
      None),
+    # Multi-LLM judge ensemble: registers ONE judge per model. Listed
+    # here under a representative judge_name so the discovery surface
+    # shows "this adapter exists" — but the registrar takes optional
+    # kwargs (models=[...]), so the actual judge names are
+    # `llm_judge::<sanitized-model>` plural.
+    ("llm_judge_ensemble",
+     "kya.scorer_orchestrator:register_multi_llm_judge_adapter",
+     "pip install litellm",
+     # Multi-key — needs at least one of OPENAI_API_KEY /
+     # ANTHROPIC_API_KEY / GROQ_API_KEY for the auto-filtered default.
+     # Or explicit models=[...].
+     "OPENAI_API_KEY | ANTHROPIC_API_KEY | GROQ_API_KEY"),
 )
 
 
