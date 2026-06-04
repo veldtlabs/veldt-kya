@@ -301,20 +301,31 @@ def test_empty_inputs_safe():
 # ── Orchestrator integration (judge auto-registration) ────────────
 
 
-def test_judge_is_registered_in_orchestrator():
-    """Make sure register_judge() has been called at import time."""
-    from kya.scorer_orchestrator import list_judges
+def test_judge_is_registered_after_opt_in():
+    """Step A (2026-06-04): kya_attack_patterns is no longer auto-
+    registered. Operators who need its narrow regex coverage call
+    register_kya_attack_patterns_adapter() to add it back. This test
+    verifies the opt-in path works."""
+    from kya.scorer_orchestrator import (
+        list_judges,
+        register_kya_attack_patterns_adapter,
+    )
+    assert "kya_attack_patterns" not in list_judges()
+    register_kya_attack_patterns_adapter()
     assert "kya_attack_patterns" in list_judges()
 
 
 def test_judge_runs_via_check_consensus():
-    """End-to-end: a known attack input goes through check_consensus
-    and the new judge correctly votes BREACH in the input_safety
-    pool."""
+    """End-to-end after opt-in: a known attack input goes through
+    check_consensus and the regex judge correctly votes BREACH in the
+    input_safety pool. Mirrors the production usage pattern after
+    Step A's opt-in move."""
     from kya.scorer_orchestrator import (
         _JUDGES,
         check_consensus,
+        register_kya_attack_patterns_adapter,
     )
+    register_kya_attack_patterns_adapter()
     # Filter to JUST this judge so we don't fire Fiddler / OpenAI
     # in unit tests.
     assert "kya_attack_patterns" in _JUDGES
