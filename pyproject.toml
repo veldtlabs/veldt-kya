@@ -88,6 +88,14 @@ presidio = [
     "presidio-analyzer>=2.2,<3",
     "click>=8.1",
 ]
+# Auto-loading of `.env` files at `import kya`. Without this extra, KYA
+# still works -- operators must export provider keys (OPENAI_API_KEY,
+# FIDDLER_API_KEY, etc.) into the process env themselves. With this
+# extra, `import kya` calls `load_dotenv(override=False)` so a project-
+# root .env file populates os.environ before fiddler_bridge /
+# scorer_orchestrator / kya_redteam attempt to read keys. Opt out at
+# runtime with `KYA_DISABLE_DOTENV=1`.
+dotenv = ["python-dotenv>=1.0"]
 # Recommended starter pack for the multi-judge orchestrator. Each
 # package here is INDEPENDENT -- if one fails to install in a
 # constrained environment, the customer can drop that extra and

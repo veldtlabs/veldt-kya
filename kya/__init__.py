@@ -24,6 +24,34 @@ except ImportError:
     __version__ = "0.0.0+dev"
 
 
+# ── Bug B: auto-load .env so API keys reach our shims ──────────────
+# Several KYA adapters (fiddler_bridge, scorer_orchestrator's litellm
+# judges, kya_redteam's attacker LLM) read provider keys from os.environ
+# at call time. When KYA is imported into a process that didn't already
+# preload its .env (most CLI / pytest / notebook usage), check_safety
+# returned None silently and the judge surfaced as ERROR with latency=0,
+# even though the underlying issue was just "key never loaded into env".
+#
+# load_dotenv is a no-op when .env is absent and when python-dotenv
+# isn't installed, so this is safe in headless containers and the open
+# Apache-2.0 wheel stays clean of a hard dependency. Operators that
+# want the auto-load behaviour install with the `[dotenv]` extra.
+# Operators that want to opt out (e.g. CI that pre-injects env vars
+# and wants strict isolation) set KYA_DISABLE_DOTENV=1.
+try:
+    import os as _os
+
+    if _os.environ.get("KYA_DISABLE_DOTENV", "").lower() not in ("1", "true", "yes"):
+        from dotenv import load_dotenv as _load_dotenv  # type: ignore
+        # override=False: an env var the operator set explicitly wins
+        # over the .env file. Standard layered-config behaviour.
+        _load_dotenv(override=False)
+except ImportError:
+    pass
+except Exception:  # pragma: no cover — never break import on dotenv glitch
+    pass
+
+
 __doc__ = """KYA — Know Your Agents.
 
 Public surface

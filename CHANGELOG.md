@@ -6,6 +6,28 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`[dotenv]` install extra** — opt-in `python-dotenv` dependency. When
+  installed, `import kya` calls
+  `load_dotenv(dotenv_path=Path.cwd()/".env", override=False)` so a
+  project-root `.env` populates `os.environ` before fiddler_bridge /
+  scorer_orchestrator / kya_redteam read provider keys. No-op when the
+  extra isn't installed or when `KYA_DISABLE_DOTENV=1`.
+
+### Fixed
+- **Bug B — auto-load `.env` so API keys reach the LLM judges.**
+  Without this fix, `import kya` in a CLI / pytest / notebook process
+  that hadn't already preloaded its environment surfaced as
+  `verdict=ERROR, latency_ms=0` on the Fiddler / OpenAI / Phoenix
+  judges — even though the underlying cause was just "the API key never
+  loaded into `os.environ`". `kya/__init__.py` now soft-imports
+  `python-dotenv` and calls
+  `load_dotenv(dotenv_path=Path.cwd()/".env", override=False)` at module
+  load; the call is a no-op when the package isn't installed (no hard
+  dependency added to the wheel), pinned to CWD to avoid surprise
+  ancestor-walk loads from site-packages, and opt-out-able via
+  `KYA_DISABLE_DOTENV=1` for strict-isolation deployments.
+
 ## [0.1.9]
 
 ### Added
