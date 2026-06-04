@@ -667,19 +667,25 @@ def score_response_via_garak_detector(
     # be ignored by detectors that .text-access the output → silent
     # vote-OK on real attacks (review-flagged blocker C1).
     #
-    # Build with no kwargs (avoiding the prompt= signature which
-    # differs across garak versions — v0.15+ expects a Conversation,
-    # not a raw str; review-flagged blocker C2). Detectors that
-    # genuinely need the prompt context are rare in the curated
-    # probe set; output-only scoring is sufficient for the panel
-    # judge.
+    # v0.15.x writable-surface contract (verified 2026-06-04 against
+    # garak 0.15.0 in the venv_redteam env):
+    #   - `Attempt(prompt=Message(text))` — prompt MUST be a Message
+    #     (or Conversation), NOT a raw str. Passing str raises
+    #     TypeError("attempt prompts must be of type Message |
+    #     Conversation").
+    #   - `attempt.all_outputs` is a read-only `@property` — assigning
+    #     to it raises AttributeError("property has no setter"). The
+    #     prior `attempt.all_outputs = [Message(...)]` was the
+    #     post-Step-C-review C1/C2 bug that the live verifier caught:
+    #     every panel call ERRORed rather than scoring.
+    #   - `attempt.outputs = [Message(...)]` works AFTER prompt is
+    #     set; before that, raises TypeError("A prompt must be set
+    #     before outputs are given").
+    # Correct path: construct Attempt with a Message prompt, THEN set
+    # outputs. all_outputs auto-derives from outputs.
     try:
-        attempt = Attempt()
-        wrapped = [Message(response_text)]
-        if hasattr(attempt, "all_outputs"):
-            attempt.all_outputs = wrapped
-        else:
-            attempt.outputs = wrapped  # type: ignore[attr-defined]
+        attempt = Attempt(prompt=Message(prompt_text or ""))
+        attempt.outputs = [Message(response_text)]
     except Exception as exc:
         raise RuntimeError(
             f"failed to construct garak Attempt for scoring: {exc}"
