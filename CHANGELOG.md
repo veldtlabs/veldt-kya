@@ -15,6 +15,19 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   extra isn't installed or when `KYA_DISABLE_DOTENV=1`.
 
 ### Fixed
+- **Fiddler failure-reason propagation.** Pre-fix, every `check_safety`
+  / `check_faithfulness` failure mode (no API key / `requests` missing /
+  HTTP exception / non-2xx status / JSON parse) collapsed to the same
+  opaque `error="fiddler API unavailable"` on the JudgeResult.
+  Operators couldn't tell config bug from network outage from upstream
+  4xx. Now each failure path records a specific reason
+  (`no_api_key`, `requests_not_installed`, `http_request_exception:
+  <ExceptionClass>`, `http_non_2xx: <code>`, `json_parse_failed`) via
+  a thread-local; the orchestrator surfaces the reason in
+  `JudgeResult.error` and `JudgeResult.detail["failure_reason"]`. The
+  reason is cleared on the next successful call so a transient failure
+  doesn't poison subsequent verdicts. Public reader:
+  `kya.fiddler_bridge.get_last_failure_reason(fn_name)`.
 - **Bug B — auto-load `.env` so API keys reach the LLM judges.**
   Without this fix, `import kya` in a CLI / pytest / notebook process
   that hadn't already preloaded its environment surfaced as
