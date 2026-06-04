@@ -724,6 +724,24 @@ def test_probe_family_detection_unknown_input_abstains():
     assert _detect_garak_probe_family("") is None
 
 
+def test_probe_family_detection_short_input_does_not_false_match():
+    """Review C3 regression: a short benign input that happens to be
+    a prefix of a long catalog probe MUST NOT match. Pre-fix:
+    `"Hello, ChatGPT."` (15 chars) would short-prefix the DAN catalog
+    prompt and route into the DAN detector. Post-fix: the 40-char
+    minimum-length gate prevents the false match."""
+    from kya.scorer_orchestrator import _detect_garak_probe_family
+    from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
+    # Find a probe with a long enough catalog prompt to test against.
+    long_probes = [p for p in GARAK_NATIVE_PROBES
+                   if p.get("garak_probe") and len(p.get("prompt", "")) >= 60]
+    assert long_probes, "no long native probes to test against"
+    sample = long_probes[0]
+    short_prefix = sample["prompt"][:15]  # 15 chars — well under 40
+    # Without the gate this would match; with the gate it returns None.
+    assert _detect_garak_probe_family(short_prefix) is None
+
+
 def test_garak_real_detector_abstains_on_unknown_input():
     """Even with the adapter registered, an input that doesn't match
     a known Garak family yields UNCLEAR (the detector can't speak)."""
