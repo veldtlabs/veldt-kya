@@ -644,7 +644,7 @@ def score_response_via_garak_detector(
         )
     try:
         import garak as _garak  # type: ignore
-        from garak.attempt import Attempt  # type: ignore
+        from garak.attempt import Attempt, Message  # type: ignore
     except ImportError as exc:  # pragma: no cover — checked above
         raise RuntimeError(f"garak import failed: {exc}") from exc
 
@@ -660,17 +660,26 @@ def score_response_via_garak_detector(
     detector_name = getattr(probe_obj, "primary_detector", "?")
 
     # Construct a synthetic Attempt carrying the captured response as
-    # its output. Garak's Detector.detect() walks attempt.all_outputs;
-    # we attach the response there + the prompt (if known) so detectors
-    # that inspect prompts work too.
+    # its output. Garak v0.15.x Detector.detect() walks
+    # `attempt.all_outputs` and reads `.text` off each entry — the
+    # KyaHttpGenerator path at line 446 wraps target outputs in
+    # `Message(text)` for exactly this reason. A raw `str` here would
+    # be ignored by detectors that .text-access the output → silent
+    # vote-OK on real attacks (review-flagged blocker C1).
+    #
+    # Build with no kwargs (avoiding the prompt= signature which
+    # differs across garak versions — v0.15+ expects a Conversation,
+    # not a raw str; review-flagged blocker C2). Detectors that
+    # genuinely need the prompt context are rare in the curated
+    # probe set; output-only scoring is sufficient for the panel
+    # judge.
     try:
-        attempt = Attempt(prompt=prompt_text or "")
-        # The Attempt class evolved across garak versions: try the
-        # current `all_outputs` attribute first, fall back to outputs.
+        attempt = Attempt()
+        wrapped = [Message(response_text)]
         if hasattr(attempt, "all_outputs"):
-            attempt.all_outputs = [response_text]
+            attempt.all_outputs = wrapped
         else:
-            attempt.outputs = [response_text]  # type: ignore[attr-defined]
+            attempt.outputs = wrapped  # type: ignore[attr-defined]
     except Exception as exc:
         raise RuntimeError(
             f"failed to construct garak Attempt for scoring: {exc}"

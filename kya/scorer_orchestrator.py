@@ -971,6 +971,14 @@ def _detect_garak_probe_family(input_text: str) -> str | None:
         from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
     except ImportError:
         return None
+    # Minimum-length gate (review-flagged C3): without it, a short
+    # benign input like "Hello, ChatGPT." (15 chars) is a prefix of
+    # the DAN catalog prompt and would be misclassified as the dan
+    # family, causing this judge to invoke DAN's detector on an
+    # unrelated response. 40 chars is enough to disambiguate the
+    # curated probe set's openers (each native probe's first 40
+    # chars are unique).
+    _PREFIX_MIN_LEN = 40
     for probe in GARAK_NATIVE_PROBES:
         prompt = probe.get("prompt", "")
         family = probe.get("garak_probe")
@@ -978,8 +986,10 @@ def _detect_garak_probe_family(input_text: str) -> str | None:
             continue
         if prompt == input_text:
             return family
-        if (input_text.startswith(prompt[:80])
-                or prompt.startswith(input_text[:80])):
+        if (len(input_text) >= _PREFIX_MIN_LEN
+                and len(prompt) >= _PREFIX_MIN_LEN
+                and (input_text.startswith(prompt[:80])
+                     or prompt.startswith(input_text[:80]))):
             return family
     return None
 
@@ -997,14 +1007,17 @@ def register_garak_real_detector_adapter() -> None:
     Why opt-in (not auto-registered):
     - Requires `pip install garak` (~50 transitive deps).
     - Requires `KYA_REDTEAM_USE_GARAK=1` (or no DISABLE flag).
-    - The native-substring `garak_detector` judge (auto-registered) is
-      a strict subset of this judge's coverage; operators with
-      real-Garak installed should typically register BOTH so the
-      panel votes BREACH on the union of native + real-Garak signals.
 
-    Votes in the SAFETY pool — same as `garak_detector` — because
-    BREACH means "the agent's response satisfied the attack
-    objective", which is an output-side violation.
+    Votes in the SAFETY pool because BREACH means "the agent's
+    response satisfied the attack objective" — an output-side
+    violation.
+
+    Companion judges (when also registered):
+    - A native-substring `garak_detector` judge for the curated
+      catalog will be shipped on a separate branch (Step A in the
+      Llama/Bug-fix sequence). When both judges are registered, they
+      vote independently in the safety pool — operators get the
+      union of native-substring + real-Garak Detector signals.
     """
     def _judge_garak_real(
         input_text: str | None,
