@@ -759,31 +759,102 @@ def _run_garak_campaign(
         report.prompts_sent += 1
 
         # Try real-garak first; fall back to native HTTP send.
-        if use_real_garak:
+        # Real-garak dispatches the WHOLE Garak probe family declared on the
+        # dataset entry (entry["garak_probe"]) — not the entry's native prompt.
+        # The probe generates its own attempts internally; each hit becomes a
+        # separate finding in our evidence chain (one entry → potentially many
+        # findings). Entries without a `garak_probe` field, or with `None`,
+        # are native-only and skip this branch.
+        garak_probe_spec = (
+            entry.get("garak_probe") if isinstance(entry, dict) else None
+        )
+        if use_real_garak and garak_probe_spec:
             try:
-                gres = run_probe_via_garak(prompt[:60], target)
+                gres = run_probe_via_garak(garak_probe_spec, target)
                 hits = gres.get("hits") or []
-                # Build a synthetic response from garak's hits so the
-                # downstream scoring path is uniform.
-                response_text = "\n".join(hits) if hits else ""
-                # If the garak bridge returned no hits, fall through
-                # to native execution so we still test the prompt.
-                if not response_text:
-                    raise RuntimeError(
-                        "garak bridge returned no hits; using native")
-                _process_garak_outcome(
-                    db, tenant_id=tenant_id, agent_key=agent_key,
-                    campaign_id=int(campaign["id"]), run_id=run_id,
-                    prompt=prompt, response=response_text,
-                    detector_subs=detector_subs, threshold=threshold,
-                    kya_poster=kya_poster, report=report,
-                    auto_mode=auto_mode, evidence_source="garak_real",
+                # Budget hardening: real-garak fan-out generates many
+                # target HTTP calls per dispatch. The right granularity is
+                # `total_http_sends` (real HTTP calls), NOT `total_attempts`
+                # (Garak attempt count, which can fire N HTTP calls each
+                # under multi-generation probes). We use the existing
+                # consume_budget(tenant_id, limit, n=...) atomic primitive
+                # — one Redis INCRBY instead of N round-trips.
+                total_attempts = int(gres.get("total_attempts") or 0)
+                total_http_sends = int(gres.get("total_http_sends") or 0)
+                http_send_failures = int(gres.get("http_send_failures") or 0)
+                # Surface silent target failures: when http_target.send
+                # raised, returned an error, or returned empty output, the
+                # generator counted it. Report at the campaign level so
+                # operators see "tested but target was broken" instead of
+                # a misleading "0 hits = clean".
+                if http_send_failures > 0:
+                    report.target_errors += http_send_failures
+                    logger.warning(
+                        "[REDTEAM-GARAK] probe %r had %d target HTTP "
+                        "failures out of %d sends — verify target health",
+                        garak_probe_spec, http_send_failures,
+                        total_http_sends,
+                    )
+                # The initial consume_budget at line 751 already debited
+                # 1 for this entry. Debit the remaining (total_http_sends
+                # - 1) atomically so the monthly cap honors real load.
+                extra = max(0, total_http_sends - 1)
+                if extra > 0:
+                    report.prompts_sent += extra
+                    extra_status = consume_budget(
+                        tenant_id, budget_monthly, n=extra,
+                    )
+                    if not extra_status.get("allowed", True):
+                        report.errors.append(
+                            f"monthly budget exhausted during real-garak "
+                            f"dispatch of {garak_probe_spec!r} "
+                            f"({extra_status.get('used','?')}/"
+                            f"{extra_status.get('limit','?')}) — "
+                            f"{total_attempts} attempts / "
+                            f"{total_http_sends} target HTTP calls"
+                        )
+                        logger.warning(
+                            "[REDTEAM-GARAK] %s", report.errors[-1],
+                        )
+                if hits:
+                    # Each hit is {prompt, response, score}. Emit one finding
+                    # per hit using the hit's actual prompt + response from
+                    # Garak's probe — NOT the native dataset prompt.
+                    for hit in hits:
+                        hit_prompt = (hit.get("prompt") or "")[:1500]
+                        hit_response = (hit.get("response") or "")[:1500]
+                        if not hit_prompt or not hit_response:
+                            continue
+                        _process_garak_outcome(
+                            db, tenant_id=tenant_id, agent_key=agent_key,
+                            campaign_id=int(campaign["id"]), run_id=run_id,
+                            prompt=hit_prompt, response=hit_response,
+                            detector_subs=detector_subs, threshold=threshold,
+                            kya_poster=kya_poster, report=report,
+                            auto_mode=auto_mode, evidence_source="garak_real",
+                        )
+                    # Successfully dispatched via real-garak (hits > 0 OR
+                    # probe ran cleanly with 0 hits). Skip native fallback.
+                    continue
+                # 0-hits is a legitimate Garak result (probe ran, nothing
+                # tripped the detector). Log and continue WITHOUT native
+                # fallback — re-running the native prompt would double-count
+                # the budget.
+                logger.debug(
+                    "[REDTEAM-GARAK] probe %r returned 0 hits across %d "
+                    "attempts / %d HTTP sends (%d failures); counted as "
+                    "clean (no native fallback to avoid budget double-count)",
+                    garak_probe_spec, total_attempts, total_http_sends,
+                    http_send_failures,
                 )
                 continue
             except Exception as exc:
-                logger.debug(
-                    "[REDTEAM-GARAK] real-garak failed (%s); falling back "
-                    "to native HTTP send", exc,
+                # Real-garak path errored (probe missing, target broken, etc.)
+                # Fall through to native execution so we still test the prompt.
+                logger.warning(
+                    "[REDTEAM-GARAK] real-garak failed for probe %r (%s); "
+                    "falling back to native HTTP send",
+                    garak_probe_spec, exc,
                 )
 
         # Native path: hit the target directly, score with the
