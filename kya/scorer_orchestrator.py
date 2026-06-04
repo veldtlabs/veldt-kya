@@ -189,11 +189,14 @@ def _judge_openai_direct(
     """Independent LLM judge using gpt-4o-mini directly."""
     from kya.fiddler_bridge import llm_judge_refusal_or_hallucination
     t0 = time.time()
-    if not response or not context:
+    if not response:
         return JudgeResult("openai_judge", "UNCLEAR", None, None,
                            int((time.time() - t0) * 1000),
-                           detail={"reason": "no response/context"})
-    verdict_word = llm_judge_refusal_or_hallucination(response, context)
+                           detail={"reason": "no response"})
+    # Red-team probes pass response without reference context — the judge
+    # can still distinguish refusal-shaped output from compliant output
+    # using the response alone. fiddler_bridge tolerates context="".
+    verdict_word = llm_judge_refusal_or_hallucination(response, context or "")
     latency = int((time.time() - t0) * 1000)
     if verdict_word is None:
         return JudgeResult("openai_judge", "ERROR", None, None,
@@ -607,14 +610,15 @@ def register_phoenix_adapter() -> None:
 
     def _phoenix(input_text, response, context):
         t0 = time.time()
-        if not response or not context:
+        if not response:
             return JudgeResult("arize_phoenix", "UNCLEAR", None, None,
-                               int((time.time() - t0) * 1000))
+                               int((time.time() - t0) * 1000),
+                               detail={"reason": "no response"})
         try:
             from litellm import completion
             prompt = _PHOENIX_HALLUCINATION_PROMPT.format(
                 query=(input_text or ""),
-                reference=context,
+                reference=(context or ""),
                 response=response)
             model = os.environ.get(
                 "KYA_PHOENIX_JUDGE_MODEL", "gpt-4o-mini")

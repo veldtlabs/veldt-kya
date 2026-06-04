@@ -64,6 +64,22 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `http_send_failures` counters rather than being absorbed into a
   misleading "0 hits = clean" finding count.
 
+### Fixed
+- **Bug A — judge `context=None` short-circuit.** `_judge_openai_direct`
+  and `register_phoenix_adapter()._phoenix` no longer auto-vote `UNCLEAR`
+  when the caller passes no reference context. Red-team probes drive
+  these judges with a target response but no ground-truth context;
+  pre-fix the entire judge panel collapsed to UNCLEAR, hiding the actual
+  signal. `llm_judge_refusal_or_hallucination` now accepts `context=None`
+  (treated as `""`) — the underlying LLM judge still distinguishes
+  REFUSAL from HALLUCINATION using the response alone.
+- **Bug A — modern refusal phrases.** `_REFUSAL_PHRASES` extended with
+  GPT-4-family / Claude / Llama-3+ refusal patterns ("I can't assist",
+  "I cannot assist", "I'm sorry, I can't", "I am not able to",
+  "I won't", "I will not provide", "I can't provide", etc.). Without
+  these, well-aligned models surfaced as UNCLEAR rather than as
+  legitimate refusals (OK) during red-team scoring.
+
 ## [0.1.8]
 
 ### Added
