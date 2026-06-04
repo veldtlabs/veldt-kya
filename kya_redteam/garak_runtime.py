@@ -29,10 +29,13 @@ entry, so no extra cost per attack.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.util
+import io
 import logging
 import os
+import threading
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -232,10 +235,6 @@ def get_native_probe_detector_strings(probe_prompt: str) -> list[str]:
 #
 # Garak compatibility: tested against garak 0.15.x (see GARAK_TESTED_VERSION).
 # If Garak's Generator/Probe/Detector API drifts, this module is the seam.
-
-import contextlib
-import io
-import threading
 
 GARAK_TESTED_VERSION = "0.15.x"
 
@@ -596,8 +595,8 @@ def run_probe_via_garak(
             "pip install garak"
         )
     try:
-        from garak import _plugins  # type: ignore
         import garak as _garak  # type: ignore
+        from garak import _plugins  # type: ignore
     except ImportError as exc:  # pragma: no cover — checked above
         raise RuntimeError(f"garak import failed: {exc}") from exc
 

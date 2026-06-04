@@ -398,8 +398,6 @@ def run_via_pyrit(
             f"Supported: {supported}. XPIA + TAP land in a follow-up."
         )
 
-    import asyncio
-
     from pyrit.executor.attack import (  # type: ignore
         AttackAdversarialConfig,
         AttackScoringConfig,
