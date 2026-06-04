@@ -864,6 +864,145 @@ def register_multi_llm_judge_adapter(
     return registered
 
 
+# ── Opt-in adapter: real-Garak primary_detector judge ─────────────
+
+
+def _detect_garak_probe_family(input_text: str) -> str | None:
+    """Look up the GARAK_NATIVE_PROBES catalog for an entry whose
+    prompt matches `input_text` (exact OR 80-char leading prefix in
+    either direction) AND that has a `garak_probe` family populated.
+
+    Returns the Garak probe family string (e.g. "dan", "encoding",
+    "promptinject") or None when no native-catalog entry matches.
+
+    This is the dispatch contract for `garak_real_detector` —
+    customers driving Garak native probes through `check_consensus`
+    automatically get the real-Garak `primary_detector` scoring when
+    the probe family is known + real-garak is installed. Arbitrary
+    inputs (not in the native catalog) abstain.
+    """
+    if not input_text:
+        return None
+    try:
+        from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
+    except ImportError:
+        return None
+    for probe in GARAK_NATIVE_PROBES:
+        prompt = probe.get("prompt", "")
+        family = probe.get("garak_probe")
+        if not family:
+            continue
+        if prompt == input_text:
+            return family
+        if (input_text.startswith(prompt[:80])
+                or prompt.startswith(input_text[:80])):
+            return family
+    return None
+
+
+def register_garak_real_detector_adapter() -> None:
+    """Register the `garak_real_detector` panel judge.
+
+    Runs the full real-Garak `primary_detector` against an
+    already-captured response (input, response, context tuple). For
+    each native-catalog probe that maps to a real-Garak family
+    (`GARAK_NATIVE_PROBES[*]["garak_probe"]`), this judge can produce
+    the **authoritative attack-success verdict** for that probe — not
+    a substring heuristic, the actual Garak Detector subclass.
+
+    Why opt-in (not auto-registered):
+    - Requires `pip install garak` (~50 transitive deps).
+    - Requires `KYA_REDTEAM_USE_GARAK=1` (or no DISABLE flag).
+    - The native-substring `garak_detector` judge (auto-registered) is
+      a strict subset of this judge's coverage; operators with
+      real-Garak installed should typically register BOTH so the
+      panel votes BREACH on the union of native + real-Garak signals.
+
+    Votes in the SAFETY pool — same as `garak_detector` — because
+    BREACH means "the agent's response satisfied the attack
+    objective", which is an output-side violation.
+    """
+    def _judge_garak_real(
+        input_text: str | None,
+        response: str | None,
+        context: str | None,
+    ) -> JudgeResult:
+        t0 = time.time()
+        if not response:
+            return JudgeResult(
+                "garak_real_detector", "UNCLEAR", None, None,
+                int((time.time() - t0) * 1000),
+                detail={"reason": "no response to score"},
+                dimension="safety",
+            )
+        # Probe-family lookup: this judge only speaks for inputs that
+        # match a known Garak probe in the native catalog. Arbitrary
+        # inputs abstain rather than dilute other safety judges.
+        family = _detect_garak_probe_family(input_text or "")
+        if family is None:
+            return JudgeResult(
+                "garak_real_detector", "UNCLEAR", None, None,
+                int((time.time() - t0) * 1000),
+                detail={"reason": "input does not match any Garak "
+                                  "native-catalog probe with a known "
+                                  "real-Garak family"},
+                dimension="safety",
+            )
+        try:
+            from kya_redteam.garak_runtime import (
+                garak_available,
+                score_response_via_garak_detector,
+            )
+        except ImportError as exc:
+            return JudgeResult(
+                "garak_real_detector", "ERROR", None, None,
+                int((time.time() - t0) * 1000),
+                error=f"garak_runtime import: {exc}",
+                dimension="safety",
+            )
+        if not garak_available():
+            # The opt-in registrar fired, but the runtime is gated off.
+            return JudgeResult(
+                "garak_real_detector", "ERROR", None, None,
+                int((time.time() - t0) * 1000),
+                error="real-Garak not available (set "
+                      "KYA_REDTEAM_USE_GARAK=1 + pip install garak)",
+                dimension="safety",
+            )
+        try:
+            result = score_response_via_garak_detector(
+                probe_name=family,
+                response_text=response,
+                prompt_text=(input_text or ""),
+            )
+        except Exception as exc:
+            return JudgeResult(
+                "garak_real_detector", "ERROR", None, None,
+                int((time.time() - t0) * 1000),
+                error=f"garak detector scoring failed: "
+                      f"{type(exc).__name__}: {exc}",
+                detail={"probe_family": family},
+                dimension="safety",
+            )
+        return JudgeResult(
+            "garak_real_detector",
+            "BREACH" if result["breached"] else "OK",
+            raw_score=float(result["score"]),
+            threshold=float(result["threshold"]),
+            latency_ms=int((time.time() - t0) * 1000),
+            detail={
+                "probe_family": family,
+                "probe_class": result["probe_class"],
+                "detector": result["detector"],
+                "raw_scores": result["raw_scores"],
+                "garak_version": result["garak_version"],
+            },
+            dimension="safety",
+        )
+
+    register_judge("garak_real_detector", _judge_garak_real)
+
+
 # ── DX helper: one-line opt-in adapter registration ────────────────
 
 
@@ -918,6 +1057,14 @@ _AVAILABLE_ADAPTERS = (
      "OPENAI_API_KEY | ANTHROPIC_API_KEY | GROQ_API_KEY",
      # 5th element: registers multiple judges with this prefix.
      "llm_judge::"),
+    # real-Garak primary_detector judge — authoritative attack-success
+    # verdict for any Garak native-catalog probe whose `garak_probe`
+    # field is populated. Requires the heavy `pip install garak`
+    # install (~50 transitive deps) so it's strictly opt-in.
+    ("garak_real_detector",
+     "kya.scorer_orchestrator:register_garak_real_detector_adapter",
+     "pip install garak",
+     None),
 )
 
 
