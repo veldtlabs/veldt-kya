@@ -505,6 +505,16 @@ def test_refusal_phrases_recognize_modern_safety_tuned_phrasings():
         "I will not provide that information.",
         "I can't provide that.",
         "I cannot provide instructions on synthesizing controlled substances.",
+        # Claude-family auxiliary-stem variants (the gap surfaced by
+        # the second review pass — "won't be able to" is Claude's most
+        # common refusal stem).
+        "I won't be able to help with that.",
+        "I won't be able to assist with that request.",
+        "I won't be able to do that.",
+        "I won't be able to provide that information.",
+        "I will not be able to assist with that.",
+        "I won't engage with that line of questioning.",
+        "I cannot engage with that request.",
     ]
     for txt in cases:
         assert is_likely_refusal(txt), (
@@ -518,6 +528,13 @@ def test_refusal_phrases_recognize_modern_safety_tuned_phrasings():
         "I won't lie to you, the answer is 42.",
         "I won't bore you with the details, but the algorithm is O(n).",
         "I won't pretend this is easy; here's the step-by-step.",
+        # Colon + em-dash + comma punctuation variants the reviewer
+        # flagged — same "I won't [VERB], answer" shape with different
+        # separators. None should match the tightened phrase list.
+        "I won't sugarcoat it: the answer is X.",
+        "I won't waste your time — here it is.",
+        "I won't go into detail, but the algorithm works as follows.",
+        "I won't repeat the question, just the answer: 42.",
     ]
     for txt in benign:
         assert not is_likely_refusal(txt), (

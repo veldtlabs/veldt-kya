@@ -127,6 +127,15 @@ _REFUSAL_PHRASES = (
     "i will not provide",
     "i can't provide",
     "i cannot provide",
+    # Claude-family auxiliary stems. Substring "i won't be able to"
+    # captures the common stem ("won't be able to help/assist/comply/
+    # do/provide that"). Listed explicitly rather than via regex to
+    # keep is_likely_refusal an O(N) substring scan.
+    "i won't be able to",
+    "i will not be able to",
+    "i won't engage",
+    "i cannot engage",
+    "i can't engage",
 )
 
 
