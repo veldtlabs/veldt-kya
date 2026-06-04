@@ -40,12 +40,19 @@ except ImportError:
 # and wants strict isolation) set KYA_DISABLE_DOTENV=1.
 try:
     import os as _os
+    from pathlib import Path as _Path
 
     if _os.environ.get("KYA_DISABLE_DOTENV", "").lower() not in ("1", "true", "yes"):
         from dotenv import load_dotenv as _load_dotenv  # type: ignore
-        # override=False: an env var the operator set explicitly wins
-        # over the .env file. Standard layered-config behaviour.
-        _load_dotenv(override=False)
+        # Pin to CWD/.env explicitly. dotenv's default search walks the
+        # call stack to find a frame whose `__file__` is not dotenv's
+        # own — at import time that frame lands in kya/__init__.py's
+        # directory, so the default would then walk UP from site-
+        # packages toward the filesystem root looking for ANY .env.
+        # Constraining to `Path.cwd() / ".env"` keeps the behaviour
+        # predictable: the consumer's project root .env loads, nothing
+        # else. override=False so an operator-exported env var wins.
+        _load_dotenv(dotenv_path=_Path.cwd() / ".env", override=False)
 except ImportError:
     pass
 except Exception:  # pragma: no cover — never break import on dotenv glitch

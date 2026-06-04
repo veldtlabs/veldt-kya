@@ -118,6 +118,14 @@ recommended = [
     # corresponding API key in env (OPENAI_API_KEY /
     # ANTHROPIC_API_KEY / GROQ_API_KEY / etc.).
     "litellm>=1.55,<2",
+    # The whole motivation for the [recommended] judge starter pack is
+    # that customers can `pip install veldt-kya[recommended]` and have
+    # the multi-judge orchestrator just work. Bug B surfaced that
+    # without dotenv auto-load, the judges silently ERRORed in
+    # CLI/pytest/notebook contexts where the operator hadn't already
+    # exported their provider keys. Including python-dotenv here keeps
+    # the "starter judge experience" usable out of the box.
+    "python-dotenv>=1.0",
 ]
 # Full opt-in panel including frameworks that need installation but
 # no API keys. Does NOT include lakera_guard / nemo_guardrails --
