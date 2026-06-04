@@ -823,10 +823,15 @@ def register_multi_llm_judge_adapter(
                     int((time.time() - t0) * 1000),
                     detail={"reason": "no response", "model": _model},
                     dimension=_dim)
+            # respect_env_override=False so the per-judge `model=`
+            # wins over any cluster-wide KYA_FAITH_JUDGE_MODEL setting.
+            # Otherwise the whole ensemble would collapse onto one
+            # model and lose its cross-provider diversity premise.
             verdict_word = llm_judge_refusal_or_hallucination(
                 response, context or "",
                 model=_model,
                 timeout_seconds=_timeout,
+                respect_env_override=False,
             )
             latency = int((time.time() - t0) * 1000)
             if verdict_word is None:
@@ -864,8 +869,21 @@ def register_multi_llm_judge_adapter(
 
 # Maps adapter NAME (the judge it adds) to the registrar function
 # and a short description of what it needs.
+#
+# Tuple schema (variable arity for back-compat):
+#   (judge_name, registrar_callable_path, install_hint, key_hint
+#    [, multi_register_prefix])
+#
+# `judge_name` — name to display in reports + use as the
+#                already-registered lookup key.
+# `multi_register_prefix` — OPTIONAL 5th element. When set, the
+#   adapter registers MULTIPLE judges with this prefix (e.g. the
+#   multi-LLM ensemble registers `llm_judge::<model>`). The discovery
+#   code uses `any(k.startswith(prefix) for k in _JUDGES)` for the
+#   "already_registered" check instead of `judge_name in _JUDGES`.
 _AVAILABLE_ADAPTERS = (
-    # (judge_name, registrar_callable_path, install_hint, key_hint)
+    # (judge_name, registrar_callable_path, install_hint, key_hint
+    #  [, multi_register_prefix])
     ("kya_presidio",
      "kya.scorers_presidio:register_presidio_adapter",
      "pip install kya[presidio]",
@@ -897,7 +915,9 @@ _AVAILABLE_ADAPTERS = (
      # Multi-key — needs at least one of OPENAI_API_KEY /
      # ANTHROPIC_API_KEY / GROQ_API_KEY for the auto-filtered default.
      # Or explicit models=[...].
-     "OPENAI_API_KEY | ANTHROPIC_API_KEY | GROQ_API_KEY"),
+     "OPENAI_API_KEY | ANTHROPIC_API_KEY | GROQ_API_KEY",
+     # 5th element: registers multiple judges with this prefix.
+     "llm_judge::"),
 )
 
 
@@ -971,17 +991,39 @@ def register_available_adapters(
                         if s.strip())
 
     status: dict[str, str] = {}
-    for judge_name, registrar_path, _install_hint, key_hint in _AVAILABLE_ADAPTERS:
+    for entry in _AVAILABLE_ADAPTERS:
+        # 5-tuple is the new schema; fall back to 4-tuple for back-
+        # compat with adapters that register exactly one judge.
+        judge_name, registrar_path, _install_hint, key_hint = entry[:4]
+        multi_prefix = entry[4] if len(entry) > 4 else None
         if judge_name in excluded:
             status[judge_name] = "skipped (excluded)"
             continue
-        if judge_name in _JUDGES:
+        # "Already registered" check: for single-judge adapters this is
+        # `judge_name in _JUDGES`; for multi-register adapters (e.g.
+        # the LLM-judge ensemble) it's "any judge starts with the
+        # adapter's prefix".
+        already = (
+            judge_name in _JUDGES
+            or (multi_prefix is not None
+                and any(k.startswith(multi_prefix) for k in _JUDGES))
+        )
+        if already:
             status[judge_name] = "already_registered"
             continue
-        # Lakera needs a key BEFORE we attempt registration
-        if key_hint and not os.environ.get(key_hint):
-            status[judge_name] = f"skipped (no api key: {key_hint})"
-            continue
+        # Adapter declares a required env var (or a pipe-delimited
+        # OR-set of acceptable keys — used by the multi-LLM ensemble,
+        # which is happy with ANY one provider key). We require at
+        # least one alternative to be present in env before attempting
+        # registration. Single-key adapters (Lakera, etc.) pass the
+        # bare env var name and the `any()` collapses to the old
+        # single-key check.
+        if key_hint:
+            alternatives = [k.strip() for k in key_hint.split("|")
+                            if k.strip()]
+            if not any(os.environ.get(k) for k in alternatives):
+                status[judge_name] = f"skipped (no api key: {key_hint})"
+                continue
         try:
             registrar = _resolve(registrar_path)
             registrar()
@@ -1036,17 +1078,34 @@ def report_panel_status() -> dict[str, dict]:
     """
     # Probe each opt-in without registering. Avoids side effects.
     available: dict[str, dict] = {}
-    for judge_name, registrar_path, install_hint, key_hint in _AVAILABLE_ADAPTERS:
+    for entry in _AVAILABLE_ADAPTERS:
+        judge_name, registrar_path, install_hint, key_hint = entry[:4]
+        multi_prefix = entry[4] if len(entry) > 4 else None
+        # key_hint may be a single env var name OR a "|"-delimited
+        # OR-set (multi-LLM ensemble accepts ANY of OPENAI / ANTHROPIC
+        # / GROQ keys). Check `any()` over alternatives so the
+        # ensemble is reported `active` when at least one is present.
+        key_alternatives: list[str] = []
+        if key_hint:
+            key_alternatives = [k.strip() for k in key_hint.split("|")
+                                if k.strip()]
+        key_present_bool = (
+            any(os.environ.get(k) for k in key_alternatives)
+            if key_alternatives else None
+        )
         info = {
             "install_hint": install_hint,
             "needs_key": key_hint,
-            "key_present": (
-                bool(os.environ.get(key_hint))
-                if key_hint else None),
+            "key_present": key_present_bool,
         }
-        if judge_name in _JUDGES:
+        active = (
+            judge_name in _JUDGES
+            or (multi_prefix is not None
+                and any(k.startswith(multi_prefix) for k in _JUDGES))
+        )
+        if active:
             info["status"] = "active"
-        elif key_hint and not info["key_present"]:
+        elif key_hint and not key_present_bool:
             info["status"] = "missing_api_key"
         else:
             try:
