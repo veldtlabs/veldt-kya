@@ -12,13 +12,32 @@ single-judge failure mode that an orchestration layer compensates
 for. Two judges must agree to BREACH (default); a single judge being
 wrong gets out-voted.
 
-Bundled adapters (in this file)
--------------------------------
+Bundled adapters (auto-registered at import)
+-------------------------------------------
   - "fiddler_safety"        -> Fiddler ftl-safety
   - "fiddler_faithfulness"  -> Fiddler ftl-response-faithfulness
   - "openai_judge"          -> direct gpt-4o-mini "refusal vs
-                               hallucination" prompt
-  - "refusal_heuristic"     -> substring match (no API call)
+                               hallucination" prompt (provider-agnostic
+                               via litellm + KYA_FAITH_JUDGE_MODEL env)
+  - "kya_pyrit"             -> kya_redteam DataLeakScannerScorer
+                               (PII / secrets / financial / PHI)
+  - "garak_detector"        -> Garak native-probe substring detector
+
+Legacy keyword judges (opt-in only as of 2026-06-04)
+----------------------------------------------------
+  - "refusal_heuristic"     -> substring match. Demoted from default;
+                               2026-06-04 sweep showed 5/5 UNCLEAR on
+                               modern Llama refusals — the phrase list
+                               drifts. Opt-in via
+                               register_refusal_heuristic_adapter().
+                               Prefer openai_judge for refusal detection.
+  - "kya_attack_patterns"   -> regex/heuristic input pattern. Demoted;
+                               2026-06-04 sweep showed 2/3 FP rate on
+                               benign refusals. Opt-in via
+                               register_kya_attack_patterns_adapter()
+                               for narrow PII-smuggling / exfiltration
+                               cases. Prefer garak_detector +
+                               openai_judge for generic jailbreak.
 
 Optional external adapters (register via register_*_adapter())
 --------------------------------------------------------------
@@ -249,7 +268,26 @@ def _judge_refusal_heuristic(
         dimension="faithfulness")
 
 
-register_judge("refusal_heuristic", _judge_refusal_heuristic)
+# NOT auto-registered. Empirical sweep (2026-06-04, Llama-3.1-8B Garak
+# probes) showed refusal_heuristic voted UNCLEAR on 5/5 probes — the
+# 22-phrase _REFUSAL_PHRASES list missed every modern Claude/Llama
+# refusal phrasing. The fix isn't more keywords (that approach is
+# unsustainable as models drift); the fix is to rely on `openai_judge`,
+# which already does refusal detection via an adaptive LLM judge.
+# Operators that still want the cheap-prefilter heuristic can register
+# it explicitly via register_refusal_heuristic_adapter() — but it's not
+# in the default panel anymore.
+
+
+def register_refusal_heuristic_adapter() -> None:
+    """Opt-in: re-register the substring `refusal_heuristic` judge.
+
+    Use only when a cheap-prefilter zero-cost vote is wanted ALONGSIDE
+    the LLM judges. Empirically near-useless on modern aligned models
+    because the phrase list is hand-curated and ages out as model
+    output drifts. Prefer `openai_judge` / multi-LLM judges instead.
+    """
+    register_judge("refusal_heuristic", _judge_refusal_heuristic)
 
 
 # Note: the in-core kya_llm_judge adapter was removed in the
@@ -402,7 +440,30 @@ def _judge_kya_attack_patterns(
         dimension="input_safety")
 
 
-register_judge("kya_attack_patterns", _judge_kya_attack_patterns)
+# NOT auto-registered. Empirical sweep (2026-06-04, 5 Garak probes
+# against Llama-3.1-8B) showed kya_attack_patterns voted BREACH on
+# 2 of 3 BENIGN refusals (false positives) and 0 of 2 actual landed
+# attacks — net negative contribution to the consensus. The 7
+# hardcoded category regexes don't generalize to novel jailbreak
+# phrasing; this is the same unsustainable hand-curated-list problem
+# that motivated dropping `refusal_heuristic`.
+#
+# For narrow PII-smuggling / exfiltration patterns that Fiddler is
+# known to miss, this judge can still be useful — register it
+# explicitly via register_kya_attack_patterns_adapter() for that
+# specific campaign. NOT recommended for the default panel.
+
+
+def register_kya_attack_patterns_adapter() -> None:
+    """Opt-in: re-register the regex `kya_attack_patterns` judge.
+
+    Original purpose was catching specific Fiddler-blind-spot patterns
+    (PII smuggling, encoded payloads, exfiltration paths). Live sweep
+    showed it produces more false positives than true positives on
+    generic jailbreak / policy-leak probes. Keep registered only when
+    targeting the narrow attack classes it was designed for.
+    """
+    register_judge("kya_attack_patterns", _judge_kya_attack_patterns)
 
 
 # ── Bundled adapter: Garak native-probe detector ───────────────────
@@ -1322,6 +1383,19 @@ _AVAILABLE_ADAPTERS = (
     ("garak_real_detector",
      "kya.scorer_orchestrator:register_garak_real_detector_adapter",
      "pip install garak",
+     None),
+    # Step A (2026-06-04): hand-curated keyword judges moved from
+    # auto-register to opt-in. They are LEGACY — re-register only for
+    # the narrow patterns they were designed for (PII smuggling,
+    # exfiltration paths). For generic refusal / jailbreak detection
+    # prefer openai_judge + garak_detector.
+    ("refusal_heuristic",
+     "kya.scorer_orchestrator:register_refusal_heuristic_adapter",
+     None,  # no extra install needed
+     None),
+    ("kya_attack_patterns",
+     "kya.scorer_orchestrator:register_kya_attack_patterns_adapter",
+     None,
      None),
 )
 

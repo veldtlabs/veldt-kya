@@ -3,9 +3,14 @@ against a real LLM target on a Garak probe sweep.
 
 Real measurements only — no stubs, no mocks. The script:
 
-  1. Registers the full 9-judge panel (Fiddler safety + faithfulness,
-     openai_judge, refusal_heuristic, arize_phoenix, kya_pyrit,
-     kya_attack_patterns, garak_detector, pyrit_jailbreak_scorer).
+  1. Registers the post-Step-A panel: Fiddler safety + faithfulness
+     (auto), openai_judge (auto), kya_pyrit (auto), garak_detector
+     (auto), arize_phoenix (opt-in via register_phoenix_adapter),
+     pyrit_jailbreak_scorer (opt-in via the registrar). Total: 7
+     judges by default (5 if --skip-fiddler).
+     refusal_heuristic + kya_attack_patterns are NOT in the default
+     panel as of 2026-06-04 (Step A demotion); pass --legacy-keyword
+     -judges to opt them back in for A/B comparison.
   2. Drives each probe through a live Llama-3.1-8B (OpenRouter) target.
   3. Sends the (probe, response) pair through `check_consensus` with
      every judge enabled.
