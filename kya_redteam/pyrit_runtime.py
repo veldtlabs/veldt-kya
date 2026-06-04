@@ -44,7 +44,17 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 from dataclasses import dataclass
+
+# Process-global lock serializing PyRIT attack runs. PyRIT's CentralMemory
+# is a singleton holder set via set_memory_instance(); under the
+# ThreadPoolExecutor at runs.submit_async_run, two concurrent workers would
+# race the set call and overwrite each other's transcript view. Holding
+# this lock for the WHOLE attack lifecycle (set → execute → extract) makes
+# each campaign's memory atomic. RLock for defensive reentrancy parity
+# with the Garak adapter's _garak_io_lock.
+_pyrit_central_memory_lock = threading.RLock()
 
 logger = logging.getLogger(__name__)
 
@@ -197,11 +207,25 @@ def _build_chat_target_classes():
         The outer thread is already on a worker (run_via_pyrit runs
         inside multi_turn._run_conversation on the run_campaign_async
         ThreadPoolExecutor), so blocking the inner asyncio loop briefly
-        is fine."""
+        is fine.
+
+        Observability counters (instance state):
+          - ``http_sends_total``: every real HTTP call made. Surfaced via
+            run_via_pyrit's return dict so multi_turn._conversation_from_pyrit
+            can populate result.target_calls at REAL-HTTP granularity, not
+            the transcript-derived turns_completed (which under-counts when
+            CrescendoAttack backtracks rewrite memory).
+          - ``http_send_failures``: count of calls that raised, returned an
+            error, or returned empty output. Surfaces silent target outages
+            via report.target_errors so operators see "tested but target
+            broken" instead of a misleading "0 hits = clean".
+        """
 
         def __init__(self, http_target):
             super().__init__(max_requests_per_minute=None)
             self._http = http_target
+            self.http_sends_total = 0
+            self.http_send_failures = 0
 
         def is_response_format_json(self, request_piece=None) -> bool:
             return False
@@ -211,11 +235,22 @@ def _build_chat_target_classes():
                 prompt_text = message.get_value()
             except Exception:
                 prompt_text = str(message)
-            response = self._http.send(prompt_text)
-            return [Message.from_prompt(
-                prompt=response.output or "",
-                role="assistant",
-            )]
+            self.http_sends_total += 1
+            try:
+                response = self._http.send(prompt_text)
+            except Exception as exc:
+                logger.warning(
+                    "[REDTEAM-PYRIT] http_target.send raised: %s", exc,
+                )
+                self.http_send_failures += 1
+                return [Message.from_prompt(prompt="", role="assistant")]
+            if getattr(response, "error", None):
+                self.http_send_failures += 1
+                return [Message.from_prompt(prompt="", role="assistant")]
+            output = response.output or ""
+            if not output:
+                self.http_send_failures += 1
+            return [Message.from_prompt(prompt=output, role="assistant")]
 
     class KyaLiteLLMAdversarialTarget(PromptChatTarget):
         """LiteLLM-backed adversarial. PyRIT calls send_prompt_async to
@@ -378,8 +413,56 @@ def run_via_pyrit(
 
     # PyRIT 0.13 requires memory be registered before any attack runs.
     # Per-call ephemeral SQLite (:memory:) keeps each campaign isolated
-    # — no cross-tenant leakage, no DuckDB-on-disk requirement. Safe to
-    # re-set on each call; CentralMemory is a singleton holder.
+    # — but CentralMemory is a PROCESS-GLOBAL singleton. Under the
+    # ThreadPoolExecutor in runs.submit_async_run, concurrent workers
+    # would otherwise race the set_memory_instance call and overwrite
+    # each other's transcript view, leading to cross-run data corruption
+    # and budget under-debits (memory reset between attack-end and
+    # transcript-extract → transcript=[] → 0 budget debit).
+    # Hold _pyrit_central_memory_lock for the WHOLE attack lifetime
+    # (set → execute → extract transcript) so each campaign sees its
+    # own memory atomically. Trade-off: PyRIT runs are now serialized
+    # within a process — matches Garak's _garak_io_lock contract.
+    with _pyrit_central_memory_lock:
+        return _run_via_pyrit_locked(
+            orchestrator_kind=orchestrator_kind,
+            http_target=http_target,
+            objective=objective,
+            attacker_model=attacker_model,
+            max_turns=max_turns,
+            CentralMemory=CentralMemory,
+            SQLiteMemory=SQLiteMemory,
+            OpenAIChatTarget=OpenAIChatTarget,
+            SelfAskTrueFalseScorer=SelfAskTrueFalseScorer,
+            AttackAdversarialConfig=AttackAdversarialConfig,
+            AttackScoringConfig=AttackScoringConfig,
+            CrescendoAttack=CrescendoAttack,
+            PromptSendingAttack=PromptSendingAttack,
+            RedTeamingAttack=RedTeamingAttack,
+        )
+
+
+def _run_via_pyrit_locked(
+    *,
+    orchestrator_kind: str,
+    http_target,
+    objective: str,
+    attacker_model: str,
+    max_turns: int,
+    CentralMemory,
+    SQLiteMemory,
+    OpenAIChatTarget,
+    SelfAskTrueFalseScorer,
+    AttackAdversarialConfig,
+    AttackScoringConfig,
+    CrescendoAttack,
+    PromptSendingAttack,
+    RedTeamingAttack,
+) -> dict:
+    """Inner of run_via_pyrit, executed under _pyrit_central_memory_lock."""
+    import asyncio
+    import os
+
     try:
         CentralMemory.set_memory_instance(SQLiteMemory(db_path=":memory:"))
     except Exception as exc:
@@ -510,6 +593,14 @@ def run_via_pyrit(
         "transcript": transcript,
         "conversation_id": conv_id,
         "turns_completed": max(1, len(transcript) // 2),
+        # Real-HTTP counters from the wrapped target — used by the
+        # orchestrator to back-debit the monthly budget at HTTP-call
+        # granularity (NOT transcript-derived turns_completed, which
+        # under-counts when CrescendoAttack backtracks rewrite memory
+        # or memory extraction fails). Surfaces silent target failures
+        # so report.target_errors reflects reality.
+        "total_http_sends": wrapped_target.http_sends_total,
+        "http_send_failures": wrapped_target.http_send_failures,
     }
 
 

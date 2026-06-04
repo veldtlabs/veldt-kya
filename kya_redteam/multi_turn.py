@@ -755,6 +755,31 @@ def run_multi_turn(
                     objective=objective, pyrit_out=pyrit_out,
                     config=config, threshold=threshold,
                 )
+                # Budget hardening (mirror of Garak adapter fix):
+                # PyRIT runs unchecked — _budget_check callback isn't
+                # plumbed into run_via_pyrit (PyRIT's attack loop owns
+                # its turn iteration). After the attack completes, we
+                # back-debit the monthly budget by the REAL HTTP call
+                # count from the wrapped target's counters. Single
+                # atomic INCRBY via consume_budget(n=...).
+                total_http_sends = int(
+                    pyrit_out.get("total_http_sends") or 0
+                )
+                if total_http_sends > 0:
+                    bstatus = consume_budget(
+                        tenant_id, budget_monthly, n=total_http_sends,
+                    )
+                    if not bstatus.get("allowed", True):
+                        report.errors.append(
+                            f"monthly budget exhausted during PyRIT "
+                            f"{config.orchestrator_kind!r} dispatch "
+                            f"({bstatus.get('used','?')}/"
+                            f"{bstatus.get('limit','?')}) — "
+                            f"{total_http_sends} target HTTP calls"
+                        )
+                        logger.warning(
+                            "[REDTEAM-PYRIT] %s", report.errors[-1],
+                        )
             except Exception as exc:
                 # Per user requirement 2026-05-14: NO silent fallback.
                 # Record the error against the run + abandon this
@@ -985,6 +1010,14 @@ def _conversation_from_pyrit(
             "reasoning": "",
         })
     result.turns_completed = pyrit_out.get("turns_completed") or turns
+    # Populate target_calls / target_errors from the PyRIT wrapped target's
+    # real HTTP counters, NOT the transcript-pair count. The transcript can
+    # under-represent actual sends because CrescendoAttack backtracks rewrite
+    # memory and the resulting transcript may be shorter than the actual
+    # HTTP calls fired. report.prompts_sent += max(target_calls, turns_completed)
+    # at the multi_turn dispatch site (line ~806) then debits the real count.
+    result.target_calls = int(pyrit_out.get("total_http_sends") or 0)
+    result.target_errors = int(pyrit_out.get("http_send_failures") or 0)
     achieved = bool(pyrit_out.get("achieved_objective"))
     if achieved:
         # Build a synthetic best_verdict so the outer loop persists a
