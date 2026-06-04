@@ -618,7 +618,7 @@ def register_phoenix_adapter() -> None:
             from litellm import completion
             prompt = _PHOENIX_HALLUCINATION_PROMPT.format(
                 query=(input_text or ""),
-                reference=context,
+                reference=(context or ""),
                 response=response)
             model = os.environ.get(
                 "KYA_PHOENIX_JUDGE_MODEL", "gpt-4o-mini")
