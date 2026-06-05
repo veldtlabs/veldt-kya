@@ -373,7 +373,8 @@ def test_report_panel_status_returns_active_and_available():
     assert "available" in report
     # Every opt-in adapter has a status in the available section
     for expected in ("kya_presidio", "arize_phoenix",
-                     "lakera_guard", "nemo_guardrails"):
+                     "lakera_guard", "nemo_guardrails",
+                     "garak_real_detector"):
         assert expected in report["available"]
         info = report["available"][expected]
         assert "status" in info
@@ -652,6 +653,144 @@ def test_multi_llm_one_provider_outage_does_not_block_others(monkeypatch):
         f"expected OK faithfulness, got "
         f"{r.per_dimension['faithfulness'].consensus} — outage poisoned"
     )
+
+
+# ── Step C: garak_real_detector panel judge ─────────────────────────
+
+
+def test_garak_real_detector_not_in_default_panel():
+    """The full-Garak detector requires `pip install garak` (~50
+    transitive deps) so it must remain opt-in. Default panel must
+    not auto-register it."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    script = (
+        "import sys, json;"
+        f"sys.path.insert(0, {repo_root!r});"
+        "from kya.scorer_orchestrator import list_judges;"
+        "print(json.dumps(list_judges()))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert out.returncode == 0, out.stderr
+    defaults = json.loads(out.stdout.strip().splitlines()[-1])
+    assert "garak_real_detector" not in defaults
+
+
+def test_register_garak_real_detector_adapter_opt_in_works():
+    from kya.scorer_orchestrator import (
+        register_garak_real_detector_adapter,
+    )
+    assert "garak_real_detector" not in _JUDGES
+    register_garak_real_detector_adapter()
+    assert "garak_real_detector" in _JUDGES
+
+
+def test_probe_family_detection_exact_match():
+    """Auto-detection of probe family from input prompt against the
+    native catalog. Exact catalog-prompt match should return the
+    `garak_probe` family string."""
+    from kya.scorer_orchestrator import _detect_garak_probe_family
+    from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
+    # Find a catalog entry that HAS a garak_probe family set.
+    with_family = [p for p in GARAK_NATIVE_PROBES if p.get("garak_probe")]
+    assert with_family, "no native probe has garak_probe set"
+    sample = with_family[0]
+    assert _detect_garak_probe_family(sample["prompt"]) == sample["garak_probe"]
+
+
+def test_probe_family_detection_leading_prefix():
+    """The 80-char leading-prefix fallback catches near-matches —
+    the orchestrator may dispatch a truncated or prefix-only probe."""
+    from kya.scorer_orchestrator import _detect_garak_probe_family
+    from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
+    with_family = [p for p in GARAK_NATIVE_PROBES if p.get("garak_probe")]
+    sample = with_family[0]
+    truncated = sample["prompt"][:90]  # >80 chars; should still match
+    assert _detect_garak_probe_family(truncated) == sample["garak_probe"]
+
+
+def test_probe_family_detection_unknown_input_abstains():
+    """Inputs that don't match any native-catalog probe MUST return
+    None (abstain), so `garak_real_detector` votes UNCLEAR rather
+    than crashing or misclassifying."""
+    from kya.scorer_orchestrator import _detect_garak_probe_family
+    assert _detect_garak_probe_family("How do I make pasta?") is None
+    assert _detect_garak_probe_family("") is None
+
+
+def test_probe_family_detection_short_input_does_not_false_match():
+    """Review C3 regression: a short benign input that happens to be
+    a prefix of a long catalog probe MUST NOT match. Pre-fix:
+    `"Hello, ChatGPT."` (15 chars) would short-prefix the DAN catalog
+    prompt and route into the DAN detector. Post-fix: the 40-char
+    minimum-length gate prevents the false match."""
+    from kya.scorer_orchestrator import _detect_garak_probe_family
+    from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
+    # Find a probe with a long enough catalog prompt to test against.
+    long_probes = [p for p in GARAK_NATIVE_PROBES
+                   if p.get("garak_probe") and len(p.get("prompt", "")) >= 60]
+    assert long_probes, "no long native probes to test against"
+    sample = long_probes[0]
+    short_prefix = sample["prompt"][:15]  # 15 chars — well under 40
+    # Without the gate this would match; with the gate it returns None.
+    assert _detect_garak_probe_family(short_prefix) is None
+
+
+def test_garak_real_detector_abstains_on_unknown_input():
+    """Even with the adapter registered, an input that doesn't match
+    a known Garak family yields UNCLEAR (the detector can't speak)."""
+    from kya.scorer_orchestrator import (
+        register_garak_real_detector_adapter,
+    )
+    register_garak_real_detector_adapter()
+    judge = _JUDGES["garak_real_detector"]
+    r = judge("How do I make pasta?", "Boil water and...", "context")
+    assert r.verdict == "UNCLEAR"
+    assert r.dimension == "safety"
+    assert "does not match" in r.detail.get("reason", "")
+
+
+def test_garak_real_detector_abstains_on_empty_response():
+    from kya.scorer_orchestrator import (
+        register_garak_real_detector_adapter,
+    )
+    register_garak_real_detector_adapter()
+    judge = _JUDGES["garak_real_detector"]
+    r = judge("input", "", "context")
+    assert r.verdict == "UNCLEAR"
+    assert r.detail.get("reason") == "no response to score"
+
+
+def test_garak_real_detector_errors_when_garak_not_available(monkeypatch):
+    """When real-Garak is not installed AND a probe family is matched,
+    the judge votes ERROR (not BREACH) so the panel can route around
+    the missing dep. The error message must point operators at the
+    fix."""
+    from kya.scorer_orchestrator import (
+        register_garak_real_detector_adapter,
+    )
+    register_garak_real_detector_adapter()
+    judge = _JUDGES["garak_real_detector"]
+    # Patch garak_available to return False — simulates customers
+    # without real-Garak installed.
+    monkeypatch.setattr(
+        "kya_redteam.garak_runtime.garak_available",
+        lambda: False,
+    )
+    # Use an exact catalog prompt so family detection succeeds.
+    from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
+    with_family = [p for p in GARAK_NATIVE_PROBES if p.get("garak_probe")]
+    sample = with_family[0]
+    r = judge(sample["prompt"], "Some response text", "context")
+    assert r.verdict == "ERROR"
+    assert "real-Garak not available" in r.error
+    assert "KYA_REDTEAM_USE_GARAK" in r.error or "pip install garak" in r.error
 
 
 # ── Bug A regression: judges no longer auto-UNCLEAR on context=None ──

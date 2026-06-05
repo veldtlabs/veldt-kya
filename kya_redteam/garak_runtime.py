@@ -557,6 +557,155 @@ def _extract_attempt_response(attempt) -> str:
     return ""
 
 
+def _load_primary_detector(probe_obj):
+    """Load a probe's primary_detector class via Garak's plugin loader.
+
+    Extracted from `run_probe_via_garak` so that single-shot scoring
+    paths (panel judges that score an already-captured response) can
+    reuse the same detector resolution without re-driving the probe.
+
+    Returns the detector instance, or raises RuntimeError with the
+    diagnostic so callers can fail-soft (abstain UNCLEAR).
+    """
+    from garak import _plugins  # type: ignore
+
+    detector_name = getattr(probe_obj, "primary_detector", None)
+    if not detector_name:
+        raise RuntimeError(
+            f"probe {probe_obj.__class__.__name__} has no primary_detector"
+        )
+    try:
+        detector_obj = _plugins.load_plugin(
+            f"detectors.{detector_name}", break_on_fail=False,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"detector {detector_name!r} failed to load: {exc}"
+        ) from exc
+    if detector_obj is None:
+        raise RuntimeError(f"detector {detector_name!r} not found")
+    return detector_obj
+
+
+def score_response_via_garak_detector(
+    probe_name: str,
+    response_text: str,
+    *,
+    prompt_text: str = "",
+    threshold: float = 0.5,
+) -> dict:
+    """Score an ALREADY-CAPTURED response against a Garak probe's
+    primary_detector. Distinct from `run_probe_via_garak`, which DRIVES
+    the probe (generates prompts → calls target → scores). This
+    function does ONLY the scoring step — useful for panel judges
+    that fire on a `(input, response, context)` triple from the
+    scorer_orchestrator.
+
+    Args
+    ----
+    probe_name : str
+        Probe family ("dan") or qualified class
+        ("dan.Dan_11_0" / "probes.dan.Dan_11_0").
+    response_text : str
+        The target's response to score against the probe's detector.
+    prompt_text : str, optional
+        The prompt that elicited the response. Some Garak detectors
+        consult attempt.prompt; passing it through gives them their
+        canonical input. Default "" works for detectors that only
+        inspect outputs.
+    threshold : float
+        Detector score >= threshold counts as a hit. Default 0.5
+        matches Garak's harness default.
+
+    Returns
+    -------
+    dict:
+        {
+          "probe":         str,            # probe spec as supplied
+          "probe_class":   str,            # concrete class chosen
+          "detector":      str,            # primary_detector name
+          "score":         float,          # max detector score
+          "threshold":     float,
+          "breached":      bool,           # score >= threshold
+          "raw_scores":    list[float],    # all detector outputs
+        }
+
+    Raises
+    ------
+    RuntimeError if real-Garak isn't available, the probe / detector
+    can't be resolved, or constructing the Attempt fails. Callers
+    (e.g. the `garak_real_detector` panel judge) should catch and
+    abstain (UNCLEAR) so the failure doesn't poison the panel.
+    """
+    if not garak_available():
+        raise RuntimeError(
+            "garak not available — set KYA_REDTEAM_USE_GARAK=1 + "
+            "pip install garak"
+        )
+    try:
+        import garak as _garak  # type: ignore
+        from garak.attempt import Attempt, Message  # type: ignore
+    except ImportError as exc:  # pragma: no cover — checked above
+        raise RuntimeError(f"garak import failed: {exc}") from exc
+
+    _ensure_garak_initialized()
+
+    probe_obj = _resolve_probe(probe_name)
+    if probe_obj is None:
+        raise RuntimeError(
+            f"no concrete Garak probe with primary_detector found for "
+            f"spec {probe_name!r}"
+        )
+    detector_obj = _load_primary_detector(probe_obj)
+    detector_name = getattr(probe_obj, "primary_detector", "?")
+
+    # Construct a synthetic Attempt carrying the captured response as
+    # its output. Garak v0.15.x Detector.detect() walks
+    # `attempt.all_outputs` and reads `.text` off each entry — the
+    # KyaHttpGenerator path at line 446 wraps target outputs in
+    # `Message(text)` for exactly this reason. A raw `str` here would
+    # be ignored by detectors that .text-access the output → silent
+    # vote-OK on real attacks (review-flagged blocker C1).
+    #
+    # Build with no kwargs (avoiding the prompt= signature which
+    # differs across garak versions — v0.15+ expects a Conversation,
+    # not a raw str; review-flagged blocker C2). Detectors that
+    # genuinely need the prompt context are rare in the curated
+    # probe set; output-only scoring is sufficient for the panel
+    # judge.
+    try:
+        attempt = Attempt()
+        wrapped = [Message(response_text)]
+        if hasattr(attempt, "all_outputs"):
+            attempt.all_outputs = wrapped
+        else:
+            attempt.outputs = wrapped  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to construct garak Attempt for scoring: {exc}"
+        ) from exc
+
+    try:
+        raw_scores = list(detector_obj.detect(attempt) or [])
+    except Exception as exc:
+        raise RuntimeError(
+            f"detector {detector_name}.detect() raised: {exc}"
+        ) from exc
+    valid_scores = [float(s) for s in raw_scores if s is not None]
+    max_score = max(valid_scores) if valid_scores else 0.0
+
+    return {
+        "probe": probe_name,
+        "probe_class": probe_obj.__class__.__name__,
+        "detector": detector_name,
+        "score": max_score,
+        "threshold": float(threshold),
+        "breached": max_score >= threshold,
+        "raw_scores": valid_scores,
+        "garak_version": getattr(_garak, "__version__", "?"),
+    }
+
+
 def run_probe_via_garak(
     probe_name: str,
     http_target,
@@ -609,23 +758,8 @@ def run_probe_via_garak(
             f"no concrete Garak probe with primary_detector found for "
             f"spec {probe_name!r}"
         )
-    detector_name = getattr(probe_obj, "primary_detector", None)
-    if not detector_name:
-        raise RuntimeError(
-            f"probe {probe_obj.__class__.__name__} has no primary_detector"
-        )
-
-    # Load detector
-    try:
-        detector_obj = _plugins.load_plugin(
-            f"detectors.{detector_name}", break_on_fail=False,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"detector {detector_name!r} failed to load: {exc}"
-        ) from exc
-    if detector_obj is None:
-        raise RuntimeError(f"detector {detector_name!r} not found")
+    detector_obj = _load_primary_detector(probe_obj)
+    detector_name = getattr(probe_obj, "primary_detector", "?")
 
     # Build generator + run probe
     GenCls = _make_kya_http_generator_class()
