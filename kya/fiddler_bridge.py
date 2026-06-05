@@ -193,6 +193,7 @@ def llm_judge_refusal_or_hallucination(
     *,
     model: str = "gpt-4o-mini",
     timeout_seconds: float = 8.0,
+    respect_env_override: bool = True,
 ) -> str | None:
     """Use an LLM as a SECOND independent judge to disambiguate
     refusal-shaped responses from hallucinations.
@@ -233,7 +234,16 @@ def llm_judge_refusal_or_hallucination(
                      "pip install kya[judge]")
         return None
 
-    judge_model = os.environ.get("KYA_FAITH_JUDGE_MODEL", model)
+    # KYA_FAITH_JUDGE_MODEL is a cluster-wide convenience for swapping
+    # the default model without code changes. It MUST NOT override
+    # callers that route per-judge models — otherwise the multi-LLM
+    # ensemble (Step B) collapses to one model and "consensus" becomes
+    # a single voice with confirmation bias. Pass respect_env_override
+    # =False from those callers to honor the explicit `model=` kwarg.
+    judge_model = (
+        os.environ.get("KYA_FAITH_JUDGE_MODEL", model)
+        if respect_env_override else model
+    )
     try:
         resp = litellm_completion(
             model=judge_model,

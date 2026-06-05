@@ -381,6 +381,279 @@ def test_report_panel_status_returns_active_and_available():
         assert "needs_key" in info
 
 
+# ── Step B: multi-LLM judge adapter ─────────────────────────────────
+
+
+def test_multi_llm_default_auto_filters_by_env_keys(monkeypatch):
+    """Without an explicit `models=` kwarg, the registrar selects
+    DEFAULT_MULTI_LLM_MODELS filtered to providers whose API key is
+    present in env. With no keys present, NO judges register."""
+    from kya.scorer_orchestrator import (
+        DEFAULT_MULTI_LLM_MODELS,
+        register_multi_llm_judge_adapter,
+    )
+    # Clear every provider key the default panel references.
+    for _model, key_env in DEFAULT_MULTI_LLM_MODELS:
+        monkeypatch.delenv(key_env, raising=False)
+    monkeypatch.delenv("KYA_MULTI_LLM_JUDGE_MODELS", raising=False)
+
+    registered = register_multi_llm_judge_adapter()
+    assert registered == []
+
+
+def test_multi_llm_default_registers_judges_for_present_keys(monkeypatch):
+    """When OPENAI_API_KEY (only) is present, only the OpenAI-routed
+    judge registers from the default panel."""
+    from kya.scorer_orchestrator import (
+        DEFAULT_MULTI_LLM_MODELS,
+        register_multi_llm_judge_adapter,
+    )
+    for _m, key_env in DEFAULT_MULTI_LLM_MODELS:
+        monkeypatch.delenv(key_env, raising=False)
+    monkeypatch.delenv("KYA_MULTI_LLM_JUDGE_MODELS", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    registered = register_multi_llm_judge_adapter()
+    assert len(registered) == 1
+    assert "openai_gpt_4o_mini" in registered[0]
+    assert registered[0].startswith("llm_judge::")
+    assert registered[0] in _JUDGES
+
+
+def test_multi_llm_explicit_models_overrides_env_filter(monkeypatch):
+    """An explicit `models=[...]` list registers those exact models
+    regardless of whether their keys are present (keys are checked at
+    call time, not registration time)."""
+    from kya.scorer_orchestrator import register_multi_llm_judge_adapter
+    # Even with NO keys present, explicit models still register.
+    for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("KYA_MULTI_LLM_JUDGE_MODELS", raising=False)
+
+    explicit = [
+        "openai/gpt-4o",
+        "openrouter/mistralai/mistral-large",
+    ]
+    registered = register_multi_llm_judge_adapter(models=explicit)
+    assert len(registered) == 2
+    assert all(n.startswith("llm_judge::") for n in registered)
+
+
+def test_multi_llm_env_override_parsed_as_csv(monkeypatch):
+    """KYA_MULTI_LLM_JUDGE_MODELS env, comma-separated, overrides the
+    default panel selection (but is still overridden by explicit
+    `models=` kwarg)."""
+    from kya.scorer_orchestrator import register_multi_llm_judge_adapter
+    for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv(
+        "KYA_MULTI_LLM_JUDGE_MODELS",
+        "openai/gpt-4o-mini, anthropic/claude-3-5-haiku-20241022 , groq/llama-3.3-70b-versatile",
+    )
+    registered = register_multi_llm_judge_adapter()
+    assert len(registered) == 3
+    assert any("gpt_4o_mini" in n for n in registered)
+    assert any("claude_3_5_haiku" in n for n in registered)
+    assert any("llama_3_3_70b" in n for n in registered)
+
+
+def test_multi_llm_judge_vote_maps_underlying_verdict(monkeypatch):
+    """When the underlying llm_judge_refusal_or_hallucination returns
+    'REFUSAL', the panel judge votes OK; 'HALLUCINATION' -> BREACH;
+    'UNCLEAR' -> UNCLEAR; None -> ERROR. The model string is
+    propagated into JudgeResult.detail."""
+    from kya.scorer_orchestrator import register_multi_llm_judge_adapter
+
+    captured: dict[str, str] = {}
+
+    def fake_judge(response, context, *, model, timeout_seconds, **_kw):
+        captured["model"] = model
+        captured["timeout"] = timeout_seconds
+        # Hard-code one verdict per model so each judge votes
+        # something different.
+        return {
+            "openai/gpt-4o-mini": "REFUSAL",
+            "anthropic/claude-3-5-haiku-20241022": "HALLUCINATION",
+            "groq/llama-3.3-70b-versatile": "UNCLEAR",
+            "openrouter/down-provider/will-fail": None,
+        }.get(model, "UNCLEAR")
+
+    monkeypatch.setattr(
+        "kya.fiddler_bridge.llm_judge_refusal_or_hallucination",
+        fake_judge,
+    )
+
+    registered = register_multi_llm_judge_adapter(models=[
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3-5-haiku-20241022",
+        "groq/llama-3.3-70b-versatile",
+        "openrouter/down-provider/will-fail",
+    ])
+    assert len(registered) == 4
+
+    # Call each judge directly and inspect verdict mapping.
+    expected = {
+        "openai_gpt_4o_mini": "OK",
+        "claude_3_5_haiku": "BREACH",
+        "llama_3_3_70b": "UNCLEAR",
+        "down_provider_will_fail": "ERROR",
+    }
+    for jname, judge in _JUDGES.items():
+        for tag, want_verdict in expected.items():
+            if tag in jname:
+                jr = judge("input", "response", "context")
+                assert jr.verdict == want_verdict, (
+                    f"judge {jname!r}: expected {want_verdict}, "
+                    f"got {jr.verdict}"
+                )
+                assert jr.detail.get("model")
+                break
+
+
+def test_multi_llm_explicit_models_beats_env_override(monkeypatch):
+    """Critical-#3 from Step B review: explicit `models=` must win
+    over the KYA_MULTI_LLM_JUDGE_MODELS env var. The previous test
+    only cleared the env, this test sets BOTH and checks explicit
+    wins."""
+    from kya.scorer_orchestrator import register_multi_llm_judge_adapter
+    monkeypatch.setenv(
+        "KYA_MULTI_LLM_JUDGE_MODELS",
+        "should-not-appear/model-from-env",
+    )
+    registered = register_multi_llm_judge_adapter(models=[
+        "openai/gpt-4o",
+    ])
+    assert len(registered) == 1
+    assert "gpt_4o" in registered[0]
+    assert "should_not_appear" not in registered[0]
+
+
+def test_multi_llm_judge_bypasses_kya_faith_judge_model_env(monkeypatch):
+    """Critical-#1 from Step B review: KYA_FAITH_JUDGE_MODEL must NOT
+    collapse the ensemble onto one model. The multi-LLM closure
+    passes respect_env_override=False so the per-judge `model=` wins
+    over the cluster-wide env."""
+    from kya.scorer_orchestrator import register_multi_llm_judge_adapter
+
+    # Simulate the bug scenario: operator has KYA_FAITH_JUDGE_MODEL
+    # set cluster-wide for openai_judge convenience. The multi-LLM
+    # ensemble must IGNORE it.
+    monkeypatch.setenv("KYA_FAITH_JUDGE_MODEL", "cluster-wide/override")
+
+    captured_models: list[str] = []
+
+    def fake_judge(response, context, *, model, timeout_seconds,
+                   respect_env_override=True, **_kw):
+        captured_models.append(model)
+        # If the ensemble accidentally respected the env override,
+        # we'd see "cluster-wide/override" here. Per Step B's
+        # contract it must see the per-judge model string.
+        assert respect_env_override is False, (
+            "ensemble judge must pass respect_env_override=False"
+        )
+        return "REFUSAL"
+
+    monkeypatch.setattr(
+        "kya.fiddler_bridge.llm_judge_refusal_or_hallucination",
+        fake_judge,
+    )
+    registered = register_multi_llm_judge_adapter(models=[
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3-5-haiku-20241022",
+        "groq/llama-3.3-70b-versatile",
+    ])
+    for jname in registered:
+        _JUDGES[jname]("input", "response", "context")
+    # Each model should be seen verbatim, NOT the env override.
+    assert "openai/gpt-4o-mini" in captured_models
+    assert "anthropic/claude-3-5-haiku-20241022" in captured_models
+    assert "groq/llama-3.3-70b-versatile" in captured_models
+    assert "cluster-wide/override" not in captured_models
+
+
+def test_multi_key_hint_treated_as_or_set(monkeypatch):
+    """Critical-#2 from Step B review: the `llm_judge_ensemble` entry
+    in _AVAILABLE_ADAPTERS declares key_hint as
+    "OPENAI_API_KEY | ANTHROPIC_API_KEY | GROQ_API_KEY" — must be
+    treated as an OR-set, not a single literal env var name.
+
+    Both `report_panel_status()` and `register_available_adapters()`
+    must accept the ensemble as ready when ANY one of the keys is
+    present."""
+    from kya.scorer_orchestrator import (
+        register_available_adapters,
+        report_panel_status,
+    )
+    for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("KYA_MULTI_LLM_JUDGE_MODELS", raising=False)
+
+    # No keys: report should say missing.
+    report_off = report_panel_status()
+    assert report_off["available"]["llm_judge_ensemble"]["status"] == (
+        "missing_api_key"
+    )
+
+    # One key present: report should NOT say missing.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    report_on = report_panel_status()
+    assert report_on["available"]["llm_judge_ensemble"]["status"] != (
+        "missing_api_key"
+    ), (
+        "Step B bug: pipe-delimited key_hint was being passed verbatim "
+        "to os.environ.get(), so ANTHROPIC_API_KEY presence was never "
+        "noticed."
+    )
+
+    # register_available_adapters should also pass the gate now.
+    status = register_available_adapters(
+        exclude=["arize_phoenix", "kya_presidio", "lakera_guard",
+                 "nemo_guardrails", "langkit_whylabs",
+                 "kya_attack_patterns", "refusal_heuristic"],
+    )
+    assert status.get("llm_judge_ensemble", "") not in (
+        "skipped (no api key: OPENAI_API_KEY | ANTHROPIC_API_KEY | GROQ_API_KEY)",
+    )
+
+
+def test_multi_llm_one_provider_outage_does_not_block_others(monkeypatch):
+    """The orchestrator parallelizes judges; one provider's ERROR
+    doesn't poison the consensus — the other models still vote."""
+    from kya.scorer_orchestrator import (
+        check_consensus,
+        register_multi_llm_judge_adapter,
+    )
+
+    def fake_judge(response, context, *, model, timeout_seconds, **_kw):
+        if "down" in model:
+            return None  # simulate outage
+        if "openai" in model:
+            return "REFUSAL"
+        if "anthropic" in model:
+            return "REFUSAL"
+        return "UNCLEAR"
+
+    monkeypatch.setattr(
+        "kya.fiddler_bridge.llm_judge_refusal_or_hallucination",
+        fake_judge,
+    )
+    register_multi_llm_judge_adapter(models=[
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3-5-haiku-20241022",
+        "openrouter/down-provider/will-fail",
+    ])
+    r = check_consensus(
+        input_text="x", response="I cannot help with that.",
+        context="ctx",
+    )
+    # Faithfulness pool: 2 OK + 1 ERROR. ERROR doesn't count; the
+    # 2 OKs win.
+    assert r.per_dimension["faithfulness"].consensus == "OK", (
+        f"expected OK faithfulness, got "
+        f"{r.per_dimension['faithfulness'].consensus} — outage poisoned"
+    )
+
+
 # ── Bug A regression: judges no longer auto-UNCLEAR on context=None ──
 # Red-team probes pass response without reference context. Pre-fix, both
 # bundled LLM judges short-circuited to UNCLEAR before invoking the
