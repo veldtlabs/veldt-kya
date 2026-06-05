@@ -1,0 +1,24 @@
+# Ruff handles both lint (check) and import-ordering / formatting in
+# one tool. Mirrors the exact `ruff check kya/ kya_hooks/
+# kya_otlp_bridge/ kya_redteam/` invocation that CI runs in
+# .github/workflows/build.yml so contributors never push a commit
+# that fails CI on a lint nit.
+#
+# To enable locally:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Then every `git commit` runs ruff with --fix automatically. Commits
+# that introduce errors the auto-fixer can't resolve will be rejected
+# with the exact error message; re-running `git commit` after manually
+# fixing succeeds.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.0
+    hooks:
+      # `ruff check --fix` — lint + auto-fix import ordering, unused
+      # imports, and other trivially-fixable issues.
+      - id: ruff
+        args: [--fix]
+      # `ruff format` — code formatting (black-compatible).
+      - id: ruff-format

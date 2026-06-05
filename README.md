@@ -702,6 +702,24 @@ your code.
 
 ---
 
+## Contributing
+
+`pre-commit` runs `ruff check --fix` + `ruff format` on every commit
+so lint issues are caught before CI:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+After that, `git commit` auto-fixes import ordering / unused imports
+and rejects commits with errors the auto-fixer can't resolve. The
+hook config is in `.pre-commit-config.yaml` and mirrors the exact
+`ruff check kya/ kya_hooks/ kya_otlp_bridge/ kya_redteam/`
+invocation CI runs in `.github/workflows/build.yml`.
+
+---
+
 ## License
 
 Apache License 2.0 — © 2026 Veldt Labs Inc. See [LICENSE](LICENSE).
