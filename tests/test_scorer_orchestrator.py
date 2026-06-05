@@ -600,3 +600,176 @@ def test_register_refusal_heuristic_adapter_opt_in_works():
     register_refusal_heuristic_adapter()
     assert "refusal_heuristic" in _JUDGES
     assert _JUDGES["refusal_heuristic"] is _judge_refusal_heuristic
+
+
+# ── attack_context ContextVar + matcher fix (commit a2b8f61) ────────
+# Live verifier on the 88-attempt sweep found garak_real_detector
+# matched 0/88 because `_detect_garak_probe_family` only knew the
+# prompt-text heuristic. The fix threads probe metadata through via a
+# ContextVar so the matcher dispatches deterministically. Reviewer
+# flagged the missing test coverage as the critical follow-up; this
+# block adds it.
+
+
+def test_attack_context_stateless_caller_returns_empty_dict():
+    """No surrounding with-block → get_attack_context() is empty."""
+    from kya.scorer_orchestrator import get_attack_context
+    assert get_attack_context() == {}
+
+
+def test_attack_context_with_block_sets_and_restores():
+    from kya.scorer_orchestrator import attack_context, get_attack_context
+    assert get_attack_context() == {}
+    with attack_context(garak_probe_class="dan.Dan_11_0",
+                        garak_probe_family="dan"):
+        ctx = get_attack_context()
+        assert ctx["garak_probe_class"] == "dan.Dan_11_0"
+        assert ctx["garak_probe_family"] == "dan"
+    # Restored on exit
+    assert get_attack_context() == {}
+
+
+def test_attack_context_nested_merges_inner_into_outer():
+    """Nested with-blocks merge — inner overrides outer keys, outer
+    keys not touched by inner survive, exit restores outer state."""
+    from kya.scorer_orchestrator import attack_context, get_attack_context
+    with attack_context(garak_probe_family="dan", attack_objective="x"):
+        outer = get_attack_context()
+        assert outer["garak_probe_family"] == "dan"
+        assert outer["attack_objective"] == "x"
+        with attack_context(garak_probe_family="encoding"):
+            inner = get_attack_context()
+            assert inner["garak_probe_family"] == "encoding"  # overridden
+            assert inner["attack_objective"] == "x"           # inherited
+        # Restored to outer
+        restored = get_attack_context()
+        assert restored["garak_probe_family"] == "dan"
+        assert restored["attack_objective"] == "x"
+    assert get_attack_context() == {}
+
+
+def test_attack_context_none_kwargs_do_not_clobber_outer():
+    """Behavioural contract: _score_via_panel passes
+    `probe_class=None, probe_family=None` for non-Garak callers. The
+    None-filter MUST not erase an outer-context's real values."""
+    from kya.scorer_orchestrator import attack_context, get_attack_context
+    # The nested-with form here is INTENTIONAL — collapsing into a
+    # single `with attack_context(...), attack_context(...):` would
+    # defeat the test, which is specifically that the INNER context
+    # manager's None-filter must not clobber the OUTER context's
+    # real values.
+    with attack_context(garak_probe_family="dan"):  # noqa: SIM117
+        with attack_context(garak_probe_class=None,
+                            garak_probe_family=None):
+            # None kwargs filtered out → outer "dan" survives
+            assert get_attack_context()["garak_probe_family"] == "dan"
+
+
+def test_family_from_probe_class_edge_cases():
+    from kya.scorer_orchestrator import _family_from_probe_class
+    assert _family_from_probe_class("") is None
+    assert _family_from_probe_class(None) is None  # type: ignore[arg-type]
+    # Single-segment names treated as the family directly
+    assert _family_from_probe_class("dan") == "dan"
+    # Two-segment family.Class
+    assert _family_from_probe_class("dan.Dan_11_0") == "dan"
+    # probes-prefixed path
+    assert _family_from_probe_class("probes.dan.Dan_11_0") == "dan"
+    # Deeply-nested still returns family root
+    assert _family_from_probe_class("probes.encoding.foo.Bar") == "encoding"
+    # Bare "probes" — reviewer H1: must NOT dispatch as a family
+    assert _family_from_probe_class("probes") is None
+    assert _family_from_probe_class("probes.") is None
+
+
+def test_detect_probe_family_attack_context_overrides_heuristic():
+    """attack_context wins over the prompt-text fallback heuristic."""
+    from kya.scorer_orchestrator import (
+        _detect_garak_probe_family,
+        attack_context,
+    )
+    # Unrelated prompt that won't match any native catalog entry —
+    # would normally return None.
+    arbitrary = "totally random input that no probe ever wrote"
+    assert _detect_garak_probe_family(arbitrary) is None
+    # With explicit context, it dispatches deterministically.
+    with attack_context(garak_probe_family="encoding"):
+        assert _detect_garak_probe_family(arbitrary) == "encoding"
+    # probe_class-only also resolves
+    with attack_context(garak_probe_class="dan.Dan_11_0"):
+        assert _detect_garak_probe_family(arbitrary) == "dan"
+
+
+def test_check_consensus_propagates_attack_context_into_workers():
+    """End-to-end guarantee that the per-submit copy_context().run
+    wrap actually flows the ContextVar into ThreadPoolExecutor
+    workers (the reviewer's #1 critical regression test).
+
+    Method: register a stub judge that captures whatever
+    `get_attack_context()` reports — if propagation is broken the
+    captured value is the empty dict (the worker's thread default)
+    instead of what we set in the caller.
+    """
+    from kya.scorer_orchestrator import (
+        attack_context,
+        check_consensus,
+        get_attack_context,
+    )
+    captured = {}
+
+    def _spy(input_text, response, context):
+        captured["seen"] = get_attack_context()
+        return JudgeResult(
+            judge_name="spy", verdict="OK", raw_score=None,
+            threshold=None, latency_ms=0, dimension="any")
+
+    register_judge("spy", _spy)
+    with attack_context(garak_probe_family="dan",
+                        garak_probe_class="dan.Dan_11_0"):
+        check_consensus(input_text="x", response="y", context=None,
+                        judges=["spy"])
+    assert captured.get("seen") == {
+        "garak_probe_family": "dan",
+        "garak_probe_class": "dan.Dan_11_0",
+    }, (
+        "ContextVar did NOT propagate into the ThreadPoolExecutor "
+        f"worker. captured={captured.get('seen')!r}"
+    )
+
+
+def test_check_consensus_does_not_leak_context_between_judges():
+    """Each judge gets its own copy_context() — mutations one judge
+    makes to ContextVars must NOT be visible to another judge running
+    in parallel."""
+    from kya.scorer_orchestrator import (
+        attack_context,
+        check_consensus,
+        get_attack_context,
+    )
+    seen_by_judge = {}
+
+    def _make_judge(name: str, mutate_to: str | None = None):
+        def _j(input_text, response, context):
+            seen_by_judge[name + ":before"] = (
+                get_attack_context().get("garak_probe_family"))
+            if mutate_to is not None:
+                # Each judge has its OWN copy_context — mutating here
+                # must NOT leak to siblings.
+                with attack_context(garak_probe_family=mutate_to):
+                    pass
+            seen_by_judge[name + ":after"] = (
+                get_attack_context().get("garak_probe_family"))
+            return JudgeResult(
+                judge_name=name, verdict="OK", raw_score=None,
+                threshold=None, latency_ms=0, dimension="any")
+        return _j
+
+    register_judge("j_mutate", _make_judge("j_mutate", mutate_to="hijack"))
+    register_judge("j_observer", _make_judge("j_observer"))
+    with attack_context(garak_probe_family="dan"):
+        check_consensus(input_text="x", response="y", context=None,
+                        judges=["j_mutate", "j_observer"])
+    # Both judges should have seen "dan" coming in — the
+    # j_mutate's "with hijack" should NOT have leaked into j_observer.
+    assert seen_by_judge["j_mutate:before"] == "dan"
+    assert seen_by_judge["j_observer:before"] == "dan"

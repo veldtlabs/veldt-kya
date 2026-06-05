@@ -1034,8 +1034,8 @@ def get_attack_context() -> dict:
 
 # Map garak probe_class strings ("dan.Dan_11_0", "encoding.InjectAscii85",
 # "probes.sysprompt_extraction.SystemPromptExtraction") to the canonical
-# family slug used by `_resolve_probe`. Lookup is by leading dotted
-# segment after stripping any "probes." prefix.
+# family slug. Lookup is by leading dotted segment after stripping any
+# "probes." prefix.
 def _family_from_probe_class(probe_class: str) -> str | None:
     if not probe_class:
         return None
@@ -1044,10 +1044,17 @@ def _family_from_probe_class(probe_class: str) -> str | None:
     # plugin spec.
     if cls.startswith("probes."):
         cls = cls[len("probes."):]
-    # First dotted segment is the family slug for every Garak family
-    # the panel currently dispatches (dan, encoding, promptinject,
-    # sysprompt_extraction, latentinjection, leakreplay, goodside,
-    # lmrc, ansiescape, topic, ...).
+    # Caller must pass `family.Class` (or `probes.family.Class`). A
+    # bare `"probes"` (or any single segment that equals the literal
+    # "probes") is not a real family — reject it so we don't dispatch
+    # against a non-existent probe module (reviewer H1).
+    if "." not in cls:
+        if cls == "probes":
+            return None
+        # Single-segment input like "dan" is treated as the family
+        # itself (matches the way `_resolve_probe` accepts a bare
+        # family name).
+        return cls or None
     return cls.split(".", 1)[0] or None
 
 
@@ -1055,7 +1062,7 @@ def _detect_garak_probe_family(input_text: str) -> str | None:
     """Resolve the Garak probe family for an attempt.
 
     Priority order:
-      1. **Thread-local attack_context** — `garak_probe_family` wins;
+      1. **attack_context (ContextVar)** — `garak_probe_family` wins;
          else `garak_probe_class` is decomposed via
          `_family_from_probe_class`. This is the deterministic path
          every benchmark / orchestrator should use.
