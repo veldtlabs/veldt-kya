@@ -286,16 +286,27 @@ def _canonical_default(o: Any) -> Any:
     """JSON-encoder fallback for non-JSON-serializable values. Wraps with
     a type marker so a `datetime` object and the string of its isoformat
     don't collide on hash (which the prior `default=str` allowed).
+
+    Normative wire-level `__t__` values per docs/specs/kyp/v0.1:
+    `datetime`, `date`, `time`, `UUID`, `bytes`, `set`. The `v` encoding
+    for each is the language-agnostic form (canonical hyphenated UUID,
+    not `repr()`; hex for bytes; sorted list for sets).
     """
-    # Common timestamp + uuid cases get explicit type prefixes
+    import uuid as _uuid
+
     type_name = type(o).__name__
+    if isinstance(o, _uuid.UUID):
+        # Canonical hyphenated lowercase form — portable across
+        # languages. NOT repr() (which is Python-specific).
+        return {"__t__": "UUID", "v": str(o)}
     if hasattr(o, "isoformat"):
         return {"__t__": type_name, "v": o.isoformat()}
     if isinstance(o, (bytes, bytearray)):
         return {"__t__": "bytes", "v": o.hex()}
     if isinstance(o, set):
         return {"__t__": "set", "v": sorted(o, key=repr)}
-    # Last resort — repr so the marker still differs from a plain string
+    # Last resort — repr so the marker still differs from a plain
+    # string. Out-of-spec for v0.1; flag in a future revision.
     return {"__t__": type_name, "v": repr(o)}
 
 
