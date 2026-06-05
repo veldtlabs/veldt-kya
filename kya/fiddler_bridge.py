@@ -53,9 +53,59 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ── Failure-reason propagation ─────────────────────────────────────
+# check_safety / check_faithfulness return None on every failure mode
+# (no API key, requests not installed, HTTP error, parse failure).
+# Pre-fix, the orchestrator's adapter then surfaced JudgeResult with
+# a generic error="fiddler API unavailable" — losing the actual
+# diagnostic. Operators couldn't tell from the JudgeResult alone
+# whether they had a config bug (no key), missing dep (requests),
+# transient network failure, or upstream HTTP error.
+#
+# Thread-local because check_safety can race against itself from
+# concurrent orchestrator runs; we don't want one worker's failure
+# reason to leak into another's verdict.
+_failure_local = threading.local()
+
+_FAILURE_NO_API_KEY = "no_api_key"
+_FAILURE_NO_REQUESTS = "requests_not_installed"
+_FAILURE_HTTP_EXCEPTION = "http_request_exception"
+_FAILURE_HTTP_STATUS = "http_non_2xx"
+_FAILURE_JSON_PARSE = "json_parse_failed"
+
+
+def _record_failure(fn_name: str, reason: str) -> None:
+    """Stash the failure reason for the next get_last_failure_reason
+    call on this thread. Cleared automatically on the next successful
+    call to the same function."""
+    reasons = getattr(_failure_local, "reasons", None)
+    if reasons is None:
+        reasons = {}
+        _failure_local.reasons = reasons
+    reasons[fn_name] = reason
+
+
+def _clear_failure(fn_name: str) -> None:
+    reasons = getattr(_failure_local, "reasons", None)
+    if reasons is not None:
+        reasons.pop(fn_name, None)
+
+
+def get_last_failure_reason(fn_name: str) -> str | None:
+    """Public API: return the failure reason recorded by the most
+    recent call to ``check_safety`` / ``check_faithfulness`` on the
+    current thread, or None if that call succeeded or never ran.
+
+    Used by scorer_orchestrator.py to surface a specific reason in
+    JudgeResult.error rather than the generic 'fiddler API unavailable'.
+    """
+    return getattr(_failure_local, "reasons", {}).get(fn_name)
 
 
 # Fiddler-hosted Guardrails endpoints (as published 2026-05-26).
@@ -321,11 +371,13 @@ def check_faithfulness(
     if not token:
         logger.debug(
             "[KYA-FIDDLER] no FIDDLER_API_KEY -- check_faithfulness no-op")
+        _record_failure("check_faithfulness", _FAILURE_NO_API_KEY)
         return None
     try:
         import requests
     except ImportError:
         logger.debug("[KYA-FIDDLER] `requests` not installed")
+        _record_failure("check_faithfulness", _FAILURE_NO_REQUESTS)
         return None
     try:
         r = requests.post(
@@ -340,17 +392,27 @@ def check_faithfulness(
     except requests.RequestException as exc:
         logger.warning(
             "[KYA-FIDDLER] faithfulness call failed: %s", exc)
+        _record_failure(
+            "check_faithfulness",
+            f"{_FAILURE_HTTP_EXCEPTION}: {type(exc).__name__}",
+        )
         return None
     if not (200 <= r.status_code < 300):
         logger.warning(
             "[KYA-FIDDLER] faithfulness returned %d: %s",
             r.status_code, r.text[:200])
+        _record_failure(
+            "check_faithfulness",
+            f"{_FAILURE_HTTP_STATUS}: {r.status_code}",
+        )
         return None
     try:
         body = r.json()
     except ValueError:
         logger.warning("[KYA-FIDDLER] faithfulness JSON parse failed")
+        _record_failure("check_faithfulness", _FAILURE_JSON_PARSE)
         return None
+    _clear_failure("check_faithfulness")
 
     score = body.get("fdl_faithful_score")
     breached = (isinstance(score, (int, float))
@@ -411,11 +473,13 @@ def check_safety(
     token = _get_api_key(api_key)
     if not token:
         logger.debug("[KYA-FIDDLER] no FIDDLER_API_KEY -- check_safety no-op")
+        _record_failure("check_safety", _FAILURE_NO_API_KEY)
         return None
     try:
         import requests
     except ImportError:
         logger.debug("[KYA-FIDDLER] `requests` not installed")
+        _record_failure("check_safety", _FAILURE_NO_REQUESTS)
         return None
     try:
         r = requests.post(
@@ -429,17 +493,27 @@ def check_safety(
         )
     except requests.RequestException as exc:
         logger.warning("[KYA-FIDDLER] safety call failed: %s", exc)
+        _record_failure(
+            "check_safety",
+            f"{_FAILURE_HTTP_EXCEPTION}: {type(exc).__name__}",
+        )
         return None
     if not (200 <= r.status_code < 300):
         logger.warning(
             "[KYA-FIDDLER] safety returned %d: %s",
             r.status_code, r.text[:200])
+        _record_failure(
+            "check_safety",
+            f"{_FAILURE_HTTP_STATUS}: {r.status_code}",
+        )
         return None
     try:
         body = r.json()
     except ValueError:
         logger.warning("[KYA-FIDDLER] safety JSON parse failed")
+        _record_failure("check_safety", _FAILURE_JSON_PARSE)
         return None
+    _clear_failure("check_safety")
 
     # Find the worst-offending dimension.
     max_dim = None

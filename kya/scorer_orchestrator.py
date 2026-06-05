@@ -117,9 +117,12 @@ def _judge_fiddler_safety(
     r = check_safety(input_text=input_text)
     latency = int((time.time() - t0) * 1000)
     if r is None:
+        from kya.fiddler_bridge import get_last_failure_reason
+        reason = get_last_failure_reason("check_safety") or "unknown"
         return JudgeResult("fiddler_safety", "ERROR", None, None,
                            latency,
-                           error="fiddler API unavailable")
+                           error=f"fiddler API unavailable ({reason})",
+                           detail={"failure_reason": reason})
     verdict = "BREACH" if r["breached"] else "OK"
     # Fiddler ftl-safety scores the USER INPUT, so this judge votes
     # in the "input_safety" pool, NOT the "safety" pool. A BREACH
@@ -159,9 +162,12 @@ def _judge_fiddler_faithfulness(
     r = check_faithfulness(response_text=response, context=context)
     latency = int((time.time() - t0) * 1000)
     if r is None:
+        from kya.fiddler_bridge import get_last_failure_reason
+        reason = get_last_failure_reason("check_faithfulness") or "unknown"
         return JudgeResult("fiddler_faithfulness", "ERROR", None, None,
                            latency,
-                           error="fiddler API unavailable")
+                           error=f"fiddler API unavailable ({reason})",
+                           detail={"failure_reason": reason})
     verdict = "BREACH" if r["breached"] else "OK"
     return JudgeResult(
         "fiddler_faithfulness", verdict,

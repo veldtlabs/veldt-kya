@@ -106,7 +106,7 @@ jobs:
           python -m venv /tmp/v
           /tmp/v/bin/pip install --upgrade pip
           /tmp/v/bin/pip install dist/*.whl
-          /tmp/v/bin/pip install pytest psycopg2-binary pymysql duckdb duckdb-engine pytz prometheus_client cryptography
+          /tmp/v/bin/pip install pytest psycopg2-binary pymysql duckdb duckdb-engine pytz prometheus_client cryptography python-dotenv
           /tmp/v/bin/python -m pytest tests/ -v --tb=short
 
       - name: Smoke from installed wheel
@@ -253,6 +253,24 @@ jobs:
               register_phoenix_adapter()
               assert "arize_phoenix" in list_judges()
               print("judge OK: litellm + phoenix shim registered")
+          - extra: dotenv
+            verify: |
+              # The [dotenv] extra installs python-dotenv. `import kya`
+              # then calls load_dotenv(dotenv_path=Path.cwd()/.env,
+              # override=False) so a project-root .env populates
+              # os.environ before the LLM judges read provider keys.
+              # Bug B regression guard.
+              import os
+              import tempfile
+              with tempfile.TemporaryDirectory() as td:
+                  with open(os.path.join(td, ".env"), "w") as f:
+                      f.write("KYA_DOTENV_EXTRAS_TEST=loaded\n")
+                  os.chdir(td)
+                  import kya  # noqa: F401  -- the import IS the test
+                  assert os.environ.get("KYA_DOTENV_EXTRAS_TEST") == "loaded", (
+                      "Bug B regression: import kya did not load .env"
+                  )
+              print("dotenv OK: load_dotenv fired on import kya")
           - extra: all
             verify: |
               import prometheus_client

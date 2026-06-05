@@ -24,6 +24,41 @@ except ImportError:
     __version__ = "0.0.0+dev"
 
 
+# ── Bug B: auto-load .env so API keys reach our shims ──────────────
+# Several KYA adapters (fiddler_bridge, scorer_orchestrator's litellm
+# judges, kya_redteam's attacker LLM) read provider keys from os.environ
+# at call time. When KYA is imported into a process that didn't already
+# preload its .env (most CLI / pytest / notebook usage), check_safety
+# returned None silently and the judge surfaced as ERROR with latency=0,
+# even though the underlying issue was just "key never loaded into env".
+#
+# load_dotenv is a no-op when .env is absent and when python-dotenv
+# isn't installed, so this is safe in headless containers and the open
+# Apache-2.0 wheel stays clean of a hard dependency. Operators that
+# want the auto-load behaviour install with the `[dotenv]` extra.
+# Operators that want to opt out (e.g. CI that pre-injects env vars
+# and wants strict isolation) set KYA_DISABLE_DOTENV=1.
+try:
+    import os as _os
+    from pathlib import Path as _Path
+
+    if _os.environ.get("KYA_DISABLE_DOTENV", "").lower() not in ("1", "true", "yes"):
+        from dotenv import load_dotenv as _load_dotenv  # type: ignore
+        # Pin to CWD/.env explicitly. dotenv's default search walks the
+        # call stack to find a frame whose `__file__` is not dotenv's
+        # own — at import time that frame lands in kya/__init__.py's
+        # directory, so the default would then walk UP from site-
+        # packages toward the filesystem root looking for ANY .env.
+        # Constraining to `Path.cwd() / ".env"` keeps the behaviour
+        # predictable: the consumer's project root .env loads, nothing
+        # else. override=False so an operator-exported env var wins.
+        _load_dotenv(dotenv_path=_Path.cwd() / ".env", override=False)
+except ImportError:
+    pass
+except Exception:  # pragma: no cover — never break import on dotenv glitch
+    pass
+
+
 __doc__ = """KYA — Know Your Agents.
 
 Public surface
