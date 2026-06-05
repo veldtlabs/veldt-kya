@@ -6,6 +6,26 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-06-05
+
+### Added
+- **`kya.scoring.score_with_why()`** — regulation-agnostic OSS scorer
+  that composes KYA primitives (judge consensus, evidence chain,
+  delegation graph, authority) into a single `score` + `verdict` +
+  structured `why` explanation. Closed vocabulary of 21 primitive-
+  state strings (`WHY_VOCABULARY`) is mechanically enforced; the
+  forbidden-regulator-name list is derived from
+  `kya.compliance.REGIMES` so OSS strings stay regulation-agnostic
+  by construction.
+- **`why_codes` parallel array** on `ScoreWithWhy` — stable
+  UPPER_SNAKE_CASE identifiers (e.g. `EVIDENCE_VERIFIED`,
+  `FAITHFULNESS_BREACH`) that Pro's `regulator_pack.annotate()`
+  joins on. OSS wording changes never break Pro's compliance
+  mappings because Pro keys on codes, not English.
+
+This release unblocks `veldt-kya-pro >= 0.2.0` which adds the
+regulator pack + compliance-aware annotation layer.
+
 ## [0.2.1] — 2026-06-05
 
 ### Added
