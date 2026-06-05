@@ -6,27 +6,32 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-05
+
 ### Added
-- **`[dotenv]` install extra** — opt-in `python-dotenv` dependency. When
-  installed, `import kya` calls
-  `load_dotenv(dotenv_path=Path.cwd()/".env", override=False)` so a
-  project-root `.env` populates `os.environ` before fiddler_bridge /
-  scorer_orchestrator / kya_redteam read provider keys. No-op when the
-  extra isn't installed or when `KYA_DISABLE_DOTENV=1`.
+- `garak_real_detector` panel judge — opt-in via
+  `register_garak_real_detector_adapter()` (`pip install garak`).
+  Probe family propagates across `ThreadPoolExecutor` workers via
+  `attack_context()` (ContextVar).
+- Multi-LLM judge ensemble — `register_multi_llm_judge_adapter(models=[…])`
+  registers one `llm_judge::<sanitized>` judge per model.
+- `[dotenv]` extra — loads `Path.cwd()/".env"` at `import kya` so API
+  keys reach judges in CLI / pytest / notebook processes. Opt-out via
+  `KYA_DISABLE_DOTENV=1`.
+
+### Changed
+- **Breaking:** `refusal_heuristic` and `kya_attack_patterns` removed
+  from the default panel. Re-enable via
+  `register_refusal_heuristic_adapter()` /
+  `register_kya_attack_patterns_adapter()`.
 
 ### Fixed
-- **Fiddler failure-reason propagation.** Pre-fix, every `check_safety`
-  / `check_faithfulness` failure mode (no API key / `requests` missing /
-  HTTP exception / non-2xx status / JSON parse) collapsed to the same
-  opaque `error="fiddler API unavailable"` on the JudgeResult.
-  Operators couldn't tell config bug from network outage from upstream
-  4xx. Now each failure path records a specific reason
-  (`no_api_key`, `requests_not_installed`, `http_request_exception:
-  <ExceptionClass>`, `http_non_2xx: <code>`, `json_parse_failed`) via
-  a thread-local; the orchestrator surfaces the reason in
-  `JudgeResult.error` and `JudgeResult.detail["failure_reason"]`. The
-  reason is cleared on the next successful call so a transient failure
-  doesn't poison subsequent verdicts. Public reader:
+- Bundled judges no longer return `UNCLEAR` when `context=None`; they
+  score on `input_text` + `response` alone.
+- Fiddler failures record specific reasons (`no_api_key`,
+  `requests_not_installed`, `http_request_exception:<cls>`,
+  `http_non_2xx:<code>`, `json_parse_failed`) on
+  `JudgeResult.detail["failure_reason"]`. Read via
   `kya.fiddler_bridge.get_last_failure_reason(fn_name)`.
 - **Bug B — auto-load `.env` so API keys reach the LLM judges.**
   Without this fix, `import kya` in a CLI / pytest / notebook process
