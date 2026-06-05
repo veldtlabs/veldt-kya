@@ -1,0 +1,9 @@
+{
+  "name": "null_value",
+  "input": {
+    "a": null,
+    "b": "x"
+  },
+  "canonical": "{\"a\":null,\"b\":\"x\"}",
+  "payload_hash": "7f50a16d8ed0dc4a8890fb342067aae8fe8597dcd4a1fb44ddec0d86afdcc4e3"
+}

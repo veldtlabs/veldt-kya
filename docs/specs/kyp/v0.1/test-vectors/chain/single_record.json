@@ -1,0 +1,23 @@
+{
+  "name": "single_record",
+  "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "records": [
+    {
+      "invocation_id": 1,
+      "tenant_id": "00000000-0000-0000-0000-000000000001",
+      "evidence_kind": "system_message",
+      "payload": {
+        "content": "only record"
+      },
+      "payload_hash": "d7472bb70e0ab81dadc84cb4011f5e55bc61265d5f4525c4a537864677e808e2",
+      "prev_hash": null,
+      "signed_hash": "c996d532019b43b00fb1dff1f669169c69a34598e0ff63b89f4c7ac4512f21f8",
+      "signing_key_id": "test-v1"
+    }
+  ],
+  "expected_verification": {
+    "valid": true,
+    "broken_at": null,
+    "checked": 1
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kyp.dev/specs/v0.1/evidence-record.schema.json",
+  "title": "KYP Evidence Record v0.1",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "invocation_id",
+    "evidence_kind",
+    "payload",
+    "payload_hash",
+    "signed_hash",
+    "signing_key_id",
+    "occurred_at"
+  ],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36
+    },
+    "invocation_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "maxLength": 36
+    },
+    "parent_invocation_id": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "span_id": {
+      "type": ["string", "null"],
+      "maxLength": 32
+    },
+    "evidence_kind": {
+      "type": "string",
+      "enum": [
+        "prompt",
+        "response",
+        "tool_call",
+        "tool_result",
+        "delegation_message",
+        "hil_decision",
+        "system_message",
+        "judge_verdict",
+        "runtime_falco",
+        "runtime_tetragon",
+        "runtime_tracee",
+        "runtime_sysdig",
+        "runtime_osquery",
+        "runtime_auditd",
+        "runtime_k8s_audit",
+        "runtime_ebpf",
+        "autonomy_mavlink"
+      ]
+    },
+    "role": {
+      "type": ["string", "null"],
+      "maxLength": 20
+    },
+    "payload": {
+      "type": "object"
+    },
+    "payload_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload_size_bytes": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "prev_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "signed_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "signing_key_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ingested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": ["string", "null"],
+      "maxLength": 40
+    },
+    "data_classes": {
+      "type": ["array", "null"],
+      "items": { "type": "string" }
+    },
+    "redacted": {
+      "type": "boolean"
+    },
+    "redaction_reason": {
+      "type": ["string", "null"],
+      "maxLength": 100
+    },
+    "retention_until": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

@@ -178,14 +178,20 @@ def _warm_imports() -> dict:
             logger.warning("[REDTEAM-SIDECAR] LLM probe failed: %s", exc)
 
         # ── Target-vault key probe ──
+        # Use is_persistent_key_configured (NOT is_encryption_configured)
+        # so the dev fallback doesn't mask a missing prod key. The
+        # fallback always reports "configured" since v0.2.1 — fine for
+        # `pip install` ergonomics, wrong for prod observability.
         try:
-            from kya_redteam import is_encryption_configured
-            vault_ok = is_encryption_configured()
-            status["target_vault_key_configured"] = vault_ok
-            if not vault_ok:
-                msg = ("KYA_REDTEAM_SECRET_KEY not set — persistent target "
-                       "creation will fail (only ad-hoc target_endpoint+token "
-                       "campaigns will work).")
+            from kya_redteam import is_persistent_key_configured
+            persistent_ok = is_persistent_key_configured()
+            status["target_vault_key_configured"] = persistent_ok
+            if not persistent_ok:
+                msg = ("KYA_REDTEAM_SECRET_KEY not set — using a "
+                       "process-local dev key. Persistent target "
+                       "creation will succeed, but secrets will NOT "
+                       "decrypt after restart. Set the env var to a "
+                       "persistent Fernet key in production.")
                 status["warnings"].append(msg)
                 logger.warning("[REDTEAM-SIDECAR] %s", msg)
         except Exception as exc:

@@ -1,0 +1,9 @@
+{
+  "name": "unicode",
+  "input": {
+    "greeting": "h\u00e9llo w\u00f6rld",
+    "emoji": "rocket"
+  },
+  "canonical": "{\"emoji\":\"rocket\",\"greeting\":\"h\\u00e9llo w\\u00f6rld\"}",
+  "payload_hash": "e94f15555e3808301088a09d6ddcebd61ed7f488a5491860a3e0dfdf31d92c71"
+}
