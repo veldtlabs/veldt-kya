@@ -144,22 +144,58 @@ def init_storage(db) -> dict[str, Any]:
                     "with 'schema does not exist'.", _schema, _exc,
                 )
 
+    # PG-only: when KYA_VERSIONS_SCHEMA points at a non-default schema,
+    # has_table(name) without an explicit `schema=` arg checks the
+    # current_schema (typically `public`). The legacy tables live in
+    # `_LEGACY_MD.schema` (= the configured schema) so the probe must
+    # pass the same qualifier or it false-skips every legacy table —
+    # observed in the 4-DB e2e where kya_weight_overrides was reported
+    # as skipped while the table was already in prov_schema.
+    _probe_schema: str | None = None
+    if dialect == "postgresql":
+        try:
+            from ._portable import dialect_schema_qualifier
+            _probe_schema = dialect_schema_qualifier()
+        except Exception:  # noqa: BLE001
+            _probe_schema = None
+
     def _table_exists(name: str) -> bool:
         """Check the live catalog via the session's own connection — fresh
         engine connections may not see uncommitted DDL (DuckDB enforces
-        connection-isolated catalog visibility before commit)."""
+        connection-isolated catalog visibility before commit). On PG with
+        a non-default KYA_VERSIONS_SCHEMA, pass `schema=` so the probe
+        looks in the same place the table was created."""
         if sa_inspect is None:
             return False
+
+        def _check(insp) -> bool:
+            if insp.has_table(name, schema=_probe_schema):
+                return True
+            # Belt-and-braces: also try the default schema in case the
+            # caller's table-creation path ignored _probe_schema (older
+            # ensure_* helpers may bypass dialect_schema_qualifier).
+            # Warn loudly so the operator notices the divergence instead
+            # of seeing a silent success — otherwise this branch would
+            # hide "ensure_* ignored the qualifier" bugs.
+            if _probe_schema is not None and insp.has_table(name):
+                logger.warning(
+                    "[KYA-INIT] %s found in default schema, not the "
+                    "configured KYA_VERSIONS_SCHEMA=%r — an ensure_* "
+                    "helper likely bypassed the schema qualifier",
+                    name, _probe_schema,
+                )
+                return True
+            return False
+
         try:
-            insp = sa_inspect(db.connection())
-            return insp.has_table(name)
+            return _check(sa_inspect(db.connection()))
         except Exception:
             # Fallback to engine-level inspect (sufficient for SQLite/PG
             # where DDL is visible across connections immediately).
             if bind is None:
                 return False
             try:
-                return sa_inspect(bind).has_table(name)
+                return _check(sa_inspect(bind))
             except Exception:
                 return False
 

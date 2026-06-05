@@ -332,16 +332,24 @@ def _upsert_with_delta(
         from ._portable import qual_for_raw_sql
         qual = qual_for_raw_sql(db)
         table_ref = f"{qual}kya_user_trust"
+        # Explicit ::text casts on `:kind` are REQUIRED for psycopg3.
+        # Without them, the parameter appears as the first arg to
+        # `jsonb_build_object(:kind, 1)` and inside `ARRAY[:kind]` —
+        # both contexts that psycopg3's prepared-statement type
+        # inference flags as ambiguous (could be text, varchar, name,
+        # ...) → AmbiguousParameter at execute(). psycopg2 was lenient
+        # here; psycopg3 is stricter. Casting in-SQL is the portable
+        # fix that also makes the intent explicit.
         result = db.execute(
             text(f"""
                 INSERT INTO {table_ref}
                     (id, tenant_id, user_id, trust_score, signal_counts,
                      {ts_col}, updated_at)
                 VALUES (
-                    nextval('kya_user_trust_id_seq'),
+                    nextval('{qual}kya_user_trust_id_seq'),
                     :tid, :uid,
                     GREATEST({MIN_TRUST}, LEAST({MAX_TRUST}, {STARTING_TRUST} + :delta)),
-                    jsonb_build_object(:kind, 1),
+                    jsonb_build_object(CAST(:kind AS text), 1),
                     now(), now()
                 )
                 ON CONFLICT (tenant_id, user_id) DO UPDATE
@@ -350,9 +358,9 @@ def _upsert_with_delta(
                     signal_counts =
                         jsonb_set(
                             COALESCE({table_ref}.signal_counts, '{{}}'::jsonb),
-                            ARRAY[:kind],
+                            ARRAY[CAST(:kind AS text)],
                             to_jsonb(COALESCE(
-                                ({table_ref}.signal_counts->>:kind)::int, 0
+                                ({table_ref}.signal_counts->>CAST(:kind AS text))::int, 0
                             ) + 1)
                         ),
                     {ts_col} = now(),
