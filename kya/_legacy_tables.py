@@ -22,6 +22,8 @@ Tables defined:
 
 from __future__ import annotations
 
+import threading
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -38,6 +40,22 @@ from sqlalchemy import (
     func,
     text,
 )
+
+# Serializes every create_all call against the legacy tables. Required
+# because the DuckDB branch DETACHES partial indexes from the
+# module-level Table.indexes set during its create_all, and any
+# concurrent PG/SQLite/MySQL create_all on the same Table iterates the
+# same set (SQLAlchemy's CreateTable visitor walks `table.indexes`).
+# Without a process-wide lock the racing reader sees either:
+#   - RuntimeError: "Set changed size during iteration"
+#   - A silently lost partial index (detached when the racing thread
+#     observes the post-detach state and skips re-attach)
+#   - The original NotSupportedError (re-attached mid-create_all on
+#     the DuckDB side)
+# The lock is held only across the synchronous create_all + restore
+# window, which is fast (pure DDL). It does NOT serialize application
+# queries.
+_LEGACY_CREATE_LOCK = threading.RLock()
 
 from ._portable import (
     autoinc_id,
@@ -71,6 +89,20 @@ def create_legacy_tables(db, tables: list) -> None:
     Uses SQLAlchemy's `schema_translate_map` execution option which
     rewrites table-name qualifiers at SQL-emission time without rebuilding
     the Table objects.
+
+    DuckDB partial-index handling
+    -----------------------------
+    DuckDB's SQLAlchemy dialect (`duckdb_engine`) inherits from the PG
+    dialect, so any `Index(..., postgresql_where=...)` is honored on
+    DuckDB connections too — but DuckDB rejects partial indexes at
+    execution time (`Not implemented Error: Creating partial indexes
+    is not supported currently`). We detach such indexes from the
+    Table objects only for the duration of the DuckDB create_all
+    call, then re-attach them so PG/SQLite calls in the same process
+    are unaffected. Read-side dedup (`get_effective_weights`
+    ORDER BY id ASC + dict overwrite) handles the resulting
+    same-NULL-treated-as-distinct semantics on DuckDB exactly as it
+    already does on MySQL.
     """
     bind = db.connection()
     schema = dialect_schema_qualifier()  # read env at CALL time
@@ -114,7 +146,41 @@ def create_legacy_tables(db, tables: list) -> None:
         else:
             merged[_LEGACY_MD_IMPORT_SCHEMA] = target_schema
         target_bind = bind.execution_options(schema_translate_map=merged)
-    _LEGACY_MD.create_all(bind=target_bind, tables=tables)
+
+    # All paths hold _LEGACY_CREATE_LOCK because the detach branch
+    # mutates the shared Table.indexes set and SQLAlchemy's
+    # CreateTable visitor (PG/SQLite paths) iterates that same set
+    # concurrently in other workers.
+    with _LEGACY_CREATE_LOCK:
+        # Backends that need the partial index DETACHED before
+        # create_all:
+        #   - "duckdb": dialect inherits postgresql_where → rejects
+        #     partial indexes at execution time.
+        #   - "mysql": SA strips the dialect_where but still emits the
+        #     index, producing a non-partial UNIQUE(scope, key) that
+        #     ALSO blocks DIFFERENT tenants from sharing the same
+        #     (scope, key). This was a tenant-isolation regression.
+        # PG + SQLite both honor the partial WHERE and dedup correctly.
+        _strip_partial = dialect in ("duckdb", "mysql")
+        if _strip_partial:
+            _detached: list[tuple[Table, Index]] = []
+            for t in tables:
+                for idx in list(t.indexes):
+                    pg_where = idx.dialect_options.get(
+                        "postgresql", {}).get("where")
+                    sqlite_where = idx.dialect_options.get(
+                        "sqlite", {}).get("where")
+                    if pg_where is not None or sqlite_where is not None:
+                        t.indexes.discard(idx)
+                        _detached.append((t, idx))
+            try:
+                _LEGACY_MD.create_all(
+                    bind=target_bind, tables=tables)
+            finally:
+                for t, idx in _detached:
+                    t.indexes.add(idx)
+        else:
+            _LEGACY_MD.create_all(bind=target_bind, tables=tables)
 
 
 # 1. kya_agent_aliases — alias → canonical agent_key
@@ -196,10 +262,14 @@ kya_weight_overrides = Table(
     # platform-level writes accumulate duplicate rows for the same
     # (scope, key) — observed and documented in the three-channel
     # composition witness (May 2026). The WHERE clause is supported on
-    # PG 9.0+ and SQLite 3.8+. MySQL ignores postgresql_where; on MySQL
-    # the same-NULL-treats-as-distinct semantics persist (acceptable
-    # known limit; multiple platform-level rows are caught read-side by
-    # ORDER BY id DESC LIMIT 1).
+    # PG 9.0+ and SQLite 3.8+.
+    #
+    # MySQL + DuckDB cannot use the partial index — see
+    # create_legacy_tables: MySQL would emit it as a non-partial UNIQUE
+    # (blocks DIFFERENT tenants from sharing (scope, key)) and DuckDB
+    # rejects partial indexes outright. Both backends fall back to
+    # read-side dedup in get_effective_weights (ORDER BY id ASC + dict
+    # overwrite).
     Index("uq_kya_weight_overrides_platform_scope_key",
           "scope", "key",
           unique=True,
