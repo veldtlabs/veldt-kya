@@ -1,0 +1,17 @@
+{
+  "name": "with_nested_list",
+  "input": {
+    "items": [
+      {
+        "z": 1,
+        "a": 2
+      },
+      {
+        "a": 3,
+        "b": 4
+      }
+    ]
+  },
+  "canonical": "{\"items\":[{\"a\":2,\"z\":1},{\"a\":3,\"b\":4}]}",
+  "payload_hash": "d5b415786a473d9fa1bbe21533e5b432b85c3035f7dc6573a3601b94c595df6c"
+}

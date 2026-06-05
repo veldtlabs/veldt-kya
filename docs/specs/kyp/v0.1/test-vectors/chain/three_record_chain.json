@@ -1,0 +1,47 @@
+{
+  "name": "three_record_chain",
+  "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "records": [
+    {
+      "invocation_id": 1,
+      "tenant_id": "00000000-0000-0000-0000-000000000001",
+      "evidence_kind": "system_message",
+      "payload": {
+        "content": "first"
+      },
+      "payload_hash": "308668c8d4c2c1a29de339c75601a28e80a92b18b7ea51e221b50f0e1219cf7f",
+      "prev_hash": null,
+      "signed_hash": "2a585641e8de5e98535c3d3d9eb773b889bb772ba57f891672a33aa71c06780d",
+      "signing_key_id": "test-v1"
+    },
+    {
+      "invocation_id": 1,
+      "tenant_id": "00000000-0000-0000-0000-000000000001",
+      "evidence_kind": "system_message",
+      "payload": {
+        "content": "second"
+      },
+      "payload_hash": "5e1f15b42b5e2bcaae097ca0c5e63026992683d850994192937163ab10baaca2",
+      "prev_hash": "2a585641e8de5e98535c3d3d9eb773b889bb772ba57f891672a33aa71c06780d",
+      "signed_hash": "d72cb60d05a33e03ff6159bbabacea4b7f41d60db1c3aadd7282cdb66f5e002e",
+      "signing_key_id": "test-v1"
+    },
+    {
+      "invocation_id": 1,
+      "tenant_id": "00000000-0000-0000-0000-000000000001",
+      "evidence_kind": "system_message",
+      "payload": {
+        "content": "third"
+      },
+      "payload_hash": "72ed22a1d1748561054f7f4d9a66389e7d0d98d50baa50de2ef6d9b5012031fb",
+      "prev_hash": "d72cb60d05a33e03ff6159bbabacea4b7f41d60db1c3aadd7282cdb66f5e002e",
+      "signed_hash": "4bc527ace2c51fff150841d2b0af3ade07b39ebee63fd0f367e90c80d19eb876",
+      "signing_key_id": "test-v1"
+    }
+  ],
+  "expected_verification": {
+    "valid": true,
+    "broken_at": null,
+    "checked": 3
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "large_int",
+  "input": {
+    "max_int64": 9223372036854775807,
+    "min_int64": -9223372036854775808
+  },
+  "canonical": "{\"max_int64\":9223372036854775807,\"min_int64\":-9223372036854775808}",
+  "payload_hash": "6eac6303446ba1ae8169d3b16dfdf994ff9d47dff33a1aab92515a5a5d6d9600"
+}

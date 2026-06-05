@@ -123,10 +123,11 @@ def get_effective_weights(db, scope: str, tenant_id: str | None = None) -> dict:
     #
     # ORDER BY id ASC: if a backend somehow ended up with multiple
     # platform-level rows for the same (scope, key) — possible on
-    # MySQL where the partial unique index in _legacy_tables.py is
-    # silently ignored — the LATEST row wins after we iterate (dict
-    # overwrite). On PG + SQLite the partial index prevents duplicates
-    # at write time, so ORDER BY is harmless there.
+    # MySQL (partial unique index silently ignored) or DuckDB (partial
+    # index detached at create-time by create_legacy_tables; see the
+    # DuckDB branch there) — the LATEST row wins after we iterate
+    # (dict overwrite). On PG + SQLite the partial index prevents
+    # duplicates at write time, so ORDER BY is harmless there.
     from sqlalchemy import and_
     from sqlalchemy import select as sa_select
 
