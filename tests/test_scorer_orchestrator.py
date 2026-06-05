@@ -952,3 +952,84 @@ def test_refusal_phrases_recognize_modern_safety_tuned_phrasings():
         assert not is_likely_refusal(txt), (
             f"is_likely_refusal false-positive on benign text: {txt!r}"
         )
+
+
+# ── Step A regression: keyword judges off by default ─────────────────
+# Empirical 2026-06-04 sweep showed kya_attack_patterns has 2/3 FP rate
+# on benign refusals and refusal_heuristic abstains on 5/5 modern
+# refusal phrasings. Both are removed from the default panel and only
+# come back via explicit opt-in registrars.
+
+def test_kya_attack_patterns_not_in_default_panel(tmp_path):
+    """Subprocess-isolated check that the import-time default panel
+    contains neither kya_attack_patterns nor refusal_heuristic.
+
+    Using a subprocess (rather than importlib.reload) sidesteps the
+    autouse-fixture's dict-reference swap and matches how a fresh
+    `import kya` would behave for a real customer.
+    """
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # Hermetic path resolution — works regardless of pytest's cwd
+    # (rootdir, tests/, or repo root) because we anchor to this file.
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    script = (
+        "import sys, json;"
+        f"sys.path.insert(0, {repo_root!r});"
+        "from kya.scorer_orchestrator import list_judges;"
+        "print(json.dumps(list_judges()))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert out.returncode == 0, (
+        f"subprocess failed:\nstdout={out.stdout}\nstderr={out.stderr}"
+    )
+    defaults = json.loads(out.stdout.strip().splitlines()[-1])
+    assert "kya_attack_patterns" not in defaults, (
+        f"Step A regression: kya_attack_patterns auto-registered. "
+        f"Defaults: {defaults}"
+    )
+    assert "refusal_heuristic" not in defaults, (
+        f"Step A regression: refusal_heuristic auto-registered. "
+        f"Defaults: {defaults}"
+    )
+
+    # Both opt-in registrars must still exist and reference the
+    # original judge functions.
+    from kya.scorer_orchestrator import (  # noqa: F401
+        _judge_kya_attack_patterns,
+        _judge_refusal_heuristic,
+        register_kya_attack_patterns_adapter,
+        register_refusal_heuristic_adapter,
+    )
+
+
+def test_register_kya_attack_patterns_adapter_opt_in_works():
+    """Operators who want the old judge back can opt in via the
+    registrar. The opt-in path must register the same callable that
+    was previously auto-registered."""
+    from kya.scorer_orchestrator import (
+        _judge_kya_attack_patterns,
+        register_kya_attack_patterns_adapter,
+    )
+    assert "kya_attack_patterns" not in _JUDGES
+    register_kya_attack_patterns_adapter()
+    assert "kya_attack_patterns" in _JUDGES
+    assert _JUDGES["kya_attack_patterns"] is _judge_kya_attack_patterns
+
+
+def test_register_refusal_heuristic_adapter_opt_in_works():
+    """Same for refusal_heuristic — opt-in returns the original judge."""
+    from kya.scorer_orchestrator import (
+        _judge_refusal_heuristic,
+        register_refusal_heuristic_adapter,
+    )
+    assert "refusal_heuristic" not in _JUDGES
+    register_refusal_heuristic_adapter()
+    assert "refusal_heuristic" in _JUDGES
+    assert _JUDGES["refusal_heuristic"] is _judge_refusal_heuristic

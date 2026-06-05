@@ -645,10 +645,19 @@ Default panel splits into three tiers:
 
 **Bundled** (no setup, ships with `pip install veldt-kya`):
 `openai_judge` (uses your existing `OPENAI_API_KEY` if set),
-`refusal_heuristic` (substring detection, no API call), `kya_pyrit`
-(output data-leak scanning), `kya_attack_patterns` (encoded
-payloads, exfil paths, indirect injection, PII smuggling, role
-hijack, authority claims, external redirects).
+`kya_pyrit` (output data-leak / PII scanning),
+`garak_detector` (Garak native-probe substring detector — auto-detects
+known probe families, scores attack success).
+
+**Legacy keyword judges (opt-in only)** — empirical 2026-06-04 sweep
+showed `refusal_heuristic` and `kya_attack_patterns` (both hand-curated
+substring/regex lists) drift quickly as model phrasings evolve. They
+were demoted from the default panel; call
+`register_refusal_heuristic_adapter()` or
+`register_kya_attack_patterns_adapter()` only if you specifically want
+their narrow coverage (e.g. PII smuggling / exfiltration patterns
+Fiddler is known to miss). For generic refusal/jailbreak detection
+prefer `openai_judge` and `garak_detector`.
 
 **Optional extras** (one install command, no external service):
 `kya_presidio` (PII detector) via `pip install veldt-kya[presidio]`.
