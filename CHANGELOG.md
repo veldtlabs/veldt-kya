@@ -6,6 +6,52 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-06-05
+
+### Added
+- **KYP v0.1 specification** under `docs/specs/kyp/v0.1/` — wire
+  format, canonicalization, and HMAC signing scheme defined for
+  language-agnostic implementation. Ships with JSON Schema, 15
+  canonicalization vectors + signing + chain vectors, and a pytest
+  harness (`tests/test_kyp_spec_v0_1_vectors.py`) that mechanically
+  binds the spec to the reference implementation.
+- `kya_redteam` **dev-fallback Fernet key** — `pip install veldt-kya`
+  now works end-to-end without `KYA_REDTEAM_SECRET_KEY` set.
+  Process-local random key generated on first use with a loud
+  warning; production deployments still set the env var to a
+  KMS-managed key. Same pattern as `kya/evidence.py:_get_signing_key`.
+- `is_persistent_key_configured()` in `kya_redteam` — distinguishes
+  the ephemeral dev fallback from an operator-set production key for
+  health-endpoint observability.
+- Pre-commit hook config (`.pre-commit-config.yaml`) wiring
+  `astral-sh/ruff-pre-commit` so contributors catch lint locally.
+
+### Fixed
+- **DuckDB partial-index** — `init_storage` no longer false-fails on
+  DuckDB. `create_legacy_tables` detaches partial indexes for the
+  DuckDB `create_all` window and re-attaches them so PG/SQLite
+  sessions in the same process still get them. Process-wide lock
+  protects the shared `Table.indexes` set.
+- **MySQL tenant-isolation regression** — partial indexes were being
+  emitted as non-partial `UNIQUE (scope, key)` on MySQL, blocking
+  DIFFERENT tenants from sharing the same `(scope, key)`. Detach
+  branch now fires for MySQL too.
+- **PG `kya_user_trust` `psycopg.errors.AmbiguousParameter`** — the
+  raw-SQL `jsonb_build_object(:kind, 1)` / `ARRAY[:kind]` constructs
+  let psycopg3 fail OID inference. Explicit `CAST(:kind AS text)` at
+  the three call sites.
+- **PG `init_storage` false-skip on non-default `KYA_VERSIONS_SCHEMA`**
+   — `has_table(name)` without `schema=` only checked
+  `current_schema()`. Now reads `dialect_schema_qualifier()` once and
+  passes it; falls back to default schema with a `logger.warning` so
+  operators notice "ensure_* ignored the qualifier" bugs.
+- `kya_redteam.decrypt_secret` — `InvalidToken` now translated to
+  `SecretConfigError` with an actionable hint covering three
+  scenarios (dev-key promotion, current-key rotation, bad historical
+  key).
+- `_canonical_default` UUID branch — emits canonical hyphenated form
+  on the wire, not Python's `repr()`.
+
 ## [0.2.0] — 2026-06-05
 
 ### Added
