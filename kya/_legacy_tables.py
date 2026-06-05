@@ -41,6 +41,14 @@ from sqlalchemy import (
     text,
 )
 
+from ._portable import (
+    autoinc_id,
+    dialect_schema_qualifier,
+    json_or_jsonb,
+    portable_bigint,
+    uuid_or_string,
+)
+
 # Serializes every create_all call against the legacy tables. Required
 # because the DuckDB branch DETACHES partial indexes from the
 # module-level Table.indexes set during its create_all, and any
@@ -56,14 +64,6 @@ from sqlalchemy import (
 # window, which is fast (pure DDL). It does NOT serialize application
 # queries.
 _LEGACY_CREATE_LOCK = threading.RLock()
-
-from ._portable import (
-    autoinc_id,
-    dialect_schema_qualifier,
-    json_or_jsonb,
-    portable_bigint,
-    uuid_or_string,
-)
 
 # All legacy tables share one MetaData so create_all can be batched.
 # Schema is set to whatever `dialect_schema_qualifier()` returns at

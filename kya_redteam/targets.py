@@ -186,17 +186,60 @@ class SecretConfigError(RuntimeError):
     fail closed rather than store plaintext."""
 
 
+_DEV_KEY_WARNING_LOGGED = False
+_DEV_KEY_LOCK = __import__("threading").Lock()
+
+
 def _resolve_key(key_id: str) -> bytes | None:
     """Find the Fernet key for a given key_id. Current key under
     KYA_REDTEAM_SECRET_KEY; rotated keys under
-    KYA_REDTEAM_SECRET_KEY_<key_id>."""
+    KYA_REDTEAM_SECRET_KEY_<key_id>.
+
+    For the CURRENT key only, falls back to a process-local random
+    Fernet key when no env var is set so `pip install veldt-kya` works
+    end-to-end without operator config. The fallback logs a loud
+    warning and does NOT survive process restart — production
+    deployments MUST set the env var to a persistent KMS-managed key.
+    Historical key_ids never get the dev fallback (auto-generating a
+    key for a rotated id would silently corrupt decryption).
+    """
     if key_id == _CURRENT_KEY_ID:
         raw = os.environ.get("KYA_REDTEAM_SECRET_KEY", "").strip()
     else:
         raw = os.environ.get(f"KYA_REDTEAM_SECRET_KEY_{key_id}", "").strip()
-    if not raw:
+    if raw:
+        return raw.encode()
+
+    if key_id != _CURRENT_KEY_ID:
+        # Rotated/historical key_id with no env var — never auto-gen.
         return None
-    return raw.encode()
+
+    # Dev fallback for the current key. Process-local Fernet key,
+    # cached on the resolver itself so successive calls in the same
+    # process see the same key. _DEV_KEY_LOCK closes the TOCTOU window
+    # where two threads first-calling concurrently could each call
+    # Fernet.generate_key() and the second setattr would clobber the
+    # first — making any ciphertext produced by the loser undecryptable.
+    global _DEV_KEY_WARNING_LOGGED
+    with _DEV_KEY_LOCK:
+        if not hasattr(_resolve_key, "_dev_key"):
+            try:
+                from cryptography.fernet import Fernet
+            except ImportError:
+                return None
+            _resolve_key._dev_key = Fernet.generate_key()
+        if not _DEV_KEY_WARNING_LOGGED:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[KYA-REDTEAM] KYA_REDTEAM_SECRET_KEY not set — using "
+                "process-local dev key. Previously-stored target secrets "
+                "will NOT decrypt after restart. For production, generate "
+                "and persist a Fernet key in your secret manager: "
+                "python -c \"from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())\""
+            )
+            _DEV_KEY_WARNING_LOGGED = True
+        return _resolve_key._dev_key
 
 
 def _fernet(key: bytes):
@@ -210,16 +253,21 @@ def _fernet(key: bytes):
 
 
 def encrypt_secret(plaintext: str) -> tuple[bytes, str]:
-    """Encrypt under the current key. Returns (ciphertext, key_id)."""
+    """Encrypt under the current key. Returns (ciphertext, key_id).
+
+    Falls back to a process-local dev key when KYA_REDTEAM_SECRET_KEY
+    is unset (with a loud warning logged once) so first-touch works
+    end-to-end. The only SecretConfigError path now is when the
+    `cryptography` package itself is missing.
+    """
     if not plaintext:
         raise ValueError("encrypt_secret called with empty plaintext")
     key = _resolve_key(_CURRENT_KEY_ID)
     if key is None:
+        # Only path here: `cryptography` ImportError in the dev
+        # fallback. Re-raise with the actionable install hint.
         raise SecretConfigError(
-            "KYA_REDTEAM_SECRET_KEY is not set — refusing to store target "
-            "secret as plaintext. Generate one with: "
-            "python -c \"from cryptography.fernet import Fernet; "
-            "print(Fernet.generate_key().decode())\" and set the env var."
+            "kya_redteam target encryption requires `pip install cryptography`."
         )
     return _fernet(key).encrypt(plaintext.encode()), _CURRENT_KEY_ID
 
@@ -232,12 +280,71 @@ def decrypt_secret(ciphertext: bytes, key_id: str) -> str:
             f"no matching env var (expected "
             f"{'KYA_REDTEAM_SECRET_KEY' if key_id == _CURRENT_KEY_ID else 'KYA_REDTEAM_SECRET_KEY_' + key_id})"
         )
-    return _fernet(key).decrypt(ciphertext).decode()
+    # Soft-import so this module loads even when `cryptography` isn't
+    # installed — keeps import-time light. If we got `key` from
+    # `_resolve_key`, `cryptography` is installed (the dev fallback
+    # path imports it; env-var path doesn't need it for resolution).
+    from cryptography.fernet import InvalidToken
+    try:
+        return _fernet(key).decrypt(ciphertext).decode()
+    except InvalidToken as exc:
+        # Narrowed to InvalidToken specifically so we don't swallow
+        # SecretConfigError from `_fernet()`'s ImportError path or
+        # any unexpected runtime failure. InvalidToken is the ONLY
+        # decrypt-failure mode this branch should catch — the most
+        # likely cause is the "dev-key-then-env-var" promotion path
+        # where the ciphertext was encrypted with the ephemeral
+        # process-local key but the env var now supplies a different
+        # one. We can't recover that ciphertext; the operator must
+        # re-enroll the affected targets.
+        is_dev_key = (
+            key_id == _CURRENT_KEY_ID
+            and not os.environ.get("KYA_REDTEAM_SECRET_KEY", "").strip()
+        )
+        if is_dev_key:
+            hint = (
+                "encrypted under a process-local dev key (this restart "
+                "generated a new key; original is gone). Re-enroll "
+                "affected targets."
+            )
+        elif key_id == _CURRENT_KEY_ID:
+            hint = (
+                "KYA_REDTEAM_SECRET_KEY may have rotated since this "
+                "ciphertext was written. If you previously ran without "
+                "the env var, the dev-key ciphertext cannot be decrypted "
+                "under the new env-supplied key. Re-enroll affected "
+                "targets, or restore the old key in KYA_REDTEAM_SECRET_KEY_"
+                f"{key_id}."
+            )
+        else:
+            hint = (
+                f"ciphertext was stamped key_id='{key_id}' but the "
+                f"env-supplied key fails to decrypt it. Confirm "
+                f"KYA_REDTEAM_SECRET_KEY_{key_id} holds the correct "
+                "historical key."
+            )
+        raise SecretConfigError(
+            f"Cannot decrypt redteam target secret: {hint}"
+        ) from exc
 
 
 def is_encryption_configured() -> bool:
-    """Quick check for the health endpoint."""
+    """Quick check for the health endpoint. With the dev fallback this
+    is always True; use ``is_persistent_key_configured()`` to
+    distinguish prod-grade configuration from the ephemeral dev key.
+    """
     return _resolve_key(_CURRENT_KEY_ID) is not None
+
+
+def is_persistent_key_configured() -> bool:
+    """True only when KYA_REDTEAM_SECRET_KEY is set to a non-empty
+    value (i.e., the operator supplied a persistent key, not the
+    process-local dev fallback). Use this in production health
+    endpoints to gate "this deployment is encrypting at rest with a
+    KMS-managed key" from "this is running on a dev fallback that
+    won't survive restart".
+    """
+    return bool(os.environ.get("KYA_REDTEAM_SECRET_KEY", "").strip())
 
 
 # ── Target CRUD ─────────────────────────────────────────────────────

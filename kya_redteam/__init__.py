@@ -138,6 +138,7 @@ from .targets import (
     get_response_parser,
     get_target,
     is_encryption_configured,
+    is_persistent_key_configured,
     list_targets,
     materialize_target,
     rotate_encryption_key_for_tenant,
@@ -183,6 +184,7 @@ __all__ = [
     # persistent targets with encrypted secrets
     "VALID_AUTH_KINDS", "VALID_PARSER_KINDS",
     "SecretConfigError", "is_encryption_configured",
+    "is_persistent_key_configured",
     "ensure_target_tables",
     "create_target", "get_target", "list_targets",
     "update_target", "delete_target", "verify_target",
