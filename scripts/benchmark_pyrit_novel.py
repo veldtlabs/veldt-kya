@@ -291,26 +291,32 @@ def main():
                         default="mixed")
     parser.add_argument("--results-dir",
                         default=str(_REPO_ROOT / "bench_results"))
-    # Panel composition — every opt-in exposed as a flag so the panel
-    # is reproducible from the recorded args. Defaults preserve the
-    # original benchmark behaviour (Fiddler skipped, all opt-ins on).
-    parser.add_argument("--skip-fiddler", action="store_true", default=True,
-                        help="Pop Fiddler judges from the panel "
-                             "(default on — preserves quota).")
-    parser.add_argument("--include-fiddler", dest="skip_fiddler",
-                        action="store_false",
-                        help="Override — let Fiddler judges vote.")
-    parser.add_argument("--skip-phoenix", action="store_true")
-    parser.add_argument("--skip-pyrit-jailbreak", action="store_true")
-    parser.add_argument("--skip-garak-real", action="store_true")
+    # Panel composition — BooleanOptionalAction (Python ≥3.9) so
+    # --flag / --no-flag is the canonical pair. Avoids the order-
+    # dependent --skip-X + --include-X duplication the reviewer
+    # flagged in the previous commit.
+    parser.add_argument("--fiddler",
+                        action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="Include Fiddler judges (default off — "
+                             "preserves quota).")
+    parser.add_argument("--phoenix",
+                        action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--pyrit-jailbreak",
+                        action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--garak-real",
+                        action=argparse.BooleanOptionalAction,
+                        default=True)
     args = parser.parse_args()
 
     _setup_env()
     panel = _register_panel(
-        skip_fiddler=args.skip_fiddler,
-        skip_phoenix=args.skip_phoenix,
-        skip_pyrit_jailbreak=args.skip_pyrit_jailbreak,
-        skip_garak_real=args.skip_garak_real,
+        skip_fiddler=not args.fiddler,
+        skip_phoenix=not args.phoenix,
+        skip_pyrit_jailbreak=not args.pyrit_jailbreak,
+        skip_garak_real=not args.garak_real,
     )
     print(f"[BENCH-PYRIT] panel ({len(panel)}): {panel}")
     print(f"[BENCH-PYRIT] attacker: {args.attacker_model}")
@@ -369,6 +375,9 @@ def main():
         "conversations": args.conversations,
         "turns_per_conv": args.turns_per_conv,
         "persona": args.persona,
+        # Persist the full argparse namespace (reviewer flag) so the
+        # panel-composition decision is reconstructible from JSON.
+        "args": vars(args),
         "aggregate": asdict(agg),
         "target_http_sends": target.http_sends_total,
         "target_http_failures": target.http_send_failures,
@@ -383,7 +392,7 @@ def main():
         "",
         f"Attacker: `{args.attacker_model}`",
         f"Target:   `{args.target_model}`",
-        f"Conversations: {args.total_convs if False else agg.total_convs}",
+        f"Conversations: {agg.total_convs}",
         f"Turns/conv max: {args.turns_per_conv}, persona: {args.persona}",
         f"Panel: {panel}",
         "",

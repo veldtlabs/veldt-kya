@@ -69,24 +69,49 @@ class Aggregate:
     per_family: dict[str, dict] = field(default_factory=dict)
 
 
-class _NullTarget:
-    """Wraps the actual HttpAgentTarget so we can count attempts via
-    its http_sends_total + http_send_failures counters. We delegate
-    .send() through to a live LiteLLM target."""
+class _LiteLLMBenchmarkTarget:
+    """Wraps a LiteLLM-routed model so we can count attempts via the
+    http_sends_total / http_send_failures counters Garak expects, plus
+    enforce a hard cap on real target calls per family.
+
+    The cap is the key budget control: Garak's probe families generate
+    100-500 attempts internally (no easy mid-probe abort), so without a
+    target-side cap a single family can blow the run's target budget.
+    When `family_cap` is set and `family_calls_this_window` exceeds it,
+    `.send()` returns an empty TargetResponse without hitting the
+    network — Garak treats that as a no-reply and moves on.
+    """
 
     def __init__(self, model: str, max_tokens: int = 200,
-                 temperature: float = 0.0):
+                 temperature: float = 0.0,
+                 family_cap: int | None = None):
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.http_sends_total = 0
         self.http_send_failures = 0
+        self.family_cap = family_cap  # per-family hard cap
+        self.family_calls_this_window = 0
         from kya_redteam.pyrit_target import TargetResponse  # noqa: F401
         self._TargetResponse = TargetResponse
 
+    def reset_family_window(self) -> None:
+        """Call before driving a new family — resets the per-family
+        call counter. Does NOT reset http_sends_total (cumulative)."""
+        self.family_calls_this_window = 0
+
     def send(self, prompt: str):
+        # Hard cap — short-circuit without a network call when the
+        # current family has already burned its budget.
+        if (self.family_cap is not None
+                and self.family_calls_this_window >= self.family_cap):
+            return self._TargetResponse(
+                output="", tools_used=[], events=[],
+                error="benchmark family_cap reached",
+            )
         import litellm
         self.http_sends_total += 1
+        self.family_calls_this_window += 1
         try:
             r = litellm.completion(
                 model=self.model,
@@ -171,38 +196,31 @@ GARAK_FAMILIES = [
 
 
 def _drive_one_family(family: str, target, *, attempt_cap: int = 250):
-    """Walk every concrete probe in the family, run each via
-    `run_probe_via_garak`, yield (probe_class, attempt_dict) tuples
-    until the cap is reached."""
+    """Drive ONE Garak probe family against `target`, yield
+    (probe_class, attempt_dict, detector_name) tuples up to attempt_cap.
 
-    from kya_redteam.garak_runtime import (
-        run_probe_via_garak,
-    )
+    Calls `run_probe_via_garak(threshold=0.0)` ONCE — that single call
+    captures every attempt (positive AND negative) in the family because
+    threshold=0.0 means "include any score >= 0". The prior version
+    called run_probe_via_garak twice (threshold=0.5 then threshold=0.0),
+    doubling target cost for zero added information.
 
-    # Enumerate concrete probes in the family. _resolve_probe returns
-    # one; for a fuller sweep we'd iterate, but the existing helper
-    # picks the first concrete class with a primary_detector — that's
-    # enough variety for the 1800-attempt budget without exploding
-    # cost per family.
-    seen = 0
+    The target's per-family hard cap (target.family_cap) acts as the
+    real budget control — Garak generates 100-500 prompts internally
+    per family with no easy mid-probe abort, so the cap on target.send
+    is the only way to actually stop spending mid-family.
+    """
+    from kya_redteam.garak_runtime import run_probe_via_garak
+
+    if hasattr(target, "reset_family_window"):
+        target.reset_family_window()
+
     try:
-        result = run_probe_via_garak(family, target)
+        result_all = run_probe_via_garak(family, target, threshold=0.0)
     except Exception as exc:
         logging.warning("[BENCH] family %s failed: %s", family, exc)
         return
 
-    # `run_probe_via_garak` returns aggregated hits; for individual-
-    # attempt scoring we re-derive the attempts via a second pass
-    # that walks the probe machinery. The simpler short-cut: the
-    # hits list already contains (prompt, response, score) tuples
-    # for each ATTEMPT that scored above threshold; clean attempts
-    # (score < threshold) aren't surfaced. For accuracy measurement
-    # we need both pos + neg, so re-run with threshold=0.0 to keep
-    # every attempt.
-    try:
-        result_all = run_probe_via_garak(family, target, threshold=0.0)
-    except Exception:
-        result_all = result
     hits = result_all.get("hits", []) or []
     for idx, h in enumerate(hits[:attempt_cap]):
         yield (result_all.get("probe_class", "?"), h,
@@ -242,33 +260,45 @@ def main():
                         help="Cap attempts per family.")
     # Panel composition — every opt-in is exposed as a CLI flag so the
     # operator picks the panel rather than the script picking for them.
-    # Defaults preserve the current behaviour (Fiddler skipped to
-    # protect quota, all opt-ins registered).
-    parser.add_argument("--skip-fiddler", action="store_true", default=True,
-                        help="Pop fiddler_safety + fiddler_faithfulness "
-                             "from the panel (default: on, preserves "
-                             "quota).")
-    parser.add_argument("--include-fiddler", dest="skip_fiddler",
-                        action="store_false",
-                        help="Override --skip-fiddler — let Fiddler "
-                             "judges vote (burns FIDDLER_API_KEY quota).")
-    parser.add_argument("--skip-phoenix", action="store_true",
-                        help="Do NOT register the arize_phoenix LLM "
+    # Using BooleanOptionalAction so --fiddler / --no-fiddler is the
+    # canonical pair (Python ≥3.9). Previous paired-flag approach
+    # (--skip-fiddler + --include-fiddler sharing dest) was order-
+    # dependent — reviewer flagged the bug.
+    parser.add_argument("--fiddler",
+                        action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="Include the Fiddler safety + faithfulness "
+                             "judges in the panel (default off — "
+                             "preserves FIDDLER_API_KEY quota).")
+    parser.add_argument("--phoenix",
+                        action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Register the arize_phoenix LLM judge.")
+    parser.add_argument("--pyrit-jailbreak",
+                        action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Register the pyrit_jailbreak_scorer LLM "
                              "judge.")
-    parser.add_argument("--skip-pyrit-jailbreak", action="store_true",
-                        help="Do NOT register the pyrit_jailbreak_scorer "
-                             "LLM judge.")
-    parser.add_argument("--skip-garak-real", action="store_true",
-                        help="Do NOT register the garak_real_detector "
-                             "(real-Garak primary_detector judge).")
+    parser.add_argument("--garak-real",
+                        action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Register the garak_real_detector (real-"
+                             "Garak primary_detector judge).")
+    # Per-family target-call cap (real budget control — Garak families
+    # generate 100-500 prompts internally; without this cap a single
+    # family blows the run budget).
+    parser.add_argument("--per-family-target-cap", type=int, default=200,
+                        help="Hard cap on target HTTP calls per family. "
+                             "Beyond this, target.send returns an empty "
+                             "response without a network call.")
     args = parser.parse_args()
 
     _setup_env()
     panel = _register_panel(
-        skip_fiddler=args.skip_fiddler,
-        skip_phoenix=args.skip_phoenix,
-        skip_pyrit_jailbreak=args.skip_pyrit_jailbreak,
-        skip_garak_real=args.skip_garak_real,
+        skip_fiddler=not args.fiddler,
+        skip_phoenix=not args.phoenix,
+        skip_pyrit_jailbreak=not args.pyrit_jailbreak,
+        skip_garak_real=not args.garak_real,
     )
     print(f"[BENCH] panel ({len(panel)}): {panel}")
 
@@ -277,7 +307,10 @@ def main():
         print("[BENCH] FATAL: garak not available", file=sys.stderr)
         sys.exit(2)
 
-    target = _NullTarget(args.target_model)
+    target = _LiteLLMBenchmarkTarget(
+        args.target_model,
+        family_cap=args.per_family_target_cap,
+    )
     agg = Aggregate()
     attempt_records: list[AttemptVerdict] = []
 
@@ -368,6 +401,10 @@ def main():
         "target_model": args.target_model,
         "panel": panel,
         "families_attempted": args.families,
+        # Persist the full argparse namespace so future operators can
+        # reconstruct the panel + cap + family list from the JSON
+        # alone. (Reviewer flag — was missing from the prior commit.)
+        "args": vars(args),
         "aggregate": asdict(agg),
         "attempt_count": agg.total_attempts,
         "garak_landed_rate": (
