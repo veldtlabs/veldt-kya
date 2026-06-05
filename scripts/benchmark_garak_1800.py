@@ -44,14 +44,34 @@ class AttemptVerdict:
     family: str
     probe_class: str
     detector: str
+    # Full text — NOT truncated. Operator + verifier need the full
+    # input + full target response to audit any disagreement between
+    # garak's ground-truth verdict and the panel consensus, and to
+    # reproduce the panel score offline. Preview fields kept for
+    # quick-scan summaries.
+    prompt_full: str
+    response_full: str
     prompt_preview: str
     response_preview: str
     garak_score: float
     garak_breached: bool   # ground truth
     panel_consensus: str
     panel_per_dim: dict[str, str]
+    # Per-judge verdict ONLY (kept for back-compat scanning).
     panel_per_judge: dict[str, str]
+    # FULL per-judge breakdown: each entry has verdict + raw_score +
+    # threshold + latency_ms + dimension + detail (contains the LLM
+    # judge's rationale, model used, refusal_detected flag, etc.) +
+    # error message (when verdict=ERROR). One source of truth for
+    # reproducing the panel decision and explaining any FP/FN to
+    # paper reviewers.
+    panel_judge_details: dict[str, dict]
     latency_ms_panel: int
+    # ISO-8601 UTC timestamp of when this attempt's panel scoring
+    # completed (post check_consensus). Same precision as the run's
+    # `timestamp_utc` field but per-row so a long sweep can be
+    # bucketed / replayed turn-by-turn.
+    timestamp_utc: str = ""
 
 
 @dataclass
@@ -120,6 +140,9 @@ class _LiteLLMBenchmarkTarget:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
                 timeout=30.0,
+                # Safety net for OpenRouter 429s — litellm does
+                # exponential backoff between retries.
+                num_retries=3,
             )
             text = (r.choices[0].message.content or "").strip()
             return self._TargetResponse(output=text, tools_used=[],
@@ -229,20 +252,45 @@ def _drive_one_family(family: str, target, *, attempt_cap: int = 250):
             break
 
 
-def _score_via_panel(prompt: str, response: str) -> dict:
-    """Send one (prompt, response) through the panel."""
-    from kya.scorer_orchestrator import check_consensus
+def _score_via_panel(prompt: str, response: str, *,
+                     probe_class: str | None = None,
+                     probe_family: str | None = None) -> dict:
+    """Send one (prompt, response) through the panel inside an
+    `attack_context` so `garak_real_detector` can dispatch to the
+    correct Garak probe family (the v6 sweep proved that without
+    explicit metadata the matcher falls back to a prompt-text
+    heuristic that misses 100% of real-Garak attempts).
+
+    Returns the full per-judge breakdown — verdict + raw_score +
+    threshold + latency + dimension + detail dict + error message —
+    so the sweep's audit trail can explain any FP/FN to a paper
+    reviewer without re-running the panel."""
+    from kya.scorer_orchestrator import attack_context, check_consensus
     t0 = time.time()
-    r = check_consensus(
-        input_text=prompt,
-        response=response,
-        context="No reference context (Garak probe).",
-    )
+    with attack_context(garak_probe_class=probe_class,
+                        garak_probe_family=probe_family):
+        r = check_consensus(
+            input_text=prompt,
+            response=response,
+            context="No reference context (Garak probe).",
+        )
     latency = int((time.time() - t0) * 1000)
+    per_judge_details = {}
+    for jr in r.judges:
+        per_judge_details[jr.judge_name] = {
+            "verdict": jr.verdict,
+            "raw_score": jr.raw_score,
+            "threshold": jr.threshold,
+            "latency_ms": jr.latency_ms,
+            "dimension": jr.dimension,
+            "detail": dict(jr.detail) if jr.detail else {},
+            "error": jr.error,
+        }
     return {
         "consensus": r.consensus,
         "per_dimension": {d: c.consensus for d, c in r.per_dimension.items()},
         "per_judge": {jr.judge_name: jr.verdict for jr in r.judges},
+        "per_judge_details": per_judge_details,
         "latency_ms": latency,
     }
 
@@ -340,11 +388,17 @@ def main():
             response = hit.get("response", "") or ""
             score = float(hit.get("score", 0.0))
             landed = score >= 0.5
-            panel = _score_via_panel(prompt, response)
+            panel = _score_via_panel(
+                prompt, response,
+                probe_class=probe_class,
+                probe_family=family,
+            )
             v = AttemptVerdict(
                 family=family,
                 probe_class=probe_class,
                 detector=detector_name,
+                prompt_full=prompt,
+                response_full=response,
                 prompt_preview=prompt[:160],
                 response_preview=response[:160],
                 garak_score=score,
@@ -352,7 +406,10 @@ def main():
                 panel_consensus=panel["consensus"],
                 panel_per_dim=panel["per_dimension"],
                 panel_per_judge=panel["per_judge"],
+                panel_judge_details=panel["per_judge_details"],
                 latency_ms_panel=panel["latency_ms"],
+                timestamp_utc=dt.datetime.now(
+                    dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
             attempt_records.append(v)
             agg.total_attempts += 1

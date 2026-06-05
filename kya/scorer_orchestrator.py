@@ -58,6 +58,7 @@ Operators add their own:
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import time
@@ -949,35 +950,142 @@ def register_phoenix_adapter() -> None:
 
 
 # ── Opt-in adapter: real-Garak primary_detector judge ─────────────
+#
+# Attack-metadata thread-local context.
+#
+# The panel adapter signature is fixed at (input, response, context)
+# strings — no room to thread per-call probe metadata. But for
+# `garak_real_detector` to fire on REAL Garak probes (whose prompts
+# are dynamically generated and don't match our curated 10-entry
+# native catalog), the panel needs to know which probe family /
+# class produced this attempt.
+#
+# A 2026-06-04 live verifier sweep proved this gap is real: 0 of 88
+# real-Garak attempts matched `_detect_garak_probe_family` via
+# prompt-text heuristic — even though the `probe_class` (e.g.
+# `dan.Dan_11_0`, `encoding.InjectAscii85`) was known to the caller.
+#
+# MUST be a contextvars.ContextVar, NOT threading.local() — the
+# orchestrator runs judges in a ThreadPoolExecutor, and threading.local
+# does NOT propagate across worker threads (the executor's worker
+# would see empty metadata, defeating the whole point). ContextVar
+# DOES propagate via concurrent.futures since Python 3.7: when you
+# call executor.submit(fn), the submitted fn runs inside a copy of
+# the calling context, so ContextVar values flow through naturally.
+_attack_context_var: contextvars.ContextVar[dict | None] = (
+    contextvars.ContextVar("kya_attack_context", default=None)
+)
+
+
+class attack_context:
+    """Context manager that attaches per-call attack metadata to the
+    current execution context so panel judges (specifically
+    `garak_real_detector`) can pick it up without a signature change.
+
+    Usage::
+
+        from kya.scorer_orchestrator import (
+            attack_context, check_consensus,
+        )
+
+        for probe_class, hit in sweep:
+            with attack_context(garak_probe_class=probe_class,
+                                garak_probe_family="dan"):
+                r = check_consensus(input_text=hit.prompt,
+                                    response=hit.response,
+                                    context="...")
+
+    Recognised keys (all optional):
+      - garak_probe_family : str       e.g. "dan", "encoding", "promptinject"
+      - garak_probe_class  : str       e.g. "dan.Dan_11_0" — auto-resolves
+                                       to family when family not given
+      - attack_objective   : str       passthrough for future judges
+
+    Implementation: ContextVar (not threading.local) so the metadata
+    flows from the caller into each judge's ThreadPoolExecutor worker
+    thread. Nested with-blocks correctly restore the prior context on
+    exit via the ContextVar.reset() token returned by .set().
+    """
+    def __init__(self, **metadata):
+        # Filter out None values so callers can pass e.g.
+        # probe_class=None without overwriting an outer context.
+        self._metadata = {k: v for k, v in metadata.items()
+                          if v is not None}
+        self._token = None
+
+    def __enter__(self):
+        current = _attack_context_var.get() or {}
+        merged = dict(current)
+        merged.update(self._metadata)
+        self._token = _attack_context_var.set(merged)
+        return self
+
+    def __exit__(self, *exc_info):
+        if self._token is not None:
+            _attack_context_var.reset(self._token)
+
+
+def get_attack_context() -> dict:
+    """Return the active attack metadata dict (empty dict if no
+    surrounding `attack_context(...)` block on this execution
+    context)."""
+    return dict(_attack_context_var.get() or {})
+
+
+# Map garak probe_class strings ("dan.Dan_11_0", "encoding.InjectAscii85",
+# "probes.sysprompt_extraction.SystemPromptExtraction") to the canonical
+# family slug used by `_resolve_probe`. Lookup is by leading dotted
+# segment after stripping any "probes." prefix.
+def _family_from_probe_class(probe_class: str) -> str | None:
+    if not probe_class:
+        return None
+    cls = probe_class
+    # Strip a leading "probes." if the caller passed a fully-qualified
+    # plugin spec.
+    if cls.startswith("probes."):
+        cls = cls[len("probes."):]
+    # First dotted segment is the family slug for every Garak family
+    # the panel currently dispatches (dan, encoding, promptinject,
+    # sysprompt_extraction, latentinjection, leakreplay, goodside,
+    # lmrc, ansiescape, topic, ...).
+    return cls.split(".", 1)[0] or None
 
 
 def _detect_garak_probe_family(input_text: str) -> str | None:
-    """Look up the GARAK_NATIVE_PROBES catalog for an entry whose
-    prompt matches `input_text` (exact OR 80-char leading prefix in
-    either direction) AND that has a `garak_probe` family populated.
+    """Resolve the Garak probe family for an attempt.
 
-    Returns the Garak probe family string (e.g. "dan", "encoding",
-    "promptinject") or None when no native-catalog entry matches.
+    Priority order:
+      1. **Thread-local attack_context** — `garak_probe_family` wins;
+         else `garak_probe_class` is decomposed via
+         `_family_from_probe_class`. This is the deterministic path
+         every benchmark / orchestrator should use.
+      2. **GARAK_NATIVE_PROBES prompt-text heuristic** — fallback for
+         stateless callers that don't pass metadata. Matches by exact
+         prompt OR 80-char leading prefix; 40-char minimum-length gate
+         prevents short benign inputs from false-matching long probe
+         openers (Step C review finding).
 
-    This is the dispatch contract for `garak_real_detector` —
-    customers driving Garak native probes through `check_consensus`
-    automatically get the real-Garak `primary_detector` scoring when
-    the probe family is known + real-garak is installed. Arbitrary
-    inputs (not in the native catalog) abstain.
+    Returns the family string (e.g. "dan", "encoding") or None when
+    neither path resolves — the judge then abstains (UNCLEAR).
     """
+    # Path 1: explicit metadata from the caller.
+    meta = get_attack_context()
+    family = meta.get("garak_probe_family")
+    if family:
+        return family
+    probe_class = meta.get("garak_probe_class")
+    if probe_class:
+        fam = _family_from_probe_class(probe_class)
+        if fam:
+            return fam
+
+    # Path 2: stateless prompt-text fallback.
     if not input_text:
         return None
     try:
         from kya_redteam.garak_runtime import GARAK_NATIVE_PROBES
     except ImportError:
         return None
-    # Minimum-length gate (review-flagged C3): without it, a short
-    # benign input like "Hello, ChatGPT." (15 chars) is a prefix of
-    # the DAN catalog prompt and would be misclassified as the dan
-    # family, causing this judge to invoke DAN's detector on an
-    # unrelated response. 40 chars is enough to disambiguate the
-    # curated probe set's openers (each native probe's first 40
-    # chars are unique).
     _PREFIX_MIN_LEN = 40
     for probe in GARAK_NATIVE_PROBES:
         prompt = probe.get("prompt", "")
@@ -1390,9 +1498,23 @@ def check_consensus(
     t0 = time.time()
     results: list[JudgeResult] = []
 
+    # contextvars (e.g. attack_context for garak_real_detector) DO
+    # NOT auto-propagate across concurrent.futures.ThreadPoolExecutor
+    # workers — only asyncio's run_in_executor wraps tasks with a
+    # context copy. We do the wrap explicitly so any ContextVar the
+    # caller set before check_consensus is visible inside every judge.
+    #
+    # ONE FRESH `copy_context()` PER SUBMIT — a single Context object
+    # may only be "entered" by one thread at a time (Context.run()
+    # raises RuntimeError("cannot enter context: ... is already entered")
+    # otherwise). Sharing one context across all 6 judges in parallel
+    # caused that exact failure on the first live re-run.
     with ThreadPoolExecutor(max_workers=workers) as ex:
         future_to_name = {
-            ex.submit(_JUDGES[name], input_text, response, context): name
+            ex.submit(
+                contextvars.copy_context().run,
+                _JUDGES[name], input_text, response, context,
+            ): name
             for name in names if name in _JUDGES
         }
         for fut in as_completed(future_to_name):
