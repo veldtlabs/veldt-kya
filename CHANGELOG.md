@@ -6,6 +6,31 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-06-06
+
+### Fixed
+- **`kya.principal_edges.ensure_principal_edges_table` — DuckDB
+  portability.** The `id` PK previously emitted `BIGSERIAL` on the
+  DuckDB dialect, which DuckDB rejects (`Type with name BIGSERIAL
+  does not exist`). Fix wires the same explicit
+  `Sequence("kya_principal_edges_id_seq")` pattern already proven
+  on `kya_invocations` and `kya_evidence`. DuckDB now emits
+  `CREATE SEQUENCE` + `nextval()`; PG / MySQL / SQLite paths are
+  unchanged.
+  - The OSS principles claim DuckDB as a first-class backend
+    alongside PG / MySQL / SQLite. This patch makes
+    `kya_principal_edges` actually portable on DuckDB so the
+    delegation-graph primitive (`walk_ancestors` /
+    `walk_descendants`) works end-to-end on all four backends.
+  - Surfaced by a downstream Pro v0.4.0 E2E run that stood up the
+    regulator pack against all four SQL backends in parallel.
+
+### Added — regression coverage
+- `tests/test_principal_edges_duckdb_regression.py` — DDL +
+  round-trip on a real DuckDB engine, plus white-box assertion that
+  the column carries an explicit `Sequence` (so a future refactor
+  that drops the Sequence trips this test before customer code).
+
 ## [0.2.2] — 2026-06-05
 
 ### Added
