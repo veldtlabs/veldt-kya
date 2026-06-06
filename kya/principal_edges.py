@@ -72,6 +72,7 @@ try:
         DateTime,
         Index,
         Integer,
+        Sequence,
         String,
         UniqueConstraint,
         func,
@@ -139,6 +140,11 @@ if _HAS_SQLALCHEMY:
     )
 
 
+    # Explicit Sequence so DuckDB gets nextval() via CREATE SEQUENCE
+    # rather than the BIGSERIAL keyword (which DuckDB rejects). Same
+    # pattern proven on kya_evidence + kya_invocations.
+    _EDGE_SEQ = Sequence("kya_principal_edges_id_seq")
+
     class _PrincipalEdgeRow(_Base):
         """Many-to-many parent -> child relationships between
         principals. Composite uniqueness on
@@ -152,10 +158,15 @@ if _HAS_SQLALCHEMY:
             if _PG_SCHEMA else _EDGE_CONSTRAINTS
         )
 
+        # Portable autoincrement — Integer on SQLite (its only
+        # autoincrement-capable PK type), BigInteger elsewhere. The
+        # explicit Sequence makes DuckDB emit CREATE SEQUENCE +
+        # nextval() default rather than BIGSERIAL (which DuckDB
+        # rejects). On MySQL the Sequence is ignored; AUTO_INCREMENT
+        # takes over. On PG the Sequence becomes a real PG SEQUENCE.
         id: Mapped[int] = mapped_column(
-            # SQLite doesn't autoincrement BigInteger primary keys.
-            # Use Integer on SQLite, BigInteger everywhere else.
             BigInteger().with_variant(Integer(), "sqlite"),
+            _EDGE_SEQ,
             primary_key=True, autoincrement=True,
         )
         tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
