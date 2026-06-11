@@ -137,6 +137,24 @@ all_judges = [
     "litellm>=1.55,<2",
     "langkit",
 ]
+# Phase 3d — W3C DID + Verifiable Credentials. Ships off by default;
+# enable per resolver via env (KYA_DID_RESOLVERS=key,web,jwk). Verified
+# Credential parsing uses JWT-VC (pyjwt) + Ed25519 / EC / RSA (cryptography).
+did      = [
+    "cryptography>=41",
+    "pyjwt>=2.8",
+]
+# KYA Gateway — MCP-compatible reverse proxy (kya_gateway/). Pulls in
+# FastAPI + uvicorn + httpx + PyYAML + sse-starlette. Customers `pip install
+# veldt-kya[gateway,did]` get an MCP-aware policy + audit plane in front of
+# any backend MCP server.
+gateway  = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "sse-starlette>=2.0",
+]
 all      = [
     "prometheus_client>=0.20",
     "opentelemetry-api>=1.20",
@@ -146,6 +164,12 @@ all      = [
     "pyyaml>=6.0",
     "pymavlink>=2.4,<3",
     "presidio-analyzer>=2.2",
+    "cryptography>=41",
+    "pyjwt>=2.8",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "sse-starlette>=2.0",
 ]
 
 [project.urls]
@@ -181,6 +205,11 @@ include = [
     "kya_hooks", "kya_hooks.*",
     "kya_otlp_bridge", "kya_otlp_bridge.*",
     "kya_redteam", "kya_redteam.*",
+    # Phase 4 — MCP-compatible reverse proxy. Imports its heavy deps
+    # (FastAPI, uvicorn, httpx) lazily inside kya_gateway.server / .forwarder
+    # so `import kya_gateway` works for tooling that only needs config /
+    # error types without the HTTP runtime.
+    "kya_gateway", "kya_gateway.*",
 ]
 exclude = [
     "kya.tests*", "kya._scratch*",
@@ -193,6 +222,10 @@ exclude = [
 # code required. Premium production-grade collector with persistent
 # cursor / Kafka transport / health endpoint ships in veldt-kya-pro.
 kya-runtime-collect = "kya.runtime.cli:main"
+# Phase 4 — MCP-compatible reverse proxy. Customers `pip install
+# veldt-kya[gateway,did]` and immediately have a deployable gateway:
+#     kya-gateway --config gateway.yaml --port 8080
+kya-gateway = "kya_gateway.cli:main"
 
 [tool.setuptools.package-data]
 kya = ["py.typed"]
