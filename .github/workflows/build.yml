@@ -105,7 +105,11 @@ jobs:
         run: |
           python -m venv /tmp/v
           /tmp/v/bin/pip install --upgrade pip
-          /tmp/v/bin/pip install dist/*.whl
+          # Install the wheel with the [did] + [gateway] extras so
+          # Phase 3d / Phase 4 tests can collect (they import jwt,
+          # yaml, fastapi, httpx, sse-starlette).
+          WHEEL=$(ls dist/*.whl)
+          /tmp/v/bin/pip install "${WHEEL}[did,gateway]"
           /tmp/v/bin/pip install pytest psycopg2-binary pymysql duckdb duckdb-engine pytz prometheus_client cryptography python-dotenv
           /tmp/v/bin/python -m pytest tests/ -v --tb=short
 
