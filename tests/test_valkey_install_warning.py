@@ -19,10 +19,20 @@ import pytest
 
 def _reset_valkey_module_state():
     """The accessor caches the resolved client in module-level
-    globals. Reset them so each test sees a clean state."""
+    globals. Reset them so each test sees a clean state.
+
+    Also resets `_FACTORY` — a prior test in another file that
+    crashed mid-flight (e.g. `test_attack_chains_state_valkey.py`
+    registers a factory) could leak it across files. With a leaked
+    factory `get_valkey()` short-circuits before the `import redis`
+    branch this file exercises, so the WARN test would pass for the
+    wrong reason. Resetting here keeps results meaningful regardless
+    of execution order.
+    """
     import kya._valkey as v
     v._CLIENT = None
     v._CLIENT_RESOLVED = False
+    v._FACTORY = None
 
 
 @pytest.fixture(autouse=True)

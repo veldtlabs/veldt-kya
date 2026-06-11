@@ -148,7 +148,9 @@ def get_valkey() -> Any | None:
                         "hardening features (rate-limit, revocation "
                         "cache, etc.) will FAIL-OPEN. Install with "
                         "`pip install veldt-kya[gateway]` (recommended "
-                        "for gateway deployments) or `pip install redis`."
+                        "for gateway deployments) or `pip install redis`. "
+                        "If you upgraded veldt-kya, re-run pip install "
+                        "to pick up the new redis dependency."
                     )
                 else:
                     logger.debug(
