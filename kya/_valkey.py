@@ -131,11 +131,31 @@ def get_valkey() -> Any | None:
             try:
                 import redis
             except ImportError:
-                logger.debug(
-                    "[KYA-VALKEY] redis-py not installed — "
-                    "hardening features will fail-open. Install "
-                    "with `pip install veldt-kya[hardening]` "
-                    "or `pip install redis`.")
+                # Loud WARNING (not debug) when an operator HAS set
+                # KYA_VALKEY_URL but redis-py isn't installed.
+                # Pre-fix this was a silent debug message and Phase 12
+                # gap #4 surfaced: gateway rate-limiting silently
+                # degraded to fail-open. Operators should see this in
+                # their startup logs.
+                url_env_set = (
+                    os.environ.get("KYA_VALKEY_URL")
+                    or os.environ.get("REDIS_URL")
+                )
+                if url_env_set:
+                    logger.warning(
+                        "[KYA-VALKEY] KYA_VALKEY_URL / REDIS_URL is "
+                        "set but redis-py is not installed -- "
+                        "hardening features (rate-limit, revocation "
+                        "cache, etc.) will FAIL-OPEN. Install with "
+                        "`pip install veldt-kya[gateway]` (recommended "
+                        "for gateway deployments) or `pip install redis`. "
+                        "If you upgraded veldt-kya, re-run pip install "
+                        "to pick up the new redis dependency."
+                    )
+                else:
+                    logger.debug(
+                        "[KYA-VALKEY] redis-py not installed and no "
+                        "URL env set; hardening features fail-open.")
                 _CLIENT = None
                 _CLIENT_RESOLVED = True
                 return None

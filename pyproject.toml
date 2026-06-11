@@ -154,6 +154,13 @@ gateway  = [
     "httpx>=0.27",
     "pyyaml>=6.0",
     "sse-starlette>=2.0",
+    # Valkey/Redis client. The gateway's policy pipeline calls
+    # `kya._valkey.get_valkey()` for the token-bucket rate limiter and
+    # the Phase 5g revocation cache. Without redis-py installed
+    # `get_valkey` returns None silently and the gateway fail-opens
+    # rate limiting -- a silent degradation that bit Phase 12 testing.
+    # Bundling here makes `veldt-kya[gateway]` sufficient on its own.
+    "redis>=5.0",
 ]
 all      = [
     "prometheus_client>=0.20",
