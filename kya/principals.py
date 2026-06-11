@@ -209,6 +209,11 @@ PRINCIPAL_KINDS: tuple[str, ...] = (
     "lakehouse_job",
     "machine_identity",
     "autonomous_system",
+    # Phase 5h — issuer-API admins (HMAC + DID-signed token holders).
+    # Registered so the dual-admin approval chain can write
+    # `principal_edges` rows pointing at real principal rows, not
+    # orphan IDs (the 5g-B-03 lesson).
+    "admin",
 )
 
 # ── Runtime extensibility ───────────────────────────────────────────

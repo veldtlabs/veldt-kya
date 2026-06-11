@@ -6,6 +6,27 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed — breaking default
+- Gateway: new `enforcement.mode` config; default changed from
+  implicit blocking to `audit_only`. Operators who relied on the
+  gateway returning 401/403 must set `gateway.enforcement.mode: enforce`.
+  - `audit_only` — forwards to backend; verdict in `X-KYA-Verdict` +
+    `X-KYA-Reason-Codes` headers.
+  - `advise` — forwards; verdict merged into JSON body as `kya_verdict`
+    (for JSON-RPC bodies, merged under `result` / `error.data` to keep
+    the envelope spec-conformant).
+  - `enforce` — pre-5g behavior; 401 on identity fail, 403 on policy deny.
+
+### Security — operators MUST read before upgrading
+- In `audit_only` / `advise`, requests with invalid credentials are
+  **forwarded to the backend** with `X-KYA-Verdict: identity_invalid`
+  + `X-KYA-Mode` + `X-KYA-Principal-*` request headers. If your backend
+  treats "the gateway forwarded → caller is authenticated," set
+  `enforcement.mode: enforce` OR have the backend check
+  `X-KYA-Verdict` and re-verify before acting on the call.
+- The `enforcement` block in YAML must include `mode:` when present;
+  a missing `mode` is rejected to prevent silent typo defaults.
+
 ## [0.2.3] — 2026-06-06
 
 ### Fixed

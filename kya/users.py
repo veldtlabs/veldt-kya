@@ -119,6 +119,19 @@ SIGNAL_DELTAS = {
     "hallucination_detected": -5,
     # Synthetic "clean run" — small upward bump for cooperative usage
     "clean_invocation": +1,
+    # Phase 5g — DID / VC identity-layer events. Calibrated relative
+    # to the existing scale: revocation block and DPoP forge are
+    # close to data_leak; expired DPoP is a softer signal because
+    # legitimate clients with bad clocks hit it too; issuer rotation
+    # pending is informational (zero delta) but tracked in dashboards.
+    "revocation_blocked": -10,
+    "dpop_replay": -8,
+    "dpop_forge_attempt": -8,
+    "dpop_expired": -2,
+    "issuer_rotation_pending": 0,
+    # Phase 5h — softer than rbac_refusal; denial is a legitimate
+    # operator decision, but a burst from one requester is signal.
+    "vc_approval_denied": -3,
 }
 
 

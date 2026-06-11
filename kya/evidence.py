@@ -170,6 +170,25 @@ VALID_EVIDENCE_KINDS = {
     # Separate namespace so dashboards / rules can filter by family
     # without enumerating individual tools.
     "autonomy_mavlink",
+    # Phase 5g — DID / VC / issuer-API + identity-layer evidence
+    # kinds. Registered here so callers don't silently fall back to
+    # "system_message" when recording VC issuance / revocation, trust
+    # registry changes, gateway verdicts, or DPoP / revocation /
+    # rotation events.
+    "issuer_vc_issued",
+    "issuer_vc_revoked",
+    "trust_registry_change",
+    "gateway_verdict",
+    "revocation_blocked",
+    "dpop_replay",
+    "dpop_forge_attempt",
+    "dpop_expired",
+    "issuer_rotation_pending",
+    # Phase 5h — per-credential issuance approval workflow.
+    "vc_request_queued",         # mode=queue, request entered the queue
+    "vc_request_approved",       # explicit dual-admin approval
+    "vc_request_auto_approved",  # auto-approve pattern matched
+    "vc_request_denied",         # explicit denial
 }
 
 # Retention defaults per regime (days). Used when caller doesn't supply
