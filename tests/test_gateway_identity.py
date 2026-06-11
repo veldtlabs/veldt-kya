@@ -522,3 +522,190 @@ def test_jwt_principal_kind_honored_when_issuer_trusted(monkeypatch):
     )
     principal = resolver.resolve({HEADER_AUTHORIZATION: "Bearer dummy"})
     assert principal.principal_kind == "service_account"
+
+
+# ─── _extract_vc_principal_attr (Phase 12 fix) ─────────────────────
+
+
+def test_extract_vc_principal_attr_reads_from_vc_credentialsubject():
+    """W3C VC-JWT puts custom claims under vc.credentialSubject.
+    Phase 12 fix: the gateway must read from there (it was reading
+    only top-level claims, so KYA's own JWTVCIssuer-produced VCs
+    never matched and every agent's principal_id silently fell back
+    to the agent's DID)."""
+    from kya_gateway.identity import _extract_vc_principal_attr
+    vc_claims = {
+        "iss": "did:key:zIssuer",
+        "sub": "did:key:zSubject",
+        "iat": 1, "exp": 2,
+        "vc": {
+            "@context": ["https://www.w3.org/2018/credentials/v1"],
+            "type": ["VerifiableCredential"],
+            "credentialSubject": {
+                "id": "did:key:zSubject",
+                "principal_kind": "agent",
+                "principal_id": "phase12-agent-001",
+            },
+        },
+    }
+    assert _extract_vc_principal_attr(vc_claims, "principal_id") == (
+        "phase12-agent-001"
+    )
+    assert _extract_vc_principal_attr(vc_claims, "principal_kind") == "agent"
+
+
+def test_extract_vc_principal_attr_falls_back_to_top_level():
+    """Non-spec-compliant issuers that stamp principal_id at the JWT
+    top level (no `vc` envelope) must still work — back-compat."""
+    from kya_gateway.identity import _extract_vc_principal_attr
+    vc_claims = {
+        "iss": "did:key:zIssuer",
+        "sub": "did:key:zSubject",
+        "principal_kind": "user",
+        "principal_id": "legacy-top-level-id",
+    }
+    assert _extract_vc_principal_attr(vc_claims, "principal_id") == (
+        "legacy-top-level-id"
+    )
+    assert _extract_vc_principal_attr(vc_claims, "principal_kind") == "user"
+
+
+def test_extract_vc_principal_attr_credentialsubject_wins_over_top_level():
+    """If both locations have the claim, the W3C-compliant nested
+    one wins (closer to spec, prevents an issuer-vs-test-fixture
+    ambiguity from silently using the wrong one)."""
+    from kya_gateway.identity import _extract_vc_principal_attr
+    vc_claims = {
+        "principal_id": "top-level-stale",
+        "vc": {
+            "credentialSubject": {
+                "principal_id": "nested-authoritative",
+            },
+        },
+    }
+    assert _extract_vc_principal_attr(vc_claims, "principal_id") == (
+        "nested-authoritative"
+    )
+
+
+def test_extract_vc_principal_attr_returns_none_when_missing():
+    """No claim in either location -> None (caller falls back to the
+    DID or _SAFE_DEFAULT_PRINCIPAL_KIND)."""
+    from kya_gateway.identity import _extract_vc_principal_attr
+    assert _extract_vc_principal_attr({}, "principal_id") is None
+    assert _extract_vc_principal_attr(
+        {"vc": {"credentialSubject": {}}}, "principal_id"
+    ) is None
+    # Empty-string values count as missing (Phase 12 issuer claim
+    # sanitization).
+    assert _extract_vc_principal_attr(
+        {"principal_id": ""}, "principal_id"
+    ) is None
+
+
+def test_extract_vc_principal_attr_handles_malformed_input():
+    """Defensive: VC claims could be malformed in adversarial cases.
+    The helper must not raise -- return None instead."""
+    from kya_gateway.identity import _extract_vc_principal_attr
+    # vc is not a dict
+    assert _extract_vc_principal_attr(
+        {"vc": "not-a-dict"}, "principal_id"
+    ) is None
+    # credentialSubject is not a dict
+    assert _extract_vc_principal_attr(
+        {"vc": {"credentialSubject": "x"}}, "principal_id"
+    ) is None
+    # entire payload is None / non-dict
+    assert _extract_vc_principal_attr(None, "principal_id") is None
+    assert _extract_vc_principal_attr("not-a-dict", "principal_id") is None
+
+
+def test_try_did_extracts_principal_id_from_vc_credentialsubject_e2e(
+    monkeypatch, did_keypair, other_keypair,
+):
+    """Integration: full _try_did path with X-KYA-DID + X-KYA-DID-Proof
+    + X-KYA-VC, where the VC's claims live under vc.credentialSubject
+    (W3C-compliant location). BoundPrincipal.principal_id MUST equal
+    the operator-chosen id from credentialSubject, NOT the agent's DID.
+
+    Phase 12 fix regression guard: without this test, a future refactor
+    that drops the _extract_vc_principal_attr call would pass all 5
+    helper-only tests while silently re-introducing the bug (gateway
+    treats every agent's principal_id as their DID)."""
+    from kya.did import _resolvers, register_did_method
+    from kya.did_document import DIDDocument, VerificationMethod
+    from kya.vc import VerifiedCredential
+    from kya_gateway.identity import HEADER_VC
+    saved = _resolvers.get("jwk")
+    try:
+        register_did_method("jwk", lambda _s: DIDDocument(
+            id=did_keypair["did"],
+            verification_methods=[VerificationMethod(
+                id=f"{did_keypair['did']}#0", type="JsonWebKey2020",
+                controller=did_keypair["did"],
+                public_key_jwk=did_keypair["jwk"],
+            )],
+            authentication=[f"{did_keypair['did']}#0"],
+            assertion_method=[f"{did_keypair['did']}#0"],
+            raw={"id": did_keypair["did"]},
+        ))
+
+        # Monkey-patch verify_vc to return a synthetic VerifiedCredential
+        # carrying the W3C-compliant nested-claims shape. We are testing
+        # the resolver's extraction, not VC signature verification.
+        trusted_issuer_did = (
+            "did:key:z6MkrZ1xUnSyntheticIssuerForTest"
+        )
+        spec_compliant_claims = {
+            "iss": trusted_issuer_did,
+            "sub": did_keypair["did"],
+            "iat": int(time.time()) - 5,
+            "exp": int(time.time()) + 3600,
+            "vc": {
+                "@context": ["https://www.w3.org/2018/credentials/v1"],
+                "type": ["VerifiableCredential", "AgentAuthorityCredential"],
+                "credentialSubject": {
+                    "id": did_keypair["did"],
+                    "principal_kind": "service_account",
+                    "principal_id": "phase12-operator-chosen-id",
+                },
+            },
+        }
+
+        def fake_verify_vc(vc_jwt: str):
+            return VerifiedCredential(
+                issuer_did=trusted_issuer_did,
+                subject_did=did_keypair["did"],
+                claims=spec_compliant_claims,
+                issuer_doc=None,  # not used by gateway path
+                issuer_doc_hash="synthetic",
+            )
+        import kya.vc as kya_vc
+        monkeypatch.setattr(kya_vc, "verify_vc", fake_verify_vc)
+
+        pop = _make_pop(did_keypair["did"], did_keypair["sk_pem"])
+        resolver = _make_resolver(
+            ["did"],
+            did_cfg=_make_did_config(
+                trusted_issuers=[trusted_issuer_did],
+            ),
+        )
+        principal = resolver.resolve({
+            HEADER_DID: did_keypair["did"],
+            "X-KYA-DID-Proof": pop,
+            HEADER_VC: "synthetic-vc-jwt-string",
+        })
+        # The fix: principal_id comes from vc.credentialSubject, NOT
+        # the agent's DID.
+        assert principal.principal_id == "phase12-operator-chosen-id", (
+            f"principal_id fell back to DID -- credentialSubject "
+            f"extraction is regressed. got={principal.principal_id!r}"
+        )
+        assert principal.principal_kind == "service_account"
+        assert principal.method == "did"
+        # External identifiers should still be the cryptographic ones.
+        assert principal.external_subject == did_keypair["did"]
+        assert principal.external_issuer == trusted_issuer_did
+    finally:
+        if saved is not None:
+            register_did_method("jwk", saved)

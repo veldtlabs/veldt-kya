@@ -48,6 +48,38 @@ _SAFE_DEFAULT_PRINCIPAL_KIND = "agent"
 _SAFE_DEFAULT_PRINCIPAL_KIND_SPIFFE = "service_account"
 
 
+def _extract_vc_principal_attr(vc_claims: dict, key: str) -> str | None:
+    """Pull a custom principal-shaped attribute out of a verified VC.
+
+    W3C VC-JWT spec: custom claims (anything the issuer adds beyond the
+    standard JWT fields) live under ``vc.credentialSubject``. Some
+    non-spec-compliant issuers stamp the same claim at the JWT top
+    level instead -- we accept either location, preferring the spec-
+    compliant nested form.
+
+    Phase 12 surfaced that the gateway was reading ONLY the top level,
+    so a VC issued by KYA's own JWTVCIssuer (which is W3C-correct and
+    puts claims under credentialSubject) was never matched. Result:
+    the gateway treated every agent's principal_id as the agent's
+    DID, bypassing the operator-chosen stable id.
+
+    Returns the string value or None if not present in either location.
+    """
+    if not isinstance(vc_claims, dict):
+        return None
+    vc_block = vc_claims.get("vc")
+    if isinstance(vc_block, dict):
+        cs = vc_block.get("credentialSubject")
+        if isinstance(cs, dict):
+            v = cs.get(key)
+            if v is not None and v != "":
+                return str(v)
+    v = vc_claims.get(key)
+    if v is not None and v != "":
+        return str(v)
+    return None
+
+
 @dataclass(frozen=True)
 class BoundPrincipal:
     """The principal calling the gateway."""
@@ -210,10 +242,21 @@ class IdentityResolver:
                 self._maybe_check_revocation(verified)
 
         # B13: only trust principal_kind from a VC issued by a trusted DID.
+        # Phase 12 fix: extract via _extract_vc_principal_attr so the
+        # W3C-compliant `vc.credentialSubject.<key>` location is honored
+        # (KYA's own JWTVCIssuer puts claims there; pre-fix gateway only
+        # looked at top-level and never matched, so principal_id always
+        # fell back to the agent's DID).
         trusted_did_issuers = set((did_cfg.trusted_issuers if did_cfg else []) or [])
         if vc_claims and vc_issuer and vc_issuer in trusted_did_issuers:
-            principal_kind = str(vc_claims.get("principal_kind") or _SAFE_DEFAULT_PRINCIPAL_KIND)
-            principal_id = str(vc_claims.get("principal_id") or did)
+            principal_kind = (
+                _extract_vc_principal_attr(vc_claims, "principal_kind")
+                or _SAFE_DEFAULT_PRINCIPAL_KIND
+            )
+            principal_id = (
+                _extract_vc_principal_attr(vc_claims, "principal_id")
+                or did
+            )
         else:
             principal_kind = _SAFE_DEFAULT_PRINCIPAL_KIND
             principal_id = did
