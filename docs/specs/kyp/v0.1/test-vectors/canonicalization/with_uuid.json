@@ -1,8 +1,0 @@
-{
-  "name": "with_uuid",
-  "input": {
-    "id": "UUID('00000000-0000-0000-0000-0000deadbeef')"
-  },
-  "canonical": "{\"id\":{\"__t__\":\"UUID\",\"v\":\"00000000-0000-0000-0000-0000deadbeef\"}}",
-  "payload_hash": "cf0cb5d9f02612edd317a85010da9b11f46e6359872cff195d2cd621692914e7"
-}

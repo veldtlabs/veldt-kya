@@ -1,0 +1,83 @@
+{"_meta": "header", "schema_version": 1, "gcs_sysid": 255, "gcs_compid": 1, "operator_count": 5, "inbound_during_count": 46, "inbound_after_count": 31}
+{"mavpackettype": "SET_MODE", "target_system": 1, "base_mode": 1, "custom_mode": 4, "sysid": 255, "compid": 1, "_handled": true, "_ts": 1780366341.1817944}
+{"mavpackettype": "PARAM_SET", "target_system": 1, "target_component": 1, "param_id": "FENCE_ENABLE", "param_value": 1.0, "param_type": 9, "sysid": 255, "compid": 1, "_handled": true, "_ts": 1780366341.7054288}
+{"mavpackettype": "MISSION_ITEM_INT", "target_system": 1, "target_component": 1, "seq": 0, "frame": 6, "command": 16, "current": 0, "autocontinue": 1, "x": -353621480, "y": 1491600400, "z": 50.0, "sysid": 255, "compid": 1, "_handled": true, "_ts": 1780366342.7139711}
+{"mavpackettype": "COMMAND_LONG", "target_system": 1, "target_component": 1, "command": 400, "confirmation": 0, "param1": 1.0, "param2": 0.0, "param3": 0.0, "param4": 0.0, "param5": 0.0, "param6": 0.0, "param7": 0.0, "sysid": 255, "compid": 1, "_handled": true, "_ts": 1780366343.231033}
+{"mavpackettype": "COMMAND_LONG", "target_system": 1, "target_component": 1, "command": 22, "confirmation": 0, "param1": 0.0, "param2": 0.0, "param3": 0.0, "param4": 0.0, "param5": 0.0, "param6": 0.0, "param7": 20.0, "sysid": 255, "compid": 1, "_handled": true, "_ts": 1780366344.2612395}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 4, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.1817944}
+{"mavpackettype": "COMMAND_ACK", "command": 11, "result": 0, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.216395}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 89, "custom_mode": 4, "system_status": 4, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.216395}
+{"mavpackettype": "PARAM_VALUE", "param_id": "FENCE_ENABLE", "param_value": 1.0, "param_type": 2, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.7135823}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "Barometer 1 calibration complete", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366341.925972}
+{"mavpackettype": "BAD_DATA", "data": "Init Gyr", "reason": "Bad prefix", "sysid": 0, "compid": 0, "_handled": false, "_ts": 1780366341.925972}
+{"mavpackettype": "BAD_DATA", "data": "o", "reason": "Bad prefix", "sysid": 0, "compid": 0, "_handled": false, "_ts": 1780366341.925972}
+{"mavpackettype": "PARAM_VALUE", "param_id": "GND_ABS_PRESS", "param_value": 101155.7578125, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.925972}
+{"mavpackettype": "PARAM_VALUE", "param_id": "RNGFND1_TYPE", "param_value": 0.0, "param_type": 2, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.925972}
+{"mavpackettype": "PARAM_VALUE", "param_id": "MIS_TOTAL", "param_value": 0.0, "param_type": 4, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.9267387}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR_ID", "param_value": 2752772.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.9267387}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_ACC_ID", "param_value": 2753028.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.9267387}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR2_ID", "param_value": 2752780.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.9267387}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_ACC2_ID", "param_value": 2753036.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366341.9267387}
+{"mavpackettype": "BAD_DATA", "data": "*", "reason": "Bad prefix", "sysid": 0, "compid": 0, "_handled": false, "_ts": 1780366341.9619215}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 89, "custom_mode": 4, "system_status": 4, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.2157688}
+{"mavpackettype": "BAD_DATA", "data": "*", "reason": "Bad prefix", "sysid": 0, "compid": 0, "_handled": false, "_ts": 1780366342.2157688}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 89, "custom_mode": 4, "system_status": 4, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.2503343}
+{"mavpackettype": "BAD_DATA", "data": "*", "reason": "Bad prefix", "sysid": 0, "compid": 0, "_handled": false, "_ts": 1780366342.5029643}
+{"mavpackettype": "MISSION_ACK", "target_system": 255, "target_component": 0, "type": 2, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.7192435}
+{"mavpackettype": "BAD_DATA", "data": "\n\nReady ", "reason": "Bad prefix", "sysid": 0, "compid": 0, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "BAD_DATA", "data": "to FLY ", "reason": "Bad prefix", "sysid": 0, "compid": 0, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYROFFS_X", "param_value": 1.2284650438232347e-05, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYROFFS_Y", "param_value": 4.595455538947135e-05, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYROFFS_Z", "param_value": 5.470322503242642e-05, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR_ID", "param_value": 2752772.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR2OFFS_X", "param_value": 4.9086294893641025e-05, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR2OFFS_Y", "param_value": 4.131700916332193e-05, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR2OFFS_Z", "param_value": -2.1585083231911995e-06, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR2_ID", "param_value": 2752780.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR3OFFS_X", "param_value": 0.0, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR3OFFS_Y", "param_value": 0.0, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR3OFFS_Z", "param_value": 0.0, "param_type": 9, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "PARAM_VALUE", "param_id": "INS_GYR3_ID", "param_value": 0.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366342.757357}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "GPS 1: detected as u-blox at 115200 baud", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366342.8682792}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366343.0167582}
+{"mavpackettype": "STATUSTEXT", "severity": 2, "text": "PreArm: fence requires position", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366343.2409308}
+{"mavpackettype": "STATUSTEXT", "severity": 2, "text": "PreArm: EKF attitude is bad", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366343.2409308}
+{"mavpackettype": "STATUSTEXT", "severity": 2, "text": "PreArm: no EKF2 cores", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366343.2409308}
+{"mavpackettype": "COMMAND_ACK", "command": 400, "result": 4, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366343.2409308}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366343.3533404}
+{"mavpackettype": "PARAM_VALUE", "param_id": "STAT_RESET", "param_value": 328759936.0, "param_type": 6, "param_count": 1176, "param_index": 65535, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366343.8773777}
+{"mavpackettype": "COMMAND_ACK", "command": 22, "result": 4, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366344.280309}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366344.4632187}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "EKF2 IMU0 initial yaw alignment complete", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366344.607697}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "EKF2 IMU1 initial yaw alignment complete", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366344.607697}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366345.5346751}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "EKF2 IMU0 tilt alignment complete", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366345.6053495}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "EKF2 IMU1 tilt alignment complete", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366345.6053495}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366346.5800774}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366347.588796}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366348.5688095}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366349.5226994}
+{"mavpackettype": "TIMESYNC", "tc1": 0, "ts1": 10003497001, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366350.4478834}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366350.479645}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366351.4625385}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366352.4709427}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366353.5098417}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "EKF2 IMU0 origin set", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366354.1275036}
+{"mavpackettype": "STATUSTEXT", "severity": 6, "text": "EKF2 IMU1 origin set", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366354.1275036}
+{"mavpackettype": "GPS_GLOBAL_ORIGIN", "latitude": 423898000, "longitude": -711476000, "altitude": 14020, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366354.1275036}
+{"mavpackettype": "HOME_POSITION", "latitude": 423898000, "longitude": -711476000, "altitude": 14090, "x": 0.0, "y": 0.0, "z": 0.0, "q": [1.0, 0.0, 0.0, 0.0], "approach_x": 0.0, "approach_y": 0.0, "approach_z": 0.0, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366354.1275036}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366354.5300372}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366355.519857}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366356.493584}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366357.4901762}
+{"mavpackettype": "STATUSTEXT", "severity": 2, "text": "PreArm: fence requires position", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366357.997706}
+{"mavpackettype": "STATUSTEXT", "severity": 2, "text": "PreArm: Fence enabled, need 3D Fix", "sysid": 1, "compid": 1, "_handled": true, "_ts": 1780366357.997706}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366358.51555}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366359.515945}
+{"mavpackettype": "TIMESYNC", "tc1": 0, "ts1": 20006161001, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366360.4722643}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366360.5045316}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366361.5096488}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366362.505995}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366363.5126774}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366364.510082}
+{"mavpackettype": "HEARTBEAT", "type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 3, "mavlink_version": 3, "sysid": 1, "compid": 1, "_handled": false, "_ts": 1780366365.5074527}

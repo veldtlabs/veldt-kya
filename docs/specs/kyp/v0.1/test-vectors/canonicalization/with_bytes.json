@@ -1,8 +1,0 @@
-{
-  "name": "with_bytes",
-  "input": {
-    "blob": "000102ff"
-  },
-  "canonical": "{\"blob\":{\"__t__\":\"bytes\",\"v\":\"000102ff\"}}",
-  "payload_hash": "1a7388d118731b4f9712d17678fce72863410351375ee0b4c3c9a00fe03a35c3"
-}

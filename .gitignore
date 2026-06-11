@@ -98,3 +98,9 @@ KYA_FEATURES_BUSINESS_VALUE*.csv
 # MAVLink SITL / Gazebo capture-path comparison README -- kept
 # local only while the autonomy story is still pre-partner-meeting.
 scripts/README_mavlink_sitl.md
+
+# Internal-only — design docs, requirements, ops runbooks, IP / patent
+# strategy notes. NOT for the public OSS repo.
+_internal/
+docs/
+

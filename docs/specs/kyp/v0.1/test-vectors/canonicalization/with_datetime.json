@@ -1,9 +1,0 @@
-{
-  "name": "with_datetime",
-  "input": {
-    "ts": "2026-01-01T00:00:00+00:00",
-    "msg": "hello"
-  },
-  "canonical": "{\"msg\":\"hello\",\"ts\":{\"__t__\":\"datetime\",\"v\":\"2026-01-01T00:00:00+00:00\"}}",
-  "payload_hash": "ef8b8e33b28902ab836449857cd8053971aa19f38cd1185a7a995e670a1eb62e"
-}

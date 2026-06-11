@@ -1,8 +1,0 @@
-{
-  "name": "first_record_real_payload",
-  "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-  "prev_hash": "",
-  "payload_hash": "20b2dda940d741d9780897200aaef2ef356ab32b38c7de0d94306fb5a66b4a8e",
-  "message_bytes_utf8": "|20b2dda940d741d9780897200aaef2ef356ab32b38c7de0d94306fb5a66b4a8e",
-  "signed_hash": "f4ca9a79bf49fa9b0114fd1d1824867f780e78392284963863df620948731c3f"
-}
