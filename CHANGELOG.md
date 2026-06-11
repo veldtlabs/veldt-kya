@@ -9,23 +9,14 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.3.1] — 2026-06-11
 
 ### Fixed
-- **DuckDB-safe `agent_key` widening migration** (#78). Two DuckDB-
-  specific bugs in `_migrate_agent_key_width` poisoned the
-  connection's transaction context, causing every subsequent
-  statement on the same conn to fail with
-  `TransactionContext Error: Current transaction is aborted`:
-  - `inspect().get_columns("missing_table", ...)` raised
-    `CatalogException` on DuckDB (PG/MySQL return `[]`); now gated
-    behind `has_table()` first, matching PG/MySQL behavior.
-  - `ALTER TABLE kya_invocations ALTER COLUMN agent_key TYPE
-    VARCHAR(512)` fails on DuckDB with
-    `Cannot change the type of this column: an index depends on it!`
-    because `idx_kya_inv_tenant_agent_occurred` includes the column.
-    The ALTER is a no-op on DuckDB anyway (DuckDB does not enforce
-    VARCHAR length), so the dialect now takes an explicit
-    skip-branch alongside the existing `sqlite` no-op branch.
-  Surfaced by Phase 10's 4-backend matrix (sqlite/duckdb/postgres/
-  mysql). Adds `tests/test_invocations_duckdb_regression.py`.
+- **DuckDB portability** (#78). The `agent_key` widening migration in
+  `kya.invocations` aborted the DuckDB transaction context, breaking
+  every subsequent statement on the same connection. DuckDB does not
+  enforce VARCHAR length, so the migration is now skipped on that
+  dialect (alongside the existing SQLite skip), and a `has_table()`
+  gate prevents introspection of missing tables from poisoning the
+  connection. DuckDB-backed deployments now work end-to-end across
+  the issuance / revocation / audit flow.
 
 ## [0.3.0] — 2026-06-10
 
