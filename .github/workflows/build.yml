@@ -110,7 +110,7 @@ jobs:
           # yaml, fastapi, httpx, sse-starlette).
           WHEEL=$(ls dist/*.whl)
           /tmp/v/bin/pip install "${WHEEL}[did,gateway]"
-          /tmp/v/bin/pip install pytest psycopg2-binary pymysql duckdb duckdb-engine pytz prometheus_client cryptography python-dotenv
+          /tmp/v/bin/pip install pytest pytest-asyncio psycopg2-binary pymysql duckdb duckdb-engine pytz prometheus_client cryptography python-dotenv responses
           /tmp/v/bin/python -m pytest tests/ -v --tb=short
 
       - name: Smoke from installed wheel
