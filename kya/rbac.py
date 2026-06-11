@@ -452,13 +452,20 @@ def has_action(
     action: str,
 ) -> bool:
     """Returns True iff the principal has an ACTIVE grant for the
-    action OR the wildcard `kya.*` for this tenant.
+    action OR the matching namespace wildcard for this tenant.
 
     "Active" = effective_at <= now AND (expires_at IS NULL OR
     expires_at > now). Pure read — does not raise on DB errors;
     fail-soft returns False (default-deny posture).
+
+    Inputs are validated against the same allowlist used by
+    grant_action / require_action. An invalid-shape action string
+    (e.g. ``mcp.fs.read_file\n<smuggled>`` or just ``mcp.``) returns
+    False without touching the database — same default-deny posture.
     """
     if not tenant_id or not principal_id or not action:
+        return False
+    if not _is_valid_action(action):
         return False
     # Two-wildcard match: the literal action plus the namespace
     # wildcard for whichever namespace the action belongs to.

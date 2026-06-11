@@ -835,3 +835,68 @@ def test_mcp_grant_is_tenant_isolated(db):
         db, tenant_id="t2", principal_kind="agent",
         principal_id="cross-tenant-agent", action="mcp.fs.read_file",
     ) is False
+
+
+def test_mcp_grant_expires_at_is_honored(db):
+    """A `mcp.*` grant with an `expires_at` in the past must NOT
+    authorize subsequent calls. Mirrors the active-grant time-window
+    contract for the kya namespace."""
+    from datetime import datetime, timedelta, timezone
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="expiring-agent", action="mcp.*",
+        granted_by="h-1", reason="will expire",
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+    )
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="expiring-agent", action="mcp.fs.read_file",
+    ) is False
+
+
+def test_mcp_grant_is_principal_kind_scoped(db):
+    """A `mcp.*` grant to principal_kind=agent must NOT authorize the
+    same id used as principal_kind=human (or any other kind)."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="bound-id", action="mcp.*",
+        granted_by="h-1", reason="agent only",
+    )
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="bound-id", action="mcp.fs.read_file",
+    ) is True
+    # Same id, different principal_kind -- not authorized.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="human",
+        principal_id="bound-id", action="mcp.fs.read_file",
+    ) is False
+
+
+def test_has_action_rejects_injected_action_without_db_hit(db):
+    """has_action MUST short-circuit invalid-shape action strings
+    instead of round-tripping them as a SQL parameter. A
+    `mcp.fs.read_file\n<smuggled>` probe coming from upstream code
+    that didn't validate first must NOT touch the database."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="some-agent", action="mcp.fs.read_file",
+        granted_by="h-1", reason="legit grant",
+    )
+    # Newline injection -- pre-fix the regex anchor allowed it.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="some-agent",
+        action="mcp.fs.read_file\nforged",
+    ) is False
+    # Malformed namespace string entirely.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="some-agent", action="..",
+    ) is False
