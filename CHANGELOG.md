@@ -6,6 +6,29 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-10
+
+### Added
+- **W3C DID adapter** (Phase 3d) — did:key, did:web, did:jwk
+  resolvers + JWT-VC verification. New extras: `pip install
+  veldt-kya[did]`.
+- **MCP/JSON-RPC gateway** (Phase 4+6) — identity + policy + audit
+  HTTP proxy for any backend MCP server. DPoP RFC 9449 on
+  `/v1/principals/me`, schema-bounded body envelope on `/mcp`.
+  New extras: `pip install veldt-kya[gateway]`.
+- **Phase 5g — 9 DID-to-KYA integration points**: revocation +
+  DPoP events fire through `_HARDENING_EVENT_KINDS` + realtime +
+  `SIGNAL_DELTAS`; `link_vc_issuer_to_child` writes
+  `vc_issued` edges; `check_vc_scope_against_issuer` runs VC
+  scope through `delegation_policy`; `issuer_tenant_id_from_did`
+  UUID5 helper (`NAMESPACE_URL`).
+- **Phase 5h OSS primitives** — `admin` principal kind;
+  `vc_request_queued / _approved / _auto_approved / _denied`
+  evidence kinds; `vc_approval_denied` security event;
+  DID-aware segment matcher (`_did_segment_match`,
+  `_PATTERN_RE`); DID method-aware `normalize_admin_did`
+  (did:web hostname case-fold; did:key/did:jwk byte-exact).
+
 ### Changed — breaking default
 - Gateway: new `enforcement.mode` config; default changed from
   implicit blocking to `audit_only`. Operators who relied on the
