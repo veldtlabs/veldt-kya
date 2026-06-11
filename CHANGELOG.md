@@ -6,6 +6,25 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-06-11
+
+### Changed
+- **`redis>=5.0` is now part of the `[gateway]` extra** (#89). The
+  gateway's policy pipeline calls `kya._valkey.get_valkey()` for
+  the token-bucket rate limiter and the Phase 5g revocation cache.
+  Pre-fix, `veldt-kya[gateway]` did not pull in `redis-py`, so a
+  deployment that set `KYA_VALKEY_URL` saw `get_valkey()` return
+  None silently and the rate limiter fail-opened. Bundling redis
+  here makes `pip install veldt-kya[gateway]` sufficient on its own
+  for a gateway deployment with hardening features functional.
+
+### Added
+- Loud `WARNING` log on misconfig: when `KYA_VALKEY_URL` /
+  `REDIS_URL` is set but `redis-py` is not importable, the log
+  escalates from `DEBUG` to `WARNING` so operators see the silent
+  fail-open path at startup. When neither URL is set, the message
+  stays at DEBUG (normal fast path).
+
 ## [0.3.3] — 2026-06-11
 
 ### Added
