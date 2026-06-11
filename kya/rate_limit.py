@@ -168,6 +168,94 @@ def maybe_rate_limit(
     return True
 
 
+def check_rate(
+    db: Any,
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+    requests_per_minute: int,
+) -> bool:
+    """Per-principal rate limit check called from the gateway's
+    policy pipeline.
+
+    Returns True if the call should proceed, False if it should be
+    rate-limited. The gateway translates False into a 403 with
+    ``RATE_LIMIT`` reason code (per `kya_gateway.policy_pipeline`).
+
+    Differs from :func:`maybe_rate_limit` in two ways:
+
+    1. **Caller-supplied rate.** The gateway has a per-route
+       ``requests_per_minute`` value in its config; we honor it
+       directly instead of resolving via
+       ``KYA_RATE_LIMIT_RPS_<primitive>`` env. ``requests_per_minute
+       <= 0`` returns True immediately (no limit configured).
+    2. **Per-principal bucket.** The token bucket key is
+       ``kya:gw:<tenant>:<kind>:<id>``, so two principals in the
+       same tenant don't share a budget. Mirrors the gateway's
+       per-principal verdict semantics.
+
+    Fail-open contract: if the underlying token-bucket helper
+    (``kya_redteam.runtime.acquire_rate_token``) is unavailable
+    or raises, returns True so a transient operational fault does
+    not gate all MCP traffic. A security event is emitted whenever
+    the call would have been rate-limited so the audit chain
+    captures the signal even on fail-open.
+    """
+    if requests_per_minute <= 0:
+        return True
+    rps = float(requests_per_minute) / 60.0
+    # Bucket key MUST hash the identity tuple. Colon-delimited
+    # f-string is unsafe because principal_id can be a DID
+    # (`did:key:zABC` -- itself contains colons), so two distinct
+    # principals could craft overlapping bucket keys and share or
+    # exhaust each other's budgets. sha256 is bijective in practice
+    # (collisions are astronomically unlikely) and gives a fixed-
+    # length, delimiter-safe segment.
+    import hashlib
+    key_input = f"{tenant_id}|{principal_kind}|{principal_id}".encode()
+    target_id = "kya:gw:" + hashlib.sha256(key_input).hexdigest()[:32]
+    try:
+        from kya_redteam.runtime import check_rate_token
+    except Exception as exc:
+        logger.debug(
+            "[KYA-RL] rate-limit helper unavailable (%s); fail-open", exc,
+        )
+        return True
+    try:
+        # Non-blocking check -- gateway path is HTTP-synchronous and
+        # must never sleep on rate-limit backoff.
+        within_budget = check_rate_token(target_id, rps)
+    except Exception as exc:
+        logger.debug(
+            "[KYA-RL] check_rate_token raised (%s); fail-open", exc,
+        )
+        return True
+    if not within_budget:
+        # Emit a security event so the audit chain reflects the
+        # firing. emit_security_event handles missing db/principal
+        # info gracefully (log-only fallback).
+        try:
+            from ._security_events import emit_security_event
+            emit_security_event(
+                "rate_limit_exceeded",
+                tenant_id=tenant_id,
+                primitive="gateway_mcp",
+                principal_kind=principal_kind,
+                principal_id=principal_id, db=db,
+                detail={
+                    "rps_limit": rps,
+                    "requests_per_minute": requests_per_minute,
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "[KYA-RL] security-event emit failed: %s", exc,
+            )
+        return False
+    return True
+
+
 def _sanitize_env_segment(s: str) -> str:
     """Strict whitelist for env-var name segments: only alphanumerics
     and underscores. Anything else (hyphens, dots, equals, colons,

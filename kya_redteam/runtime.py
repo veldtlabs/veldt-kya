@@ -271,6 +271,59 @@ def acquire_rate_token(target_id: str, rate_limit_rps: float,
     return total_wait
 
 
+def check_rate_token(target_id: str, rate_limit_rps: float) -> bool:
+    """Non-blocking variant of :func:`acquire_rate_token`.
+
+    Performs ONE INCR-and-check (or one minimum-interval lookup for
+    sub-1-rps targets) and returns True if the call is within budget,
+    False if over budget. Never sleeps -- suitable for HTTP-synchronous
+    paths like the KYA Gateway's policy pipeline where the request
+    thread cannot block.
+
+    Same fail-open contract as ``acquire_rate_token``: Valkey
+    unavailable -> True. Same key shape (``_rate_key(target_id, ...)``)
+    so consumers that mix both functions share buckets correctly.
+
+    Returns:
+        True  -- call is within budget (or rate-limiting disabled).
+        False -- call is over budget at this instant.
+    """
+    if rate_limit_rps <= 0:
+        return True
+    rds = _get_valkey()
+    if rds is None:
+        return True  # fail open
+    if rate_limit_rps >= 1.0:
+        cap = max(1, int(rate_limit_rps))
+        now_s = int(time.time())
+        key = _rate_key(target_id, now_s)
+        try:
+            count = rds.incr(key)
+            if int(count) == 1:
+                rds.expire(key, 2)
+            return int(count) <= cap
+        except Exception as exc:
+            logger.debug(
+                "[REDTEAM-RT] check_rate_token incr failed: %s", exc,
+            )
+            return True   # fail open
+    # rps < 1: minimum-interval enforcement.
+    min_interval = 1.0 / rate_limit_rps
+    try:
+        last = rds.get(_rate_last_key(target_id))
+        last_t = float(last) if last else 0.0
+    except Exception:
+        return True   # fail open
+    now = time.time()
+    if (now - last_t) < min_interval:
+        return False
+    try:
+        rds.set(_rate_last_key(target_id), str(now), ex=300)
+    except Exception:
+        pass
+    return True
+
+
 # ── Status summary (for the dashboard) ──────────────────────────────
 
 def runtime_status(tenant_id: str, limit: int) -> dict:

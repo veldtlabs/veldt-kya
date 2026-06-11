@@ -218,3 +218,268 @@ def test_no_rate_limit_env_means_no_valkey_call(monkeypatch):
             sys.modules["kya_redteam.runtime"] = saved
         else:
             sys.modules.pop("kya_redteam.runtime", None)
+
+
+# ─── check_rate (gateway-friendly per-principal API) ───────────────
+
+
+def test_check_rate_returns_true_when_limit_is_zero():
+    """`requests_per_minute=0` means "no limit configured" -- return
+    True without touching the token-bucket helper (no env, no DB)."""
+    from kya import check_rate
+    assert check_rate(
+        db=None, tenant_id="t1",
+        principal_kind="agent", principal_id="a-1",
+        requests_per_minute=0,
+    ) is True
+
+
+def test_check_rate_returns_true_when_helper_unavailable(monkeypatch):
+    """Fail-open contract: when `kya_redteam.runtime` cannot be
+    imported, `check_rate` returns True so a missing optional dep
+    does not gate all MCP traffic."""
+    import sys
+
+    from kya import check_rate
+
+    saved = sys.modules.pop("kya_redteam.runtime", None)
+    sys.modules["kya_redteam.runtime"] = None  # force ImportError
+    try:
+        assert check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=60,
+        ) is True
+    finally:
+        if saved is not None:
+            sys.modules["kya_redteam.runtime"] = saved
+        else:
+            sys.modules.pop("kya_redteam.runtime", None)
+
+
+def _install_fake_runtime(fake_check_rate_token):
+    """Install a fake `kya_redteam.runtime` module exposing
+    `check_rate_token`. Returns a teardown callable."""
+    import sys
+    import types
+    fake_mod = types.ModuleType("kya_redteam.runtime")
+    fake_mod.check_rate_token = fake_check_rate_token
+    # Many tests in this file also reference acquire_rate_token; keep
+    # it present so unrelated callers don't break.
+    fake_mod.acquire_rate_token = lambda *a, **kw: 0.0
+    saved = sys.modules.get("kya_redteam.runtime")
+    sys.modules["kya_redteam.runtime"] = fake_mod
+
+    def restore():
+        if saved is not None:
+            sys.modules["kya_redteam.runtime"] = saved
+        else:
+            sys.modules.pop("kya_redteam.runtime", None)
+    return restore
+
+
+def test_check_rate_returns_true_when_within_budget():
+    """Token helper returns True (within budget) -> check_rate True.
+    Bucket key MUST scope to (tenant, principal_kind, principal_id)
+    via a hash so colon-containing principal_ids (DIDs) cannot alias
+    another principal's bucket."""
+    from kya import check_rate
+
+    captured = {}
+
+    def fake_check(target_id, rps):
+        captured["target_id"] = target_id
+        captured["rps"] = rps
+        return True
+
+    restore = _install_fake_runtime(fake_check)
+    try:
+        assert check_rate(
+            db=None, tenant_id="00000000-0000-0000-0000-0000000012a2",
+            principal_kind="agent",
+            principal_id="phase12-agent-001",
+            requests_per_minute=60,
+        ) is True
+        # Hashed bucket key (HIGH-#1 fix): kya:gw:<32 hex chars>.
+        assert captured["target_id"].startswith("kya:gw:"), captured
+        suffix = captured["target_id"].removeprefix("kya:gw:")
+        assert len(suffix) == 32 and all(
+            c in "0123456789abcdef" for c in suffix
+        ), suffix
+        # 60 req/min -> 1 rps.
+        assert captured["rps"] == 1.0
+    finally:
+        restore()
+
+
+def test_check_rate_returns_false_when_over_budget():
+    """Token helper returns False (over budget) -> check_rate False
+    so the gateway returns 403 RATE_LIMIT."""
+    from kya import check_rate
+
+    def fake_check(target_id, rps):
+        return False
+
+    restore = _install_fake_runtime(fake_check)
+    try:
+        assert check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=60,
+        ) is False
+    finally:
+        restore()
+
+
+def test_check_rate_returns_true_when_helper_raises():
+    """Fail-open on operational fault: if check_rate_token raises
+    (Valkey down, network blip, etc.) the call proceeds. Matches
+    maybe_rate_limit's fail-soft contract."""
+    from kya import check_rate
+
+    def fake_check(target_id, rps):
+        raise RuntimeError("valkey down")
+
+    restore = _install_fake_runtime(fake_check)
+    try:
+        assert check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=60,
+        ) is True
+    finally:
+        restore()
+
+
+def test_check_rate_buckets_are_independent_across_principals():
+    """Two principals in the same tenant must NOT share a bucket.
+    Different (kind, id) tuples must hit different target_ids."""
+    from kya import check_rate
+
+    target_ids: list[str] = []
+
+    def fake_check(target_id, rps):
+        target_ids.append(target_id)
+        return True
+
+    restore = _install_fake_runtime(fake_check)
+    try:
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=60,
+        )
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-2",
+            requests_per_minute=60,
+        )
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="human", principal_id="a-1",
+            requests_per_minute=60,
+        )
+        assert len(target_ids) == 3
+        assert len(set(target_ids)) == 3, (
+            f"buckets collapsed: {target_ids!r}"
+        )
+    finally:
+        restore()
+
+
+def test_check_rate_bucket_is_collision_safe_for_did_principal_ids():
+    """HIGH-#1 regression: principal_id can be a DID (`did:key:zABC`)
+    containing colons. Two distinct principals must never craft the
+    same Valkey bucket key. Pre-fix the colon-delimited f-string
+    allowed: tenant=t1, kind=agent, id='did:key:zABC' to share a
+    key with tenant=t1, kind='agent:did', id='key:zABC'.
+    The sha256 hash defeats this."""
+    from kya import check_rate
+
+    target_ids: list[str] = []
+
+    def fake_check(target_id, rps):
+        target_ids.append(target_id)
+        return True
+
+    restore = _install_fake_runtime(fake_check)
+    try:
+        # The original collision pair:
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent",
+            principal_id="did:key:zABC",
+            requests_per_minute=60,
+        )
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent:did",
+            principal_id="key:zABC",
+            requests_per_minute=60,
+        )
+        # And a "split-elsewhere" pair to be thorough.
+        check_rate(
+            db=None, tenant_id="t1:agent",
+            principal_kind="did",
+            principal_id="key:zABC",
+            requests_per_minute=60,
+        )
+        assert len(target_ids) == 3
+        assert len(set(target_ids)) == 3, (
+            f"colon-collision still possible: {target_ids!r}"
+        )
+    finally:
+        restore()
+
+
+def test_check_rate_emits_security_event_on_over_budget():
+    """Documented audit signal: when over budget, check_rate MUST
+    emit `rate_limit_exceeded` so the audit chain records the
+    firing even when downstream is fail-open."""
+    from kya import check_rate
+
+    emitted = []
+
+    def fake_check(target_id, rps):
+        return False
+
+    def fake_emit(event_kind, **kwargs):
+        emitted.append((event_kind, kwargs))
+
+    restore = _install_fake_runtime(fake_check)
+    import kya._security_events as se
+    real_emit = se.emit_security_event
+    se.emit_security_event = fake_emit
+    try:
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=60,
+        )
+        assert any(
+            kind == "rate_limit_exceeded" for kind, _ in emitted
+        ), f"no rate_limit_exceeded event: {emitted!r}"
+    finally:
+        se.emit_security_event = real_emit
+        restore()
+
+
+def test_check_rate_negative_requests_per_minute_returns_true():
+    """A negative `requests_per_minute` (probably a config typo)
+    should behave the same as 0 -- no limit configured. Returns True
+    without touching the token-bucket helper."""
+    from kya import check_rate
+    # Sentinel helper that asserts it isn't called.
+    def fake_check(target_id, rps):
+        raise AssertionError(
+            "check_rate_token must not be called for rpm <= 0"
+        )
+    restore = _install_fake_runtime(fake_check)
+    try:
+        assert check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=-100,
+        ) is True
+    finally:
+        restore()
