@@ -6,6 +6,19 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-06-11
+
+### Added
+- **Dynamic MCP action namespace** (#82). `kya.rbac` now accepts
+  `mcp.<backend>.<tool>` action strings (alongside the existing closed
+  `ACTIONS` set) so the gateway's policy pipeline can resolve MCP tool
+  calls through `require_action` and `min_trust` correctly. A new
+  `mcp.*` literal wildcard grants any tool in the MCP namespace
+  (mirrors the `kya.*` pattern). Namespace separation enforced:
+  `mcp.*` does not authorize `kya.*` actions and vice versa.
+  Validator regex anchored with `\A` / `\Z` to refuse trailing-newline
+  injection attempts.
+
 ## [0.3.1] — 2026-06-11
 
 ### Fixed
