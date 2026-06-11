@@ -1,0 +1,54 @@
+# KYA Gateway — minimal config to gate a single MCP backend.
+#
+# Run with:
+#     KYA_DB_URL=sqlite:///./kya.db \
+#     KYA_EVIDENCE_SIGNING_KEY=$(openssl rand -base64 32) \
+#     kya-gateway --config examples/gateway/basic.yaml --port 8080
+
+gateway:
+  bind: "0.0.0.0:8080"
+  tenant_id: "tenant-alpha"
+
+identity:
+  # Try DID first; fall back to bearer JWT.
+  methods: ["did", "bearer_jwt"]
+  did:
+    resolvers: ["key", "web", "jwk"]
+    # Empty trusted_issuers list means "trust any DID with a valid signature."
+    # For real deployments, populate this with your VC issuer DIDs.
+    trusted_issuers: []
+    # PoP audience MUST be set to this gateway's externally visible URL —
+    # otherwise a PoP minted for another KYA gateway can be replayed here.
+    # Set allow_header_trust: true instead ONLY if you're behind a service
+    # mesh that has already authenticated the caller (e.g. mTLS).
+    pop_audience: "https://gateway.example.com/mcp"
+  jwt:
+    jwks_url: "https://idp.example/.well-known/jwks.json"
+    # Issuers whose `principal_kind` claim KYA honors. Empty = downgrade
+    # everyone to "agent" — agents can't self-elevate via a JWT claim.
+    trusted_issuers: []
+
+backends:
+  - name: "default"
+    url: "http://localhost:9001"
+    timeout_s: 30
+
+policy:
+  min_trust: 50
+  rate_limit:
+    requests_per_minute: 600
+  payload_caps:
+    max_bytes: 65536
+  rbac:
+    default: "deny"
+    rules:
+      - principal_kind: "agent"
+        actions: ["mcp.default.*"]
+        verdict: "allow"
+      - principal_kind: "agent"
+        actions: ["mcp.default.write_*", "mcp.default.delete_*"]
+        verdict: "require_human"
+
+audit:
+  evidence_signing_key_env: "KYA_EVIDENCE_SIGNING_KEY"
+  hmac_chain: true
