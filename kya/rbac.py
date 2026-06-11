@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -127,9 +128,55 @@ ACTIONS: frozenset[str] = frozenset({
     # Signals / rogue
     "kya.signal.record",
     "kya.signal.read",
-    # Wildcard — super-user
+    # Wildcards — super-user / namespace-scoped grants
     "kya.*",
+    "mcp.*",   # any MCP tool-call action (dynamic namespace)
 })
+
+
+# Regex for the dynamic MCP action namespace. The gateway emits
+# actions shaped `mcp.<backend>.<tool>` per the MCP convention
+# documented in `kya_gateway.mcp_protocol.action_from_tool_call`.
+#
+# Naming policy: lowercase only. KYA-side grant strings are case-
+# sensitive, and downstream audit/grep pipelines treat distinct cases
+# as distinct principals. Forcing lowercase here means a customer who
+# advertises `CamelCase` MCP tool names gets a loud InvalidActionError
+# at grant time instead of silently fragmenting their audit trail.
+# `kya_gateway.mcp_protocol.action_from_tool_call` is the canonical
+# producer; if that ever needs to relax this, change BOTH together.
+#
+# Anchored with `\A` / `\Z` (not `^` / `$`) so a trailing `\n`
+# injection cannot smuggle a forged segment past the validator
+# (Python's `$` matches end-of-string OR right before a single
+# trailing newline).
+_MCP_ACTION_RE = re.compile(
+    r"\Amcp\.[a-z0-9][a-z0-9_-]*\.[a-z0-9][a-z0-9_-]*\Z"
+)
+
+
+def _is_valid_action(action: str) -> bool:
+    """Returns True if `action` is recognized by KYA's RBAC validator.
+
+    Two namespaces are accepted:
+      1. The closed set ``ACTIONS`` (kya.* + the `mcp.*` wildcard).
+      2. The dynamic MCP namespace ``mcp.<backend>.<tool>`` matching
+         ``_MCP_ACTION_RE`` — gateway-emitted actions per the MCP
+         routing convention.
+
+    Everything else is rejected. Keeps typo-protection on KYA-internal
+    actions while letting the gateway pass through dynamic MCP actions
+    without registering each one.
+
+    Hot-path optimization: the closed-set lookup short-circuits before
+    the regex is consulted, and the `startswith("mcp.")` guard skips
+    the regex engine entirely for non-MCP typos.
+    """
+    if action in ACTIONS:
+        return True
+    if not isinstance(action, str) or not action.startswith("mcp."):
+        return False
+    return bool(_MCP_ACTION_RE.match(action))
 
 
 RBAC_MODES: frozenset[str] = frozenset({"off", "flag", "block"})
@@ -219,10 +266,11 @@ def grant_action(
         raise ValueError("tenant_id is required")
     if not principal_id:
         raise ValueError("principal_id is required")
-    if action not in ACTIONS:
+    if not _is_valid_action(action):
         raise InvalidActionError(
             f"Unknown action {action!r}; must be in "
-            f"kya.rbac.ACTIONS")
+            f"kya.rbac.ACTIONS or match the dynamic MCP namespace "
+            f"mcp.<backend>.<tool>")
 
     ensure_rbac_table(db)
     from ._legacy_tables import kya_role_grants as _T
@@ -412,6 +460,15 @@ def has_action(
     """
     if not tenant_id or not principal_id or not action:
         return False
+    # Two-wildcard match: the literal action plus the namespace
+    # wildcard for whichever namespace the action belongs to.
+    # `kya.budget.write` matches `kya.*`; `mcp.fs.read_file` matches
+    # `mcp.*`. Keeps the SQL a single IN-list, so no extra round-trip
+    # per request.
+    if action.startswith("mcp."):
+        namespace_wild = "mcp.*"
+    else:
+        namespace_wild = "kya.*"
     schema = _schema_prefix(db)
     try:
         row = db.execute(text(
@@ -425,7 +482,7 @@ def has_action(
             f"LIMIT 1"
         ), {"t": tenant_id, "pk": principal_kind,
             "pid": principal_id,
-            "exact": action, "wild": "kya.*",
+            "exact": action, "wild": namespace_wild,
             "n": datetime.now(timezone.utc)}).first()
         return row is not None
     except Exception as exc:
@@ -470,10 +527,11 @@ def require_action(
     # `action="kya.budet.write"` (note typo). Validation belongs
     # ahead of the decision branch — operators want loud failures
     # on misspelled grants, off-mode or not.
-    if action not in ACTIONS:
+    if not _is_valid_action(action):
         raise InvalidActionError(
             f"Unknown action {action!r} — typo? "
-            f"Action must be in kya.rbac.ACTIONS")
+            f"Action must be in kya.rbac.ACTIONS or match the dynamic "
+            f"MCP namespace mcp.<backend>.<tool>")
     if min_trust is not None and not isinstance(min_trust, int):
         raise TypeError(
             f"min_trust must be int or None; got {type(min_trust).__name__}")
