@@ -472,10 +472,7 @@ def has_action(
     # `kya.budget.write` matches `kya.*`; `mcp.fs.read_file` matches
     # `mcp.*`. Keeps the SQL a single IN-list, so no extra round-trip
     # per request.
-    if action.startswith("mcp."):
-        namespace_wild = "mcp.*"
-    else:
-        namespace_wild = "kya.*"
+    namespace_wild = "mcp.*" if action.startswith("mcp.") else "kya.*"
     schema = _schema_prefix(db)
     try:
         row = db.execute(text(

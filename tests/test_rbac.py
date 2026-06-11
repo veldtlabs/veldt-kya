@@ -725,8 +725,9 @@ def test_validator_rejects_malformed_mcp_action(db):
     A bare `mcp.foo` (missing tool segment) or extra-deep
     `mcp.fs.subdir.read` must still fail validation so typos remain
     loud."""
-    from kya.rbac import grant_action, InvalidActionError
     import pytest
+
+    from kya.rbac import InvalidActionError, grant_action
     for bad in ("mcp.foo", "mcp.fs.subdir.read", "mcp.", "mcp..read"):
         with pytest.raises(InvalidActionError):
             grant_action(
@@ -799,8 +800,9 @@ def test_validator_rejects_trailing_newline_injection(db):
     could pass validation and forge an audit row downstream. The fix
     uses `\A` / `\Z` anchors which only match true string
     boundaries."""
-    from kya.rbac import grant_action, InvalidActionError
     import pytest
+
+    from kya.rbac import InvalidActionError, grant_action
     # Trailing newline that the buggy `$` anchor would have accepted.
     with pytest.raises(InvalidActionError):
         grant_action(
@@ -842,6 +844,7 @@ def test_mcp_grant_expires_at_is_honored(db):
     authorize subsequent calls. Mirrors the active-grant time-window
     contract for the kya namespace."""
     from datetime import datetime, timedelta, timezone
+
     from kya.rbac import grant_action, has_action
 
     grant_action(
