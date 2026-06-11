@@ -104,3 +104,10 @@ scripts/README_mavlink_sitl.md
 _internal/
 docs/
 
+
+# Additional internal items moved to _internal/
+BACKLOG.md
+.kya_test/
+bench_results/
+.test_falco_live_capture.json
+
