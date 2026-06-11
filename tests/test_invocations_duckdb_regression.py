@@ -29,8 +29,8 @@ from __future__ import annotations
 def test_ensure_invocations_table_then_insert_long_did_on_duckdb():
     """The migration must not poison the DuckDB connection. A long
     DID-shaped agent_key must insert cleanly."""
-    duckdb_engine = __import__("duckdb_engine")  # ImportError == skip
-    assert duckdb_engine is not None
+    import pytest
+    pytest.importorskip("duckdb_engine")
 
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import sessionmaker
