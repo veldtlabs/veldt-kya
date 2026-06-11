@@ -433,6 +433,7 @@ from .quality import (
 )
 from .rate_limit import (
     RateLimitExceededError,
+    check_rate,
     maybe_rate_limit,
     reset_rate_limit_state,
 )
@@ -841,6 +842,7 @@ __all__ = [
     # record_cost_event today; record_principal_signal /
     # set_delegation_override / set_budget will follow in future
     # commits as the surface stabilizes.
+    "check_rate",
     "maybe_rate_limit",
     "RateLimitExceededError",
     "reset_rate_limit_state",
