@@ -6,6 +6,31 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-06-11
+
+### Added
+- **`kya.rate_limit.check_rate`** (#85). New per-principal rate-limit
+  check called by the gateway's policy pipeline. Returns True/False.
+  Previously the gateway imported `check_rate` but the module only
+  exposed `maybe_rate_limit` (different signature) -- ImportError was
+  caught silently and gateway rate-limiting was effectively disabled.
+- **`kya_redteam.runtime.check_rate_token`** (#85). Non-blocking
+  variant of `acquire_rate_token` for HTTP-synchronous paths (single
+  INCR+cap check, no sleep loop).
+- Hashed bucket keys for `check_rate` so DID-shaped principal IDs
+  (which contain colons) cannot alias another principal's budget.
+
+### Fixed
+- **Gateway: principal_id resolution from VC** (#86). The gateway's
+  `IdentityResolver._try_did` now reads `principal_kind` /
+  `principal_id` from `vc.credentialSubject` (W3C VC-JWT §6.1
+  location) as well as the JWT top level. Pre-fix, VCs minted by
+  KYA's own `JWTVCIssuer` (which puts claims under
+  `credentialSubject`, the spec-compliant location) never matched,
+  and every VC-authenticated agent's `principal_id` silently fell
+  back to the agent's DID. Trust scores accumulated under the wrong
+  key and per-principal RBAC was broken for VC-bound agents.
+
 ## [0.3.2] — 2026-06-11
 
 ### Added
