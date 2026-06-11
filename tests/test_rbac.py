@@ -684,3 +684,222 @@ def test_min_trust_across_principal_kinds(db):
             db, tenant_id=TENANT_A, principal_kind="agent",
             principal_id=pid, action="kya.budget.write",
             min_trust=45)
+
+
+# ─── MCP action namespace (mcp.<backend>.<tool>) ──────────────────
+
+
+def test_validator_accepts_dynamic_mcp_action(db):
+    """The closed ACTIONS set must accept gateway-emitted
+    `mcp.<backend>.<tool>` action strings. Phase 12 surfaced this gap:
+    kya_gateway.policy_pipeline.evaluate calls require_action with
+    actions like `mcp.fs.write_file`, but the OSS RBAC validator
+    rejected anything not literally in ACTIONS, breaking the
+    min_trust gate for every MCP tool call.
+
+    The validator must accept:
+      - Closed ACTIONS literals (kya.budget.write, kya.*, etc.)
+      - Dynamic mcp.<backend>.<tool> patterns
+    """
+    from kya.rbac import grant_action, require_action
+
+    # First, the action must validate at grant time.
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="a-1", action="mcp.fs.read_file",
+        granted_by="h-1", reason="phase12 test",
+    )
+    # Then, require_action with the same action must NOT raise
+    # InvalidActionError (it may still raise AccessDeniedError, but
+    # that's about RBAC mode, not validation).
+    # With default RBAC mode "off", require_action returns True.
+    ok = require_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="a-1", action="mcp.fs.read_file",
+    )
+    assert ok is True
+
+
+def test_validator_rejects_malformed_mcp_action(db):
+    """The dynamic MCP namespace must be SHAPED `mcp.<backend>.<tool>`.
+    A bare `mcp.foo` (missing tool segment) or extra-deep
+    `mcp.fs.subdir.read` must still fail validation so typos remain
+    loud."""
+    import pytest
+
+    from kya.rbac import InvalidActionError, grant_action
+    for bad in ("mcp.foo", "mcp.fs.subdir.read", "mcp.", "mcp..read"):
+        with pytest.raises(InvalidActionError):
+            grant_action(
+                db, tenant_id="t1", principal_kind="agent",
+                principal_id="a-1", action=bad,
+                granted_by="h-1", reason="must reject",
+            )
+
+
+def test_mcp_wildcard_grant_covers_any_mcp_action(db):
+    """Granting the `mcp.*` wildcard once must cover all
+    mcp.<backend>.<tool> actions for that principal -- mirrors the
+    existing kya.* super-user pattern."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="wildcard-agent", action="mcp.*",
+        granted_by="h-1", reason="namespace grant",
+    )
+    # Any specific mcp.* action should be allowed by the wildcard.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="wildcard-agent", action="mcp.fs.read_file",
+    ) is True
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="wildcard-agent", action="mcp.time.get_current_time",
+    ) is True
+
+
+def test_mcp_wildcard_does_not_cover_kya_namespace(db):
+    """`mcp.*` must NOT grant kya.* actions. The two namespaces are
+    independent."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="mcp-only-agent", action="mcp.*",
+        granted_by="h-1", reason="mcp namespace only",
+    )
+    # A kya.* action must NOT be implicitly granted by mcp.*.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="mcp-only-agent", action="kya.evidence.read",
+    ) is False
+
+
+def test_kya_wildcard_does_not_cover_mcp_namespace(db):
+    """`kya.*` (super-user kya-namespace grant) must NOT grant
+    mcp.* actions. The two namespaces are independent so a future
+    super-admin grant doesn't accidentally expose MCP tool execution."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="kya-only-agent", action="kya.*",
+        granted_by="h-1", reason="kya super-user",
+    )
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="kya-only-agent", action="mcp.fs.write_file",
+    ) is False
+
+
+def test_validator_rejects_trailing_newline_injection(db):
+    r"""Regression: pre-fix the regex used `^...$` anchors. Python's `$`
+    matches end-of-string OR right before a single trailing `\n`, so
+    a malicious action string like `mcp.fs.read_file\n<smuggled>`
+    could pass validation and forge an audit row downstream. The fix
+    uses `\A` / `\Z` anchors which only match true string
+    boundaries."""
+    import pytest
+
+    from kya.rbac import InvalidActionError, grant_action
+    # Trailing newline that the buggy `$` anchor would have accepted.
+    with pytest.raises(InvalidActionError):
+        grant_action(
+            db, tenant_id="t1", principal_kind="agent",
+            principal_id="a-1",
+            action="mcp.fs.read_file\nforged",
+            granted_by="h-1", reason="must reject",
+        )
+    # Leading newline likewise.
+    with pytest.raises(InvalidActionError):
+        grant_action(
+            db, tenant_id="t1", principal_kind="agent",
+            principal_id="a-1",
+            action="\nmcp.fs.read_file",
+            granted_by="h-1", reason="must reject",
+        )
+
+
+def test_mcp_grant_is_tenant_isolated(db):
+    """A `mcp.*` grant in tenant t1 must NOT authorize the same
+    principal in tenant t2. Mirrors the existing kya.* tenant-
+    isolation contract."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="cross-tenant-agent", action="mcp.*",
+        granted_by="h-1", reason="t1 only",
+    )
+    # Same principal_id in a DIFFERENT tenant gets no authority.
+    assert has_action(
+        db, tenant_id="t2", principal_kind="agent",
+        principal_id="cross-tenant-agent", action="mcp.fs.read_file",
+    ) is False
+
+
+def test_mcp_grant_expires_at_is_honored(db):
+    """A `mcp.*` grant with an `expires_at` in the past must NOT
+    authorize subsequent calls. Mirrors the active-grant time-window
+    contract for the kya namespace."""
+    from datetime import datetime, timedelta, timezone
+
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="expiring-agent", action="mcp.*",
+        granted_by="h-1", reason="will expire",
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+    )
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="expiring-agent", action="mcp.fs.read_file",
+    ) is False
+
+
+def test_mcp_grant_is_principal_kind_scoped(db):
+    """A `mcp.*` grant to principal_kind=agent must NOT authorize the
+    same id used as principal_kind=human (or any other kind)."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="bound-id", action="mcp.*",
+        granted_by="h-1", reason="agent only",
+    )
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="bound-id", action="mcp.fs.read_file",
+    ) is True
+    # Same id, different principal_kind -- not authorized.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="human",
+        principal_id="bound-id", action="mcp.fs.read_file",
+    ) is False
+
+
+def test_has_action_rejects_injected_action_without_db_hit(db):
+    """has_action MUST short-circuit invalid-shape action strings
+    instead of round-tripping them as a SQL parameter. A
+    `mcp.fs.read_file\n<smuggled>` probe coming from upstream code
+    that didn't validate first must NOT touch the database."""
+    from kya.rbac import grant_action, has_action
+
+    grant_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="some-agent", action="mcp.fs.read_file",
+        granted_by="h-1", reason="legit grant",
+    )
+    # Newline injection -- pre-fix the regex anchor allowed it.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="some-agent",
+        action="mcp.fs.read_file\nforged",
+    ) is False
+    # Malformed namespace string entirely.
+    assert has_action(
+        db, tenant_id="t1", principal_kind="agent",
+        principal_id="some-agent", action="..",
+    ) is False
