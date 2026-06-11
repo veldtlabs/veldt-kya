@@ -87,7 +87,9 @@
       "Bash(git push *)",
       "Bash(gh run *)",
       "Bash(ruff check *)",
-      "Bash(grep -n \"^import re as _re$\\\\|^_PATTERN_RE = _re.compile\" kya/external_id.py)"
+      "Bash(grep -n \"^import re as _re$\\\\|^_PATTERN_RE = _re.compile\" kya/external_id.py)",
+      "Bash(grep -nA3 \"pip install\" .github/workflows/build.yml)",
+      "Bash(gh auth *)"
     ]
   }
 }
