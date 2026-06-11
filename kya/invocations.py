@@ -235,10 +235,18 @@ def _migrate_agent_key_width(conn) -> None:
 
     for table, column, mysql_null in _AGENT_KEY_MIGRATIONS:
         try:
+            # `has_table` first: on DuckDB, calling `get_columns` against
+            # a missing table raises CatalogException AND poisons the
+            # connection's transaction context, so every subsequent
+            # statement on the same conn fails with TransactionException.
+            # PG/MySQL silently return [], but the explicit gate keeps
+            # the dialects consistent.
+            if not insp.has_table(table, schema=schema):
+                continue
             cols = {c["name"]: c for c in insp.get_columns(table, schema=schema)}
             existing = cols.get(column)
             if existing is None:
-                continue   # Table or column doesn't exist — skip.
+                continue   # Column doesn't exist — skip.
             cur_len = getattr(existing.get("type"), "length", None)
             if cur_len is not None and cur_len >= 512:
                 continue   # Already wide enough.
@@ -264,6 +272,17 @@ def _migrate_agent_key_width(conn) -> None:
                          table, column, cur_len)
             elif dialect == "sqlite":
                 # SQLite does not enforce VARCHAR width — no-op.
+                pass
+            elif dialect == "duckdb":
+                # DuckDB also does not enforce VARCHAR length (a
+                # VARCHAR(100) column accepts a 500-char string with
+                # no truncation), so there is nothing to widen. We
+                # explicitly skip rather than fall through to the
+                # generic ALTER branch because DuckDB rejects
+                # ALTER COLUMN TYPE on indexed columns ("Catalog
+                # Error: an index depends on it"), which poisons the
+                # connection's transaction context for every
+                # subsequent statement.
                 pass
             else:
                 try:
