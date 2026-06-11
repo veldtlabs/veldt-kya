@@ -10,21 +10,18 @@ from __future__ import annotations
 import os
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kya import (
     DEFAULT_MAX_PAYLOAD_BYTES,
     PayloadTooLargeError,
-    RateLimitExceededError,
     check_payload_size,
     init_storage,
     maybe_rate_limit,
     record_evidence,
     record_invocation,
-    reset_rate_limit_state,
 )
-
 
 TENANT = "11111111-2222-3333-4444-cccccccccccc"
 

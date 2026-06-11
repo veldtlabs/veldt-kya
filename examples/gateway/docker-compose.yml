@@ -1,0 +1,51 @@
+# 30-second KYA Gateway quickstart.
+#
+# Starts:
+#   1. PostgreSQL as the KYA evidence store
+#   2. A mock MCP backend (the "filesystem" reference server)
+#   3. KYA Gateway in front of it
+#
+# Use:
+#   docker compose -f examples/gateway/docker-compose.yml up
+#   curl http://localhost:8080/healthz
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kya
+      POSTGRES_PASSWORD: kya
+      POSTGRES_DB: kya
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kya"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mcp-backend:
+    image: ghcr.io/modelcontextprotocol/server-filesystem:latest
+    # Replace with whatever backend MCP server you want to gate.
+    ports: ["9001:9001"]
+    command: ["--http", "--port", "9001", "--root", "/data"]
+    volumes:
+      - ./data:/data:ro
+
+  kya-gateway:
+    image: veldtlabs/kya-gateway:0.1.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KYA_DB_URL: "postgresql://kya:kya@postgres:5432/kya"
+      KYA_EVIDENCE_SIGNING_KEY: "REPLACE_ME_WITH_BASE64_KEY"
+      KYA_DID_RESOLVERS: "key,web,jwk"
+    volumes:
+      - ./basic.yaml:/etc/kya/gateway.yaml:ro
+    command: ["--config", "/etc/kya/gateway.yaml", "--port", "8080"]
+    ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

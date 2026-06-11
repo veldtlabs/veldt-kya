@@ -9,14 +9,11 @@ external infra.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
 
 import pytest
-
 
 # ─── Mock collector ────────────────────────────────────────────────────
 
@@ -29,8 +26,8 @@ class _Collector:
         self.status_code = 200
         self.latency_s = 0.0
         self._lock = threading.Lock()
-        self._server: Optional[HTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
 
     @property
     def url(self) -> str:

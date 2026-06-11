@@ -31,7 +31,6 @@ pytestmark = pytest.mark.skipif(
 )
 import sys
 import types
-from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -391,9 +390,9 @@ def test_governance_tables_postgres():
     # tenants/users/decision_rules/governance_policies populated; in this
     # isolated test PG we (a) define minimal ORM Tables so SQLAlchemy can
     # resolve the FK targets, AND (b) seed the rows the FKs will reference.
-    from sqlalchemy import MetaData, Table
     from sqlalchemy import Column as Col
     from sqlalchemy import Integer as Int
+    from sqlalchemy import Table
     from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
     eng = create_engine(url)

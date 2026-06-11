@@ -49,6 +49,7 @@ try:
         Text,
         func,
         select,
+        text,
     )
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -118,7 +119,11 @@ if _HAS_SQLALCHEMY:
         )
 
         tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
-        agent_key: Mapped[str] = mapped_column(String(100), nullable=False)
+        # 512 chars: covers did:jwk (~175 chars), did:web with deep paths,
+        # and any UUID/short-hash internal identifier. 100 chars was the
+        # original tight default and rejected DID-shaped principals
+        # outright on Postgres / MySQL (SQLite silently accepted).
+        agent_key: Mapped[str] = mapped_column(String(512), nullable=False)
         principal_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
         principal_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -171,11 +176,115 @@ def ensure_invocations_table(db) -> None:
     the configured KYA schema (default: dialect's default; override
     via KYA_VERSIONS_SCHEMA env var); SQLite/MySQL/DuckDB get the
     table in the default namespace.
+
+    Also runs an idempotent migration for the `agent_key` column —
+    pre-0.2.4 deployments had `VARCHAR(100)` which rejects DID URIs
+    (did:jwk ~175 chars). The migration widens to VARCHAR(512) on
+    Postgres / MySQL; SQLite has no enforced width and DuckDB's ALTER
+    is best-effort.
     """
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[Invocation.__table__])
+    _migrate_agent_key_width(conn)
+
+
+# Tables + columns whose `agent_key`-shaped field was originally
+# VARCHAR(100) and needs widening to 512 to accommodate DID URIs.
+# Add new entries here as more tables are audited.
+#
+# Tuple: (table, column, mysql_null_clause)
+_AGENT_KEY_MIGRATIONS = [
+    ("kya_invocations", "agent_key", "NOT NULL"),
+    ("kya_weight_suggestions", "agent_key", "NULL"),
+    ("kya_delegation_violations", "parent_agent_key", "NULL"),
+    ("kya_delegation_violations", "sub_agent_key", "NULL"),
+    ("kya_delegation_policy_overrides", "parent_agent_key", "NULL"),
+    ("kya_delegation_policy_overrides", "sub_agent_key", "NULL"),
+]
+
+
+def _migrate_agent_key_width(conn) -> None:
+    """Idempotently widen `agent_key`-shaped columns to VARCHAR(512).
+
+    Dialect-aware; fails soft per table if the introspection or ALTER
+    raises (e.g. table absent because the legacy module isn't loaded,
+    DuckDB versions that don't support ALTER COLUMN TYPE) so existing
+    deployments aren't broken by the upgrade.
+
+    Respects KYA's PG schema override (KYA_VERSIONS_SCHEMA) so customers
+    running KYA tables in a non-public schema still get migrated.
+    """
+    import logging
+
+    from sqlalchemy import inspect as _inspect
+    log = logging.getLogger(__name__)
+    try:
+        dialect = conn.engine.dialect.name
+        insp = _inspect(conn)
+    except Exception as exc:
+        log.warning("[KYA-INV] migration introspection failed: %s", exc)
+        return
+
+    # Custom PG schema support — `get_columns(name)` defaults to the
+    # default schema (typically `public`). When KYA_VERSIONS_SCHEMA is
+    # set, tables live in that schema and introspection must look there.
+    schema = _PG_SCHEMA if dialect == "postgresql" else None
+    qualified_prefix = f"{schema}." if schema else ""
+
+    for table, column, mysql_null in _AGENT_KEY_MIGRATIONS:
+        try:
+            cols = {c["name"]: c for c in insp.get_columns(table, schema=schema)}
+            existing = cols.get(column)
+            if existing is None:
+                continue   # Table or column doesn't exist — skip.
+            cur_len = getattr(existing.get("type"), "length", None)
+            if cur_len is not None and cur_len >= 512:
+                continue   # Already wide enough.
+
+            qualified = f"{qualified_prefix}{table}"
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} "
+                    f"ALTER COLUMN {column} TYPE VARCHAR(512)"
+                ))
+                log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
+                         table, column, cur_len)
+            elif dialect == "mysql":
+                # ALGORITHM=INPLACE keeps the lock light when supported
+                # (VARCHAR widening past 255 still needs a table rebuild
+                # in some engines; we let MySQL fall back automatically
+                # by not pinning the algorithm).
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} "
+                    f"MODIFY {column} VARCHAR(512) {mysql_null}"
+                ))
+                log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
+                         table, column, cur_len)
+            elif dialect == "sqlite":
+                # SQLite does not enforce VARCHAR width — no-op.
+                pass
+            else:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {qualified} "
+                        f"ALTER COLUMN {column} TYPE VARCHAR(512)"
+                    ))
+                except Exception as exc:
+                    log.warning(
+                        "[KYA-INV] could not widen %s.%s on dialect=%s: %s",
+                        table, column, dialect, exc,
+                    )
+        except Exception as exc:
+            # Log at ERROR so operators see a clear "migration didn't
+            # take effect" signal — subsequent inserts of long DIDs will
+            # then fail with truncation, and the error log explains why.
+            log.error(
+                "[KYA-INV] agent_key migration FAILED for %s.%s — long "
+                "DID-shaped principals may be rejected on next insert: %s",
+                table, column, exc,
+            )
 
 
 def record_invocation(

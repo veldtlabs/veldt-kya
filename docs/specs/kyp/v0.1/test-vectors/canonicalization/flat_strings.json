@@ -1,9 +1,0 @@
-{
-  "name": "flat_strings",
-  "input": {
-    "a": "hello",
-    "b": "world"
-  },
-  "canonical": "{\"a\":\"hello\",\"b\":\"world\"}",
-  "payload_hash": "520e8bb59c40d1fd625552beee74753660924bccc867510a258bffef6721ee60"
-}

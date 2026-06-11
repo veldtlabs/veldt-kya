@@ -20,7 +20,6 @@ from sqlalchemy.orm import sessionmaker
 
 from kya import init_storage, record_user_signal
 
-
 TENANT = "11111111-2222-3333-4444-aaaaaaaa4242"
 
 

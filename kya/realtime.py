@@ -128,6 +128,17 @@ ALLOWED_SIGNAL_KINDS = frozenset(
         "rate_limit_exceeded",
         "payload_too_large",
         "replay_detected",
+        # Phase 5g — DID / VC identity-layer events. Without these
+        # entries, emit_security_event silently drops the realtime
+        # path and `revocation_blocked` / `dpop_*` events would never
+        # surface on live dashboards.
+        "revocation_blocked",
+        "dpop_replay",
+        "dpop_forge_attempt",
+        "dpop_expired",
+        "issuer_rotation_pending",
+        # Phase 5h — denial-burst signal from issuer-API.
+        "vc_approval_denied",
     }
 )
 

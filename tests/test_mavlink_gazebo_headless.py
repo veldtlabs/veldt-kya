@@ -416,9 +416,9 @@ class TestStaleSweepPrefixAnchor:
     # epoch is fragile and we got it wrong on the first attempt.
     @staticmethod
     def _listing_time(created_at: str) -> float:
-        from datetime import datetime
         # Strip trailing tz-name (e.g. " UTC") -- keep the +0000.
         import re
+        from datetime import datetime
         cleaned = re.sub(r"\s+[A-Z]{1,4}$", "", created_at.strip())
         return datetime.strptime(
             cleaned, "%Y-%m-%d %H:%M:%S %z",

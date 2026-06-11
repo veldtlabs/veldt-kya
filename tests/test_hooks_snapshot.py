@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -16,7 +15,6 @@ from kya_hooks._snapshot import (
     reset_cache,
     seen_keys,
 )
-
 
 TENANT = "00000000-0000-0000-0000-000000000bbb"
 
@@ -136,6 +134,7 @@ def fake_openai_agents_sdk(monkeypatch):
 def test_openai_hook_on_tool_start_snapshots(db_factory,
                                               fake_openai_agents_sdk):
     import asyncio
+
     from kya_hooks.openai_agents import openai_agents_hooks
 
     client = MagicMock()
@@ -170,6 +169,7 @@ def test_openai_hook_on_tool_start_snapshots(db_factory,
 def test_openai_hook_on_handoff_snapshots_both_agents(db_factory,
                                                        fake_openai_agents_sdk):
     import asyncio
+
     from kya_hooks.openai_agents import openai_agents_hooks
 
     client = MagicMock()
@@ -204,6 +204,7 @@ def test_openai_hook_on_handoff_snapshots_both_agents(db_factory,
 def test_openai_hook_no_tenant_skips_snapshot(db_factory,
                                                 fake_openai_agents_sdk):
     import asyncio
+
     from kya_hooks.openai_agents import openai_agents_hooks
 
     client = MagicMock()
@@ -244,6 +245,7 @@ def fake_claude_sdk(monkeypatch):
 
 def test_claude_hook_pre_tool_snapshots(db_factory, fake_claude_sdk):
     import asyncio
+
     from kya_hooks.claude_agent import claude_agent_hooks
 
     client = MagicMock()
@@ -269,7 +271,9 @@ def test_claude_hook_pre_tool_snapshots(db_factory, fake_claude_sdk):
 
 
 def test_claude_hook_custom_agent_def_used(db_factory, fake_claude_sdk):
-    import asyncio, json
+    import asyncio
+    import json
+
     from kya_hooks.claude_agent import claude_agent_hooks
 
     client = MagicMock()

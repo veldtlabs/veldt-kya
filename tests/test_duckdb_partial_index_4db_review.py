@@ -24,7 +24,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from kya._legacy_tables import (
-    kya_weight_changes,
     kya_weight_overrides,
 )
 from kya.tenant_weights import ensure_tables

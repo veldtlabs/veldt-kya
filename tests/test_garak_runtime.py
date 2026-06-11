@@ -24,9 +24,6 @@ installed via ``pytest.importorskip``.
 """
 from __future__ import annotations
 
-import os
-import threading
-
 import pytest
 
 from kya_redteam.garak_runtime import (
@@ -36,7 +33,6 @@ from kya_redteam.garak_runtime import (
     garak_status,
 )
 from kya_redteam.pyrit_target import TargetResponse
-
 
 # ── Fixtures ────────────────────────────────────────────────────────
 
@@ -258,7 +254,8 @@ class TestConcurrencyLock:
 
     def test_io_buffer_restores_on_exception(self):
         from kya_redteam.garak_runtime import (
-            _garak_probe_io_buffer, _ensure_garak_initialized,
+            _ensure_garak_initialized,
+            _garak_probe_io_buffer,
         )
         _ensure_garak_initialized()
         from garak import _config as _gc  # noqa: F401
@@ -268,10 +265,9 @@ class TestConcurrencyLock:
         class BoomError(Exception):
             pass
 
-        with pytest.raises(BoomError):
-            with _garak_probe_io_buffer():
-                # Mid-yield exception must not leak the swapped buffer
-                raise BoomError("yield-time failure")
+        with pytest.raises(BoomError), _garak_probe_io_buffer():
+            # Mid-yield exception must not leak the swapped buffer
+            raise BoomError("yield-time failure")
 
         # After exception, reportfile must be back to original (None or whatever)
         assert getattr(_gc.transient, "reportfile", None) is original

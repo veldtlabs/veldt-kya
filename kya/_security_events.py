@@ -52,6 +52,21 @@ _HARDENING_EVENT_KINDS = frozenset({
     # ALLOWED_SIGNAL_KINDS + users.SIGNAL_DELTAS so the realtime
     # + DB paths fire correctly once whitelisted here too.
     "rbac_refusal",
+    # Phase 5g — runtime identity-layer events. Gateway + issuer-API
+    # call emit_security_event() with these to debit principal trust
+    # + feed attack-chain windows via the existing paths. Operators
+    # may need to add matching entries in `kya/realtime.py:
+    # ALLOWED_SIGNAL_KINDS` and `kya/users.py:SIGNAL_DELTAS` to
+    # enable trust-score deltas; the WARNING log + DB row fire
+    # without them.
+    "revocation_blocked",
+    "dpop_replay",
+    "dpop_forge_attempt",
+    "dpop_expired",
+    "issuer_rotation_pending",
+    # Phase 5h — burst of denials from same requester suggests
+    # attempted misuse of the issuance approval flow.
+    "vc_approval_denied",
 })
 
 

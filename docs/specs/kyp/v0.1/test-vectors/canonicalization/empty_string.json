@@ -1,9 +1,0 @@
-{
-  "name": "empty_string",
-  "input": {
-    "empty": "",
-    "non_empty": "x"
-  },
-  "canonical": "{\"empty\":\"\",\"non_empty\":\"x\"}",
-  "payload_hash": "233d0ba8d356de658775eb6a9c91d55f751507e88951aadd5199c4dc59a22bfe"
-}

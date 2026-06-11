@@ -23,7 +23,6 @@ import threading
 
 import pytest
 
-
 # ── No-pyrit-required tests ─────────────────────────────────────────
 
 
@@ -46,9 +45,8 @@ class TestModuleLevel:
         result = {"ok": False}
 
         def nested():
-            with _pyrit_central_memory_lock:
-                with _pyrit_central_memory_lock:
-                    result["ok"] = True
+            with _pyrit_central_memory_lock, _pyrit_central_memory_lock:
+                result["ok"] = True
 
         t = threading.Thread(target=nested)
         t.start()

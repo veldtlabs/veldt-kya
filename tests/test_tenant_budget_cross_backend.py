@@ -22,13 +22,10 @@ Parameterized backends:
 from __future__ import annotations
 
 import os
-import uuid
-from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
 
 # ── Backend parameterization ────────────────────────────────────────
 
@@ -135,7 +132,7 @@ def test_ensure_tables_creates_three_tables(db):
 
 def test_set_and_get_budget_round_trip(db):
     """set_budget → get_budget — values round-trip without loss."""
-    from kya.tenant_budget import set_budget, get_budget
+    from kya.tenant_budget import get_budget, set_budget
 
     set_budget(
         db, tenant_id=None, scope="tenant", scope_key="*",
@@ -157,7 +154,7 @@ def test_tenant_override_resolves_over_platform_default(db):
     ``tenant_id=<requested>`` even when falling back to the platform
     default — making callers unable to distinguish 'I have my own cap'
     from 'I'm using the platform cap' without a second query."""
-    from kya.tenant_budget import set_budget, get_budget
+    from kya.tenant_budget import get_budget, set_budget
 
     # Platform default $1000
     set_budget(db, tenant_id=None, scope="tenant", scope_key="*",
@@ -224,7 +221,10 @@ def test_list_budgets_includes_platform_and_tenant(db):
 
 def test_delete_budget_removes_and_audits(db):
     from kya.tenant_budget import (
-        delete_budget, get_budget, list_changes, set_budget,
+        delete_budget,
+        get_budget,
+        list_changes,
+        set_budget,
     )
 
     set_budget(db, tenant_id=TENANT_A, scope="tenant", scope_key="*",
@@ -314,9 +314,10 @@ def test_record_cost_event_idempotent_on_request_id(db):
 
 def test_record_cost_event_provider_derivation(db):
     """Provider derived from model_used when not explicit."""
+    from sqlalchemy import select
+
     from kya._legacy_tables import kya_cost_events as t
     from kya.tenant_budget import record_cost_event
-    from sqlalchemy import select
 
     cases = [
         ("gpt-4o-mini", "openai"),
@@ -514,7 +515,7 @@ def test_e2e_budget_breach_triggers_refuse(db, monkeypatch):
 def test_budget_scopes_include_cost_center_and_business_unit():
     """v0.1.1 promotion: cost_center and business_unit are first-class
     budget enforcement targets, not just analytics dimensions."""
-    from kya.tenant_budget import BUDGET_SCOPES, _PRINCIPAL_KINDS
+    from kya.tenant_budget import _PRINCIPAL_KINDS, BUDGET_SCOPES
     assert "cost_center" in BUDGET_SCOPES
     assert "business_unit" in BUDGET_SCOPES
     # But NOT principal kinds — caller cannot pass principal_kind="cost_center"

@@ -304,7 +304,10 @@ kya_weight_suggestions = Table(
     autoinc_id("kya_weight_suggestions_id_seq"),
     Column("tenant_id", uuid_or_string(), nullable=True),
     Column("incident_id", BigInteger, nullable=True),
-    Column("agent_key", String(100), nullable=True),
+    # 512 chars: same widening as kya_invocations.agent_key. DID URIs
+    # are too long for 100; the migration in kya.invocations widens both
+    # on next init_storage().
+    Column("agent_key", String(512), nullable=True),
     Column("scope", String(50), nullable=False),
     Column("key", String(100), nullable=False),
     Column("current_value", BigInteger, nullable=True),

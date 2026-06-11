@@ -18,7 +18,6 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
 
 import pytest
 
@@ -36,7 +35,8 @@ def keypair():
     """Generate a fresh Ed25519 keypair for this test module."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import (
-        Encoding, PublicFormat,
+        Encoding,
+        PublicFormat,
     )
 
     priv = Ed25519PrivateKey.generate()
@@ -63,12 +63,12 @@ def _pin_trust_anchor(keypair, monkeypatch):
 class _Collector:
     def __init__(self, keypair) -> None:
         self.keypair = keypair
-        self.next_envelope: Optional[dict] = None
+        self.next_envelope: dict | None = None
         self.tamper = False  # if True, flip a byte after signing
         self.requests: list[dict] = []
         self._lock = threading.Lock()
-        self._server: Optional[HTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
 
     @property
     def url(self) -> str:
@@ -76,7 +76,7 @@ class _Collector:
         host, port = self._server.server_address
         return f"http://{host}:{port}/recommendations"
 
-    def sign_envelope(self, payload: dict, *, key_id: Optional[str] = None) -> dict:
+    def sign_envelope(self, payload: dict, *, key_id: str | None = None) -> dict:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         body = dict(payload)
         body["signing_key_id"] = key_id or self.keypair["key_id"]
@@ -204,10 +204,11 @@ def test_valid_signed_envelope_persists(collector, db):
 
 def test_wrong_signing_key_rejected(collector, db, monkeypatch, keypair):
     """If the signer's key is NOT in our trust anchor, reject."""
-    import kya
     # Pin a DIFFERENT key — collector still signs with its own.
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    import kya
     other = Ed25519PrivateKey.generate().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     monkeypatch.setenv("KYA_INBOUND_PUBLIC_KEY", f"some-other-key:{base64.b64encode(other).decode()}")
 
@@ -275,8 +276,8 @@ def test_unsigned_envelope_rejected(collector, db):
 def test_approve_routes_through_set_override(collector, db):
     """Operator-approval applies the override and effective weight changes."""
     import kya
-    from kya.tenant_weights import ensure_tables, get_effective_weights, register_scope
     from kya.data_classes import CLASS_WEIGHTS
+    from kya.tenant_weights import ensure_tables, get_effective_weights, register_scope
 
     ensure_tables(db)
     register_scope("class_weights", CLASS_WEIGHTS)
@@ -308,8 +309,8 @@ def test_approve_routes_through_set_override(collector, db):
 def test_auto_apply_allowlist(collector, db):
     """A (scope, key) on the customer allowlist auto-applies immediately."""
     import kya
-    from kya.tenant_weights import ensure_tables, get_effective_weights, register_scope
     from kya.data_classes import CLASS_WEIGHTS
+    from kya.tenant_weights import ensure_tables, get_effective_weights, register_scope
 
     ensure_tables(db)
     register_scope("class_weights", CLASS_WEIGHTS)
