@@ -6,6 +6,18 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-11
+
+### Fixed
+- **DuckDB portability** (#78). The `agent_key` widening migration in
+  `kya.invocations` aborted the DuckDB transaction context, breaking
+  every subsequent statement on the same connection. DuckDB does not
+  enforce VARCHAR length, so the migration is now skipped on that
+  dialect (alongside the existing SQLite skip), and a `has_table()`
+  gate prevents introspection of missing tables from poisoning the
+  connection. DuckDB-backed deployments now work end-to-end across
+  the issuance / revocation / audit flow.
+
 ## [0.3.0] — 2026-06-10
 
 ### Added
