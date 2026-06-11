@@ -83,14 +83,15 @@ def _write_rows_to_every_table(kya, db, *, name: str) -> dict[str, str]:
     cross-backend portability of the SDK contract, not just the
     underlying Table objects.
     """
-    from kya._legacy_tables import (
-        kya_weight_suggestions, kya_breach_notifications,
-        kya_inbound_recommendations,
-    )
-    from kya import agent_aliases, users, tenant_weights
     import kya_redteam.campaigns as rt_campaigns
     import kya_redteam.runs as rt_runs
     import kya_redteam.targets as rt_targets
+    from kya import agent_aliases, tenant_weights, users
+    from kya._legacy_tables import (
+        kya_breach_notifications,
+        kya_inbound_recommendations,
+        kya_weight_suggestions,
+    )
     tenant = "00000000-0000-0000-0000-0000000000ff"
     user_id = "00000000-0000-0000-0000-0000000000aa"
     agent_key = f"loan_triage_{name}"

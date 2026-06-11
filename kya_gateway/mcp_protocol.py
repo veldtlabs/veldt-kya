@@ -87,7 +87,7 @@ def _check_params_shape(value, *, depth: int = 0) -> None:
         for k, v in value.items():
             if not isinstance(k, str) or len(k) > _MAX_STRING_LENGTH:
                 raise GatewayError(
-                    f"params key is not a bounded string"
+                    "params key is not a bounded string"
                 )
             _check_params_shape(v, depth=depth + 1)
     elif isinstance(value, list):

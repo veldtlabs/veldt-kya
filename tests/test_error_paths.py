@@ -18,14 +18,14 @@ import os
 
 import pytest
 
-
 # ── 1. Malformed signed-recommendation payloads ─────────────────────
 
 
 def _generate_test_keypair():
+    import base64
+
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-    import base64
     priv = Ed25519PrivateKey.generate()
     pub_b64 = base64.b64encode(
         priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
@@ -223,6 +223,7 @@ def test_set_override_rejects_non_integer_value():
     """A weight value that isn't an int must raise ValueError, not coerce."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
     from kya import tenant_weights
 
     eng = create_engine("sqlite:///:memory:")
@@ -241,6 +242,7 @@ def test_set_override_rejects_unknown_scope():
     """Scope not registered via register_scope must raise."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
     from kya import tenant_weights
 
     eng = create_engine("sqlite:///:memory:")

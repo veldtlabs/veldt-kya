@@ -39,6 +39,7 @@ declares, not to enforce that every principal has an IdP binding.
 from __future__ import annotations
 
 import logging
+import re as _re
 from datetime import datetime, timezone
 
 from sqlalchemy import text
@@ -443,8 +444,6 @@ def lookup_user_by_idp(
 #   idchar = ALPHA / DIGIT / "." / "-" / "_" / pct-encoded
 #   pct-encoded = "%" HEXDIG HEXDIG
 # Round-3 NEW-2 — `%` MUST be followed by two hex digits.
-import re as _re
-
 _SEGMENT_RE = r"(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})+"
 _PATTERN_RE = _re.compile(
     rf"^did:[a-z0-9]+(:{_SEGMENT_RE})+(:\*)?$",
@@ -616,8 +615,9 @@ def _lookup_principal_by_did(
     than one row matches.
     """
     try:
-        from sqlalchemy import select, desc
-        from .principals import _PrincipalRow, _bind_schema
+        from sqlalchemy import desc, select
+
+        from .principals import _bind_schema, _PrincipalRow
         _bind_schema(db.get_bind())
         rows = db.execute(
             select(_PrincipalRow.principal_kind, _PrincipalRow.principal_id)
@@ -739,7 +739,8 @@ def bind_did_principal(
     # Lazy-import so kya.did and kya.vc are not required by callers
     # that don't use DID. Keeps the cold-import surface small.
     import json as _json
-    from kya.did import DIDError, resolve_did
+
+    from kya.did import resolve_did
     from kya.vc import VCError, verify_vc
 
     if not did or not isinstance(did, str) or not did.startswith("did:"):
@@ -780,10 +781,12 @@ def bind_did_principal(
     # a follow-up SET) because the two-phase approach allowed the bind
     # to succeed while the attributes write silently failed.
     try:
+        from datetime import datetime, timezone
+
         from sqlalchemy import select
+
         from ._dialect_helpers import portable_upsert
         from .principals import _bind_schema, _PrincipalRow
-        from datetime import datetime, timezone
         _bind_schema(db.get_bind())
         existing = db.execute(
             select(_PrincipalRow)

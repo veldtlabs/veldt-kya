@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -28,7 +26,6 @@ from kya.runtime import (
     reset_principal_resolver_to_default,
 )
 from kya.runtime._collector import (
-    CollectorStats,
     iter_stdin,
     iter_tail,
     parsers_summary,

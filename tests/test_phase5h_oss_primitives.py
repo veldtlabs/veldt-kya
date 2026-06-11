@@ -8,9 +8,6 @@
 """
 from __future__ import annotations
 
-import pytest
-
-
 # ─── New evidence kinds ─────────────────────────────────────────────
 
 

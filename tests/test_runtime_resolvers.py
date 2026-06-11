@@ -6,7 +6,6 @@ behavior is exercised in ``test_runtime_resolvers_live_docker.py``
 """
 from __future__ import annotations
 
-import re
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -24,7 +23,6 @@ from kya.runtime import (
     build_default_resolver_chain,
     unbind_container,
 )
-
 
 # ── Helpers ────────────────────────────────────────────────────
 

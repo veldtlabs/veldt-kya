@@ -26,11 +26,10 @@ import jwt as pyjwt
 
 from kya.did import (
     DIDError,
-    DIDResolutionFailed,
     resolve_did,
     trusted_issuers,
 )
-from kya.did_document import DIDDocument
+from kya.did_document import DIDDocument, VerificationMethod
 
 __all__ = [
     "VCError",
@@ -93,7 +92,7 @@ class VerifiedCredential:
 
 def _pick_verification_method(
     issuer_doc: DIDDocument, kid: str | None
-) -> "VerificationMethod":
+) -> VerificationMethod:
     """Pick the verification method that signed the VC.
 
     If ``kid`` is present in the JWS header, the VM with that id (matched

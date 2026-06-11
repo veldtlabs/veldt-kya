@@ -95,9 +95,10 @@ def test_eu_ai_act_tier():
 def test_versioning_with_sqlite():
     """Full version-history flow against in-memory SQLite — exercises the
     dialect-aware DDL path. No graceful-skip: this MUST work."""
-    from kya import ensure_table, get_version, list_versions, rollback_to, snapshot_agent
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from kya import ensure_table, get_version, list_versions, rollback_to, snapshot_agent
 
     engine = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=engine)
@@ -143,9 +144,10 @@ def test_versioning_with_duckdb():
 
         pytest.skip("duckdb-engine not installed")
 
-    from kya import ensure_table, get_version, list_versions, rollback_to, snapshot_agent
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from kya import ensure_table, get_version, list_versions, rollback_to, snapshot_agent
 
     engine = create_engine("duckdb:///:memory:")
     Session = sessionmaker(bind=engine)
@@ -227,9 +229,10 @@ def test_versioning_with_mysql():
 
         pytest.skip("KYA_TEST_MYSQL_URL not set — point at a running MySQL")
 
-    from kya import ensure_table, get_version, list_versions, rollback_to, snapshot_agent
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import sessionmaker
+
+    from kya import ensure_table, get_version, list_versions, rollback_to, snapshot_agent
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)
@@ -280,9 +283,10 @@ def test_init_storage_mysql():
 
         pytest.skip("KYA_TEST_MYSQL_URL not set")
 
-    from kya import init_storage
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from kya import init_storage
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)
@@ -296,9 +300,10 @@ def test_init_storage_mysql():
 def test_init_storage_sqlite():
     """init_storage on SQLite: agent_versions should succeed,
     PG-only tables should skip cleanly with a reason."""
-    from kya import init_storage
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from kya import init_storage
 
     engine = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=engine)
@@ -321,9 +326,10 @@ def test_init_storage_duckdb():
 
         pytest.skip("duckdb-engine not installed")
 
-    from kya import init_storage
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from kya import init_storage
 
     engine = create_engine("duckdb:///:memory:")
     Session = sessionmaker(bind=engine)
@@ -340,14 +346,15 @@ def _invocations_e2e(url: str, tenant: str):
     backend so tests don't collide on a shared MySQL."""
     from datetime import datetime, timedelta, timezone
 
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
     from kya import (
         ingest_lag_stats,
         list_invocations,
         new_correlation_id,
         record_invocation,
     )
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)
@@ -433,9 +440,10 @@ def _versioning_event_time_e2e(url: str, tenant: str):
     on whichever backend is given by `url`."""
     from datetime import datetime, timedelta, timezone
 
-    from kya import ensure_table, get_version, list_versions, snapshot_agent
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import sessionmaker
+
+    from kya import ensure_table, get_version, list_versions, snapshot_agent
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)
@@ -545,14 +553,15 @@ def _principals_e2e(url: str, tenant: str):
     clean events, trust scoring, and event-time forensics on `url`."""
     from datetime import datetime, timedelta, timezone
 
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
     from kya import (
         get_principal_trust,
         list_principals,
         record_principal_clean,
         record_principal_signal,
     )
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)
@@ -679,13 +688,14 @@ def _evidence_e2e(url: str, tenant: str):
     """Shared body — full lifecycle of kya_evidence on backend `url`.
     Exercises: write chain, list, verify_chain, tamper-detection,
     chain break after payload mutation."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
     from kya import (
         list_evidence,
         record_evidence,
         verify_chain,
     )
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)
@@ -786,9 +796,10 @@ def _evidence_e2e(url: str, tenant: str):
 
 def _evidence_tenant_isolation_e2e(url: str):
     """get_evidence MUST refuse cross-tenant reads even with a known id."""
-    from kya import get_evidence, init_evidence_table, record_evidence
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import sessionmaker
+
+    from kya import get_evidence, init_evidence_table, record_evidence
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)
@@ -1150,9 +1161,10 @@ def test_evidence_kms_provider_resolves():
     import sys
     import types
 
-    from kya import init_evidence_table, record_evidence, verify_chain
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from kya import init_evidence_table, record_evidence, verify_chain
 
     # Build a fake provider module exposing get_key()
     fake_key = b"x" * 32  # 32-byte deterministic key
@@ -1235,6 +1247,9 @@ def test_autoinstrument_captures_openai_call():
     import sys
     import types
 
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
     from kya import (
         autoinstrument,
         deinstrument,
@@ -1243,8 +1258,6 @@ def test_autoinstrument_captures_openai_call():
         list_evidence,
         patched_sdks,
     )
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
 
     fake_openai = types.ModuleType("openai")
     fake_resources = types.ModuleType("openai.resources")

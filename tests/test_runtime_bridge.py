@@ -29,12 +29,9 @@ from kya.runtime import (
     RuntimeEvent,
     ingest,
     record_runtime_event,
-)
-from kya.runtime import (
     reset_principal_resolver_to_default,
     set_principal_resolver,
 )
-
 
 # ── Fixture: a canonical event ─────────────────────────────────
 

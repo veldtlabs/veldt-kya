@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 from kya_gateway import __version__
 from kya_gateway.config import GatewayConfig

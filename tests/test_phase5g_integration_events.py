@@ -10,8 +10,6 @@ import json
 import logging
 import os
 
-import pytest
-
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 
 
@@ -64,9 +62,16 @@ def test_revocation_blocked_emits_security_event(monkeypatch, caplog):
     sec_events = _stub_kya_for_gateway(monkeypatch)
 
     from fastapi.testclient import TestClient
+
     from kya_gateway.config import (
-        AuditConfig, BackendConfig, DIDConfig, EnforcementConfig,
-        GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
+        AuditConfig,
+        BackendConfig,
+        DIDConfig,
+        EnforcementConfig,
+        GatewayBindConfig,
+        GatewayConfig,
+        IdentityConfig,
+        JWTConfig,
         PolicyConfig,
     )
     from kya_gateway.errors import RevocationBlocked
@@ -125,9 +130,16 @@ def test_dpop_failure_on_me_emits_dpop_event(monkeypatch):
     sec_events = _stub_kya_for_gateway(monkeypatch)
 
     from fastapi.testclient import TestClient
+
     from kya_gateway.config import (
-        AuditConfig, BackendConfig, DIDConfig, EnforcementConfig,
-        GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
+        AuditConfig,
+        BackendConfig,
+        DIDConfig,
+        EnforcementConfig,
+        GatewayBindConfig,
+        GatewayConfig,
+        IdentityConfig,
+        JWTConfig,
         PolicyConfig,
     )
     from kya_gateway.identity import BoundPrincipal
@@ -198,12 +210,15 @@ def test_bind_did_principal_auto_links_known_issuer(tmp_path, monkeypatch):
     Session = sessionmaker(bind=engine)
     db = Session()
 
+    from kya.principal_edges import (
+        ensure_principal_edges_table,
+        list_children,
+    )
     from kya.principals import (
         ensure_principal_table as ensure_principal_tables,
-        record_principal_signal,
     )
-    from kya.principal_edges import (
-        ensure_principal_edges_table, list_children,
+    from kya.principals import (
+        record_principal_signal,
     )
     ensure_principal_tables(db)
     ensure_principal_edges_table(db)
@@ -334,8 +349,8 @@ def test_dpop_classifier_immune_to_attacker_shaped_message():
     `code` attribute, NOT the message text. An attacker who shapes
     the error message with the word 'replay' must not be able to
     force a forge attempt to be classified as a replay."""
-    from kya_gateway.server import _identity_failure_sec_event
     from kya_gateway._dpop import DPoPError
+    from kya_gateway.server import _identity_failure_sec_event
 
     # forge attempt whose message contains 'replay' word (attacker
     # could put 'replay' inside their JWS kid/htu/iss)
@@ -385,12 +400,15 @@ def test_auto_link_uses_real_issuer_principal_kind(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'kya.db'}")
     db = sessionmaker(bind=engine)()
 
+    from kya.principal_edges import (
+        ensure_principal_edges_table,
+        list_children,
+    )
     from kya.principals import (
         ensure_principal_table as ensure_principal_tables,
-        record_principal_signal,
     )
-    from kya.principal_edges import (
-        ensure_principal_edges_table, list_children,
+    from kya.principals import (
+        record_principal_signal,
     )
     ensure_principal_tables(db)
     ensure_principal_edges_table(db)
@@ -455,12 +473,15 @@ def test_auto_link_skipped_when_issuer_not_in_trusted_allowlist(
     from sqlalchemy.orm import sessionmaker
     engine = create_engine(f"sqlite:///{tmp_path / 'kya2.db'}")
     db = sessionmaker(bind=engine)()
+    from kya.principal_edges import (
+        ensure_principal_edges_table,
+        list_children,
+    )
     from kya.principals import (
         ensure_principal_table as ensure_principal_tables,
-        record_principal_signal,
     )
-    from kya.principal_edges import (
-        ensure_principal_edges_table, list_children,
+    from kya.principals import (
+        record_principal_signal,
     )
     ensure_principal_tables(db)
     ensure_principal_edges_table(db)
@@ -513,6 +534,7 @@ def test_issuer_tenant_id_uses_namespace_url():
     """DIDs are URIs (DID Core §3.1); UUID5 must use NAMESPACE_URL so
     interoperating systems compute the same UUID for the same DID."""
     import uuid
+
     from kya.external_id import issuer_tenant_id_from_did
     did = "did:web:test.example"
     expected = str(uuid.uuid5(uuid.NAMESPACE_URL, did))
@@ -529,12 +551,15 @@ def test_auto_link_empty_set_means_deny_all(tmp_path, monkeypatch):
     from sqlalchemy.orm import sessionmaker
     engine = create_engine(f"sqlite:///{tmp_path / 'kya_n2.db'}")
     db = sessionmaker(bind=engine)()
+    from kya.principal_edges import (
+        ensure_principal_edges_table,
+        list_children,
+    )
     from kya.principals import (
         ensure_principal_table as ensure_principal_tables,
-        record_principal_signal,
     )
-    from kya.principal_edges import (
-        ensure_principal_edges_table, list_children,
+    from kya.principals import (
+        record_principal_signal,
     )
     ensure_principal_tables(db)
     ensure_principal_edges_table(db)
@@ -586,12 +611,15 @@ def test_auto_link_honors_env_var_trusted_issuers(tmp_path, monkeypatch):
     from sqlalchemy.orm import sessionmaker
     engine = create_engine(f"sqlite:///{tmp_path / 'kya_n3.db'}")
     db = sessionmaker(bind=engine)()
+    from kya.principal_edges import (
+        ensure_principal_edges_table,
+        list_children,
+    )
     from kya.principals import (
         ensure_principal_table as ensure_principal_tables,
-        record_principal_signal,
     )
-    from kya.principal_edges import (
-        ensure_principal_edges_table, list_children,
+    from kya.principals import (
+        record_principal_signal,
     )
     ensure_principal_tables(db)
     ensure_principal_edges_table(db)
@@ -642,8 +670,8 @@ def test_auto_link_honors_env_var_trusted_issuers(tmp_path, monkeypatch):
 def test_dpop_code_dispatch_gated_by_isinstance():
     """A non-DPoP exception whose `.code` collides with a DPoP code
     must NOT be misclassified as a DPoP event."""
-    from kya_gateway.server import _identity_failure_sec_event
     from kya_gateway.errors import IdentityCredentialInvalid
+    from kya_gateway.server import _identity_failure_sec_event
 
     class _FakeExc(IdentityCredentialInvalid):
         code = "signature"   # would map to dpop_forge_attempt

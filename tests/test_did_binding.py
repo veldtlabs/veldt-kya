@@ -16,15 +16,13 @@ from sqlalchemy.orm import sessionmaker
 
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
-
 import jwt as pyjwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from kya import init_storage, record_principal_signal
 from kya.external_id import bind_did_principal
 from kya.vc import VCError, VCMalformed, VCSignatureInvalid
-
 
 TENANT = "00000000-0000-0000-0000-0000000000dd"
 
@@ -50,7 +48,7 @@ def stub_did_web():
     even when a VC is also presented. Test DIDs like did:web:victim.example
     don't have real DNS; we return a minimal valid doc whose id matches.
     """
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
 
     saved = _resolvers.get("web")

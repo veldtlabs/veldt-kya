@@ -34,8 +34,6 @@ Lazy DDL:
 
 import os
 import sys
-import uuid as _uuid
-from datetime import datetime, timezone
 
 import pytest
 
@@ -47,7 +45,6 @@ pytestmark = pytest.mark.skipif(
 )
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
-
 
 # Expected canonical column names for each table (the reference shape).
 # Validated as a SUBSET against the live introspected names — extras are
@@ -351,7 +348,7 @@ def _setup_backend(url: str, dialect_name: str):
         ))
         db.add(att_mod.AttestationRecord(
             tenant_id=tenant_uuid, entity_type="agent",
-            entity_id=f"parity_agent:run-1", attester_id=user_uuid,
+            entity_id="parity_agent:run-1", attester_id=user_uuid,
             action="signed", content_hash="a" * 64, signature="sig",
             public_key="pk",
         ))

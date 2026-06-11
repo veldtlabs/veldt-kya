@@ -158,7 +158,7 @@ class GatewayConfig:
     enforcement: EnforcementConfig = field(default_factory=EnforcementConfig)
 
     @classmethod
-    def from_yaml(cls, path: str) -> "GatewayConfig":
+    def from_yaml(cls, path: str) -> GatewayConfig:
         """Load and validate a config from a YAML file."""
         if not os.path.isfile(path):
             raise GatewayConfigError(f"config file not found: {path!r}")
@@ -172,7 +172,7 @@ class GatewayConfig:
         return cls.from_dict(raw)
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "GatewayConfig":
+    def from_dict(cls, raw: dict[str, Any]) -> GatewayConfig:
         """Parse and validate a config from a dict."""
         try:
             gw_block = raw.get("gateway") or {}

@@ -83,7 +83,11 @@
       "Bash(unset KYA_TEST_MYSQL_URL)",
       "Bash(git commit -m ' *)",
       "Bash(git add *)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(git push *)",
+      "Bash(gh run *)",
+      "Bash(ruff check *)",
+      "Bash(grep -n \"^import re as _re$\\\\|^_PATTERN_RE = _re.compile\" kya/external_id.py)"
     ]
   }
 }

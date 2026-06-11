@@ -26,15 +26,14 @@ from kya_gateway.config import (
     GatewayConfig,
     IdentityConfig,
     JWTConfig,
-    PolicyConfig,
     PayloadCapsConfig,
+    PolicyConfig,
     RBACConfig,
     RBACRule,
 )
 from kya_gateway.identity import BoundPrincipal
 from kya_gateway.policy_pipeline import Verdict
-from kya_gateway.server import Gateway, build_app
-
+from kya_gateway.server import Gateway
 
 # ─── Fixtures ────────────────────────────────────────────────────────
 

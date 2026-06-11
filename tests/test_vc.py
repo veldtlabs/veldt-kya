@@ -14,13 +14,11 @@ import pytest
 
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 
+import jwt as pyjwt
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
-    Ed25519PublicKey,
 )
-from cryptography.hazmat.primitives import serialization
-
-import jwt as pyjwt
 
 from kya.vc import (
     VCExpired,

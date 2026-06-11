@@ -11,10 +11,8 @@ from kya_gateway.config import BackendConfig
 from kya_gateway.errors import BackendUnreachable
 from kya_gateway.forwarder import (
     Forwarder,
-    ForwardResult,
     parse_backend_from_tool,
 )
-
 
 # ─── parse_backend_from_tool ───────────────────────────────────────
 

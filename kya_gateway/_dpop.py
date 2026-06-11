@@ -15,7 +15,6 @@ This module is OSS-only and has no pro dependency.
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 try:
     import jwt as pyjwt
@@ -53,7 +52,7 @@ class DPoPError(IdentityCredentialInvalid):
 
 
 def verify_dpop(
-    dpop_header: Optional[str],
+    dpop_header: str | None,
     *,
     expected_htm: str,
     expected_htu: str,
@@ -127,7 +126,7 @@ def verify_dpop(
         )
 
     # Step 3 — single-alg verify (no family acceptance)
-    from kya.vc import _algorithms_for_jwk   # type: ignore[attr-defined]
+    from kya.vc import _algorithms_for_jwk  # type: ignore[attr-defined]
     algorithms = _algorithms_for_jwk(vm.public_key_jwk, doc.id)
 
     try:

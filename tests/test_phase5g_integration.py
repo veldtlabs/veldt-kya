@@ -20,9 +20,6 @@ policies, #8 requires a schema migration).
 """
 from __future__ import annotations
 
-import pytest
-
-
 # ─── #9 — new evidence kinds are registered ────────────────────────
 
 
@@ -150,10 +147,11 @@ def test_bind_did_principal_links_known_issuer_via_principal_edges(tmp_path):
     db = Session()
 
     # Ensure schemas exist.
-    from kya.principals import ensure_principal_table as ensure_principal_tables
     from kya.principal_edges import (
-        ensure_principal_edges_table, list_children,
+        ensure_principal_edges_table,
+        list_children,
     )
+    from kya.principals import ensure_principal_table as ensure_principal_tables
     ensure_principal_tables(db)
     ensure_principal_edges_table(db)
 
@@ -207,8 +205,9 @@ def test_link_vc_issuer_no_op_when_issuer_unknown(tmp_path):
     Session = sessionmaker(bind=engine)
     db = Session()
 
-    from kya.principals import ensure_principal_table as ensure_principal_tables, record_principal_signal
     from kya.principal_edges import ensure_principal_edges_table
+    from kya.principals import ensure_principal_table as ensure_principal_tables
+    from kya.principals import record_principal_signal
     ensure_principal_tables(db)
     ensure_principal_edges_table(db)
     record_principal_signal(

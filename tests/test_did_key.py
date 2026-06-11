@@ -10,20 +10,19 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 # Enable did:key for these tests; the resolver is off by default.
 import os
+
+import pytest
+
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 
 from kya.did import (
     DIDInvalidIdentifier,
     DIDMethodNotEnabled,
-    DIDResolutionFailed,
     resolve_did,
 )
 from kya.did_methods.key import _base58btc_decode
-
 
 # ─── W3C test vector ─────────────────────────────────────────────────
 # Ed25519 example from https://w3c-ccg.github.io/did-method-key/

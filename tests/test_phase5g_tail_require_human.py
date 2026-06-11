@@ -43,10 +43,18 @@ def test_require_human_enforce_returns_428_not_403(monkeypatch):
     monkeypatch.setitem(sys.modules, "kya", fake_kya)
 
     from fastapi.testclient import TestClient
+
     from kya_gateway.config import (
-        AuditConfig, BackendConfig, EnforcementConfig,
-        GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
-        PolicyConfig, RBACConfig, RBACRule,
+        AuditConfig,
+        BackendConfig,
+        EnforcementConfig,
+        GatewayBindConfig,
+        GatewayConfig,
+        IdentityConfig,
+        JWTConfig,
+        PolicyConfig,
+        RBACConfig,
+        RBACRule,
     )
     from kya_gateway.identity import BoundPrincipal
     from kya_gateway.server import Gateway
@@ -115,10 +123,17 @@ def test_require_human_deny_still_returns_403(monkeypatch):
     monkeypatch.setitem(sys.modules, "kya", fake_kya)
 
     from fastapi.testclient import TestClient
+
     from kya_gateway.config import (
-        AuditConfig, BackendConfig, EnforcementConfig,
-        GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
-        PolicyConfig, RBACConfig,
+        AuditConfig,
+        BackendConfig,
+        EnforcementConfig,
+        GatewayBindConfig,
+        GatewayConfig,
+        IdentityConfig,
+        JWTConfig,
+        PolicyConfig,
+        RBACConfig,
     )
     from kya_gateway.identity import BoundPrincipal
     from kya_gateway.server import Gateway

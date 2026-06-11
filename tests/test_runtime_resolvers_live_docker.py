@@ -23,7 +23,6 @@ from kya.runtime import (
     ExplicitBindingCache,
     bind_container,
     ingest,
-    record_runtime_event,
     reset_principal_resolver_to_default,
 )
 from kya.runtime._canonical import RuntimeEvent

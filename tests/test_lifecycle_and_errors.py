@@ -9,12 +9,9 @@ What this proves before publish:
 
 from __future__ import annotations
 
-import atexit
-import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
 
 import pytest
 
@@ -90,8 +87,8 @@ class _BadCollector:
         self.mode = mode  # 500 / malformed / empty / slow_then_fail
         self.requests: list[dict] = []
         self._lock = threading.Lock()
-        self._server: Optional[HTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
 
     @property
     def url(self) -> str:
@@ -273,7 +270,9 @@ def test_inbound_with_no_trust_anchor_raises_at_enable():
     """If no KYA_INBOUND_PUBLIC_KEY env and no DEFAULT_PINNED_KEYS,
     enable_inbound should fail loudly, not silently accept and reject
     every recommendation forever."""
-    import kya, os
+    import os
+
+    import kya
     # Make sure no env trust anchor is set
     old = os.environ.pop("KYA_INBOUND_PUBLIC_KEY", None)
     try:

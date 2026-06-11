@@ -40,9 +40,16 @@ def test_me_endpoint_wires_to_kya_rate_limit(monkeypatch):
     monkeypatch.setitem(sys.modules, "kya.rate_limit", fake_rl)
 
     from fastapi.testclient import TestClient
+
     from kya_gateway.config import (
-        AuditConfig, BackendConfig, DIDConfig, EnforcementConfig,
-        GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
+        AuditConfig,
+        BackendConfig,
+        DIDConfig,
+        EnforcementConfig,
+        GatewayBindConfig,
+        GatewayConfig,
+        IdentityConfig,
+        JWTConfig,
         PolicyConfig,
     )
     from kya_gateway.server import Gateway

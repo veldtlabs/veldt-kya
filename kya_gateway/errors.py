@@ -5,7 +5,6 @@ or narrowly. JSON-RPC error codes follow the spec's reserved range.
 """
 from __future__ import annotations
 
-
 # JSON-RPC 2.0 reserved range starts at -32000.
 # https://www.jsonrpc.org/specification#error_object
 JSONRPC_ERR_POLICY_DENIED = -32001

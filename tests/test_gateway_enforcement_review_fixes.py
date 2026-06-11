@@ -15,9 +15,16 @@ os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 from fastapi.testclient import TestClient
 
 from kya_gateway.config import (
-    AuditConfig, BackendConfig, DIDConfig, EnforcementConfig,
-    GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
-    PolicyConfig, RBACConfig,
+    AuditConfig,
+    BackendConfig,
+    DIDConfig,
+    EnforcementConfig,
+    GatewayBindConfig,
+    GatewayConfig,
+    IdentityConfig,
+    JWTConfig,
+    PolicyConfig,
+    RBACConfig,
 )
 from kya_gateway.errors import GatewayConfigError, IdentityCredentialInvalid
 from kya_gateway.identity import BoundPrincipal

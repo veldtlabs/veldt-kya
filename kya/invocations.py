@@ -217,6 +217,7 @@ def _migrate_agent_key_width(conn) -> None:
     running KYA tables in a non-public schema still get migrated.
     """
     import logging
+
     from sqlalchemy import inspect as _inspect
     log = logging.getLogger(__name__)
     try:

@@ -22,7 +22,6 @@ from kya import (
     record_user_signal,
 )
 
-
 TENANT = "00000000-0000-0000-0000-0000000000ee"
 OTHER_TENANT = "00000000-0000-0000-0000-0000000000ef"
 

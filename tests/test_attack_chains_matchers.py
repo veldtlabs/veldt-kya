@@ -16,7 +16,6 @@ from kya.attack_chains._matchers import (
     validate_matcher_spec,
 )
 
-
 # ── field_value ────────────────────────────────────────────────────
 
 

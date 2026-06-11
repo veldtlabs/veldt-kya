@@ -16,7 +16,6 @@ import os
 import socketserver
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -25,7 +24,7 @@ jwt = pytest.importorskip("jwt")
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kya import (
@@ -37,7 +36,6 @@ from kya import (
     verify_jwt,
 )
 from kya.auth import _infer_idp_kind
-
 
 TENANT = "11111111-2222-3333-4444-aaaaaaaaaaaa"
 

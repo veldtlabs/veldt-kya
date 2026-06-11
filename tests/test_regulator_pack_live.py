@@ -60,14 +60,15 @@ def _run_pack_against(url: str, dialect_label: str) -> dict:
     """Bring up a session against `url`, seed minimal data, call
     _build_regulator_pack, return the result. The test doesn't need the
     full FastAPI route — only the function body that builds the pack."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
     from kya import (
         ensure_invocations_table,
         init_evidence_table,
         record_evidence,
         record_invocation,
     )
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(url)
     Session = sessionmaker(bind=engine)

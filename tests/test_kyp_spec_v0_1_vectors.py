@@ -50,7 +50,7 @@ def _input_for_canonicalize(raw_input):
     non-JSON-native values (datetimes, bytes, sets). Re-hydrate the
     couple of types we care about so the implementation sees the
     same Python objects the generator did."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if isinstance(raw_input, dict):
         return {k: _input_for_canonicalize(v) for k, v in raw_input.items()}

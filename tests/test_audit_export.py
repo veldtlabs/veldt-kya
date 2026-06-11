@@ -11,7 +11,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 cryptography = pytest.importorskip("cryptography")
@@ -21,15 +21,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from kya import (
-    AuditExportError,
     EXPORT_SCHEMA_VERSION,
+    AuditExportError,
     init_storage,
     record_evidence,
     record_invocation,
     signed_export,
     verify_signed_export,
 )
-
 
 TENANT = "11111111-2222-3333-4444-555555555cab"
 

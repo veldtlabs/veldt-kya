@@ -24,7 +24,6 @@ from kya import (
     init_storage,
 )
 
-
 TENANT = "00000000-0000-0000-0000-0000000000aa"
 
 

@@ -28,7 +28,9 @@ from dataclasses import dataclass
 
 from kya_gateway.config import IdentityConfig
 from kya_gateway.errors import (
-    IdentityBindingFailed, IdentityCredentialInvalid, RevocationBlocked,
+    IdentityBindingFailed,
+    IdentityCredentialInvalid,
+    RevocationBlocked,
 )
 
 logger = logging.getLogger(__name__)
@@ -280,10 +282,12 @@ class IdentityResolver:
         else:
             self._revocation_checker_attempted = True
             try:
-                from kya_pro.revocation import RevocationChecker, RevocationError
+                from urllib.error import URLError
+
                 # Use urllib stdlib so we don't add httpx to the gateway.
                 from urllib.request import urlopen
-                from urllib.error import URLError
+
+                from kya_pro.revocation import RevocationChecker, RevocationError
 
                 def _fetch(url: str) -> bytes:
                     try:

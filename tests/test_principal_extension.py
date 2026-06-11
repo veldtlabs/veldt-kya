@@ -427,6 +427,7 @@ class TestSnapshotPrincipal:
         existing snapshot_agent retry loop handles this. Regression
         test for Day-2 review MEDIUM coverage gap."""
         import threading
+
         from kya import (
             list_principal_versions,
             snapshot_principal,
@@ -719,6 +720,7 @@ class TestRegistryThreadSafety:
         """Many threads registering distinct kinds at once -- no
         lost writes, no exceptions."""
         import threading
+
         from kya.integrity import (
             hashed_fields_for,
             register_hashed_fields,
@@ -745,6 +747,7 @@ class TestRegistryThreadSafety:
     def test_concurrent_register_principal_kind(self):
         """Same test for the principal-kinds registry."""
         import threading
+
         from kya import (
             is_valid_principal_kind,
             register_principal_kind,
@@ -1252,6 +1255,7 @@ class TestPrincipalEdges:
         raise IntegrityError -- the retry loop + per-edge lock must
         serialise them. Result: one row, attributes merged."""
         import threading
+
         from kya.principal_edges import (
             add_principal_edge,
             list_children,

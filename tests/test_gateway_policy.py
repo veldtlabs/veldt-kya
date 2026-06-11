@@ -8,8 +8,8 @@ imported lazily and gracefully skipped when unavailable.
 from __future__ import annotations
 
 from kya_gateway.config import (
-    PolicyConfig,
     PayloadCapsConfig,
+    PolicyConfig,
     RBACConfig,
     RBACRule,
 )

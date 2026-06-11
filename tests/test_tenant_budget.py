@@ -25,7 +25,6 @@ from kya.tenant_budget import (
     Decision,
     Forecast,
     LinearExtrapolationForecaster,
-    budget_status,
     current_spend,
     forecast_spend,
     get_forecaster,
@@ -33,7 +32,6 @@ from kya.tenant_budget import (
     set_forecaster,
     should_refuse,
 )
-
 
 # ── Forecaster math (pure-function) ─────────────────────────────────
 
@@ -131,21 +129,21 @@ def test_forecaster_swap_round_trip():
 def test_budget_scopes_closed_set():
     """BUDGET_SCOPES covers 4 principal kinds + 2 organizational
     attributes promoted to enforcement scopes in v0.1.1."""
-    assert BUDGET_SCOPES == frozenset({
+    assert frozenset({
         "tenant", "agent", "user", "service_account",
         "cost_center", "business_unit",
-    })
+    }) == BUDGET_SCOPES
 
 
 def test_budget_windows_closed_set():
     """v0.1.1 covers 12 windows total: 3 anomaly + 9 enforcement.
     Long-horizon presets (14d/45d/60d/90d/365d) address FinOps
     cycle requests that don't fit the standard month/week split."""
-    assert BUDGET_WINDOWS == frozenset({
+    assert frozenset({
         "1m", "5m", "15m",                            # anomaly
         "1h", "24h", "7d", "14d", "30d",              # enforcement (short)
         "45d", "60d", "90d", "365d",                  # enforcement (long)
-    })
+    }) == BUDGET_WINDOWS
 
 
 def test_long_enforcement_windows_have_ttl_and_seconds():
@@ -153,7 +151,9 @@ def test_long_enforcement_windows_have_ttl_and_seconds():
     forecast-horizon seconds mapping. Without this, ``_increment_windows``
     silently skips writes."""
     from kya.tenant_budget import (
-        BUDGET_WINDOWS, _VALKEY_TTL_SECONDS, _WINDOW_SECONDS,
+        _VALKEY_TTL_SECONDS,
+        _WINDOW_SECONDS,
+        BUDGET_WINDOWS,
     )
     for w in BUDGET_WINDOWS:
         assert w in _WINDOW_SECONDS, (
@@ -188,7 +188,7 @@ def test_anomaly_windows_aligned_with_realtime():
 
 
 def test_decisions_closed_set():
-    assert DECISIONS == frozenset({"allow", "warn", "throttle", "refuse"})
+    assert frozenset({"allow", "warn", "throttle", "refuse"}) == DECISIONS
 
 
 def test_current_spend_rejects_unknown_scope_or_window():

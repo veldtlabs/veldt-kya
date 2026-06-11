@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os as _os
 import time
 from collections import defaultdict, deque
 from threading import Lock
-from typing import Any
 
 try:
     from fastapi import FastAPI, Request, Response
@@ -27,6 +27,23 @@ except ImportError as exc:   # pragma: no cover
         "kya_gateway.server requires `pip install veldt-kya[gateway]`"
     ) from exc
 
+from kya_gateway.config import GatewayConfig
+from kya_gateway.errors import (
+    BackendUnreachable,
+    GatewayError,
+    IdentityBindingFailed,
+)
+from kya_gateway.forwarder import Forwarder, parse_backend_from_tool
+from kya_gateway.identity import BoundPrincipal, IdentityResolver
+from kya_gateway.mcp_protocol import (
+    action_from_tool_call,
+    initialize_result,
+    make_error,
+    make_response,
+    parse_request,
+)
+from kya_gateway.policy_pipeline import Verdict
+from kya_gateway.policy_pipeline import evaluate as evaluate_policy
 
 # In-process per-IP sliding-window rate limiter for /v1/principals/me.
 # Prevents the endpoint from becoming a free credential-validation oracle.
@@ -79,27 +96,6 @@ def _me_rate_limit_check(client_ip: str) -> bool:
 # fires for "too large for this tenant" while the HTTP layer catches
 # the "trying to OOM the process" case.
 _MAX_HTTP_BODY_BYTES = 32 * 1024 * 1024  # 32 MB hard ceiling
-
-from kya_gateway import mcp_protocol
-from kya_gateway.config import GatewayConfig
-from kya_gateway.errors import (
-    BackendUnreachable,
-    GatewayError,
-    IdentityBindingFailed,
-    IdentityCredentialInvalid,
-    RevocationBlocked,
-)
-from kya_gateway.forwarder import Forwarder, parse_backend_from_tool
-from kya_gateway.identity import IdentityResolver
-from kya_gateway.mcp_protocol import (
-    action_from_tool_call,
-    initialize_result,
-    make_error,
-    make_response,
-    parse_request,
-)
-from kya_gateway.identity import BoundPrincipal
-from kya_gateway.policy_pipeline import Verdict, evaluate as evaluate_policy
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +205,7 @@ def _emit_identity_failure_event(
         )
 
 
-def _anon_principal_for(headers: dict) -> "BoundPrincipal":
+def _anon_principal_for(headers: dict) -> BoundPrincipal:
     """Build a per-credential anonymous principal so distinct bad credentials
     land in distinct rows (5g-A-03). Without this every malformed-cred
     request collides on one ``agent_key`` and replay / rate-limit
@@ -238,7 +234,7 @@ def _anon_principal_for(headers: dict) -> "BoundPrincipal":
 # write amplifier on the HMAC-chained evidence table. Bounded buckets,
 # fail-soft drop on overflow. Configurable via env for high-throughput
 # operators.
-import os as _os
+
 _UNAUTH_EVIDENCE_RATE_PER_S = max(
     1, int(_os.getenv("KYA_GATEWAY_UNAUTH_EVIDENCE_RATE_PER_S", "5"))
 )
@@ -544,7 +540,7 @@ def build_app(gw: Gateway) -> FastAPI:
         # The in-process per-IP guard below is the belt-and-suspenders
         # for deployments without Valkey configured.
         try:
-            from kya.rate_limit import maybe_rate_limit, RateLimitExceededError
+            from kya.rate_limit import RateLimitExceededError, maybe_rate_limit
             try:
                 maybe_rate_limit(
                     gw.cfg.gateway.tenant_id,

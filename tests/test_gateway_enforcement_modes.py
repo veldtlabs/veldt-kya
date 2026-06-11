@@ -21,12 +21,19 @@ os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 from fastapi.testclient import TestClient
 
 from kya_gateway.config import (
-    AuditConfig, BackendConfig, DIDConfig, EnforcementConfig,
-    GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
-    PolicyConfig, RBACConfig, RBACRule,
+    AuditConfig,
+    BackendConfig,
+    DIDConfig,
+    EnforcementConfig,
+    GatewayBindConfig,
+    GatewayConfig,
+    IdentityConfig,
+    JWTConfig,
+    PolicyConfig,
+    RBACConfig,
+    RBACRule,
 )
 from kya_gateway.identity import BoundPrincipal
-from kya_gateway.policy_pipeline import Verdict
 from kya_gateway.server import Gateway
 
 

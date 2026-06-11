@@ -19,7 +19,6 @@ from kya import (
     snapshot_on_first_sight,
 )
 
-
 TENANT = "00000000-0000-0000-0000-0000000000dd"
 
 

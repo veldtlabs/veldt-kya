@@ -23,7 +23,6 @@ import uuid
 
 import pytest
 
-
 pytestmark = pytest.mark.skipif(
     "KYA_TEST_PG_URL" not in os.environ,
     reason="PG integration test — set KYA_TEST_PG_URL to enable",
@@ -50,11 +49,13 @@ def db():
 def test_in_tenant_feedback_loop_closes(db):
     """incident → suggestion → approve → weight changed."""
     import kya
+    from kya.data_classes import CLASS_WEIGHTS
     from kya.feedback import propose_from_incident
     from kya.tenant_weights import (
-        ensure_tables, get_effective_weights, register_scope,
+        ensure_tables,
+        get_effective_weights,
+        register_scope,
     )
-    from kya.data_classes import CLASS_WEIGHTS
 
     ensure_tables(db)
     register_scope("class_weights", CLASS_WEIGHTS)
@@ -109,9 +110,10 @@ def test_resolve_incident_invokes_propose(db, monkeypatch):
     not ship. This test is for the platform repo, not SDK consumers.
     """
     try:
-        from kya.feedback import propose_from_incident as real_propose
-        import kya.feedback as _fb_mod
         import decisions.governance.incidents as _inc_mod
+
+        import kya.feedback as _fb_mod
+        from kya.feedback import propose_from_incident as real_propose
     except ImportError as e:
         pytest.skip(f"platform-only test (needs full app deps): {e}")
 

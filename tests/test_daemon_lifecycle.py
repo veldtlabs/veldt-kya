@@ -87,7 +87,6 @@ def test_telemetry_enable_disable_no_leak():
 
 def test_dualwrite_enable_disable_no_leak():
     """100 enable/disable cycles on dualwrite must not leak."""
-    import kya
     from kya import dualwrite
 
     if not hasattr(dualwrite, "enable_dual_write"):

@@ -10,24 +10,20 @@ import base64
 import json
 import os
 import time
-from dataclasses import replace
 
 import pytest
 
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk,custom"
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
-
 import jwt as pyjwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from kya_gateway.config import DIDConfig, IdentityConfig, JWTConfig
 from kya_gateway.errors import IdentityBindingFailed
 from kya_gateway.identity import (
     HEADER_AUTHORIZATION,
     HEADER_DID,
-    HEADER_VC,
-    BoundPrincipal,
     IdentityResolver,
 )
 
@@ -116,7 +112,7 @@ def test_did_header_alone_rejected_by_default(monkeypatch, did_keypair):
     a critical impersonation primitive.
     """
     # Mock did resolution to succeed (the DID is real).
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -141,7 +137,7 @@ def test_did_header_alone_rejected_by_default(monkeypatch, did_keypair):
 
 def test_did_with_valid_pop_accepted(monkeypatch, did_keypair):
     """X-KYA-DID + valid X-KYA-DID-PROOF signed by the DID's key → bind."""
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -172,7 +168,7 @@ def test_did_with_valid_pop_accepted(monkeypatch, did_keypair):
 def test_did_with_pop_signed_by_other_key_rejected(monkeypatch, did_keypair,
                                                     other_keypair):
     """A PoP JWT signed by a key NOT in the DID document must fail."""
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -206,7 +202,7 @@ def test_did_with_future_iat_pop_rejected(monkeypatch, did_keypair):
     the `exp-iat` lifetime math sees a 100s window — but the PoP is
     actually usable from now until exp, defeating the lifetime cap.
     """
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -242,7 +238,7 @@ def test_did_pop_without_audience_when_not_configured_rejected(monkeypatch, did_
     Operators who explicitly want headerless trust can set
     `allow_header_trust=true`.
     """
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -277,7 +273,7 @@ def test_did_pop_without_audience_when_not_configured_rejected(monkeypatch, did_
 def test_did_pop_with_empty_authentication_set_rejected(monkeypatch, did_keypair):
     """When the DID document publishes no `authentication` list, a PoP must
     be rejected — no key is marked as authoritative for authentication."""
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -307,7 +303,7 @@ def test_did_pop_with_empty_authentication_set_rejected(monkeypatch, did_keypair
 
 def test_did_with_expired_pop_rejected(monkeypatch, did_keypair):
     """An expired PoP JWT must fail."""
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -337,7 +333,7 @@ def test_did_with_expired_pop_rejected(monkeypatch, did_keypair):
 
 def test_did_with_wrong_audience_pop_rejected(monkeypatch, did_keypair):
     """PoP JWT whose `aud` doesn't match the configured gateway audience."""
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -369,7 +365,7 @@ def test_did_with_wrong_audience_pop_rejected(monkeypatch, did_keypair):
 
 def test_did_header_trust_mode_accepts_without_pop(monkeypatch, did_keypair):
     """Backward-compat: explicit opt-in to header-trust mode bypasses PoP."""
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -412,7 +408,7 @@ def test_malformed_jwt_does_not_fall_through_to_did(monkeypatch, did_keypair):
     monkeypatch.setitem(sys.modules, "kya.auth", fake_auth)
 
     # Set up DID resolution so the fallthrough WOULD succeed if it occurred.
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:
@@ -447,7 +443,7 @@ def test_malformed_jwt_does_not_fall_through_to_did(monkeypatch, did_keypair):
 
 def test_missing_jwt_falls_through_to_did(monkeypatch, did_keypair):
     """No Authorization header → bearer_jwt is "absent" → fall through OK."""
-    from kya.did import register_did_method, _resolvers
+    from kya.did import _resolvers, register_did_method
     from kya.did_document import DIDDocument, VerificationMethod
     saved = _resolvers.get("jwk")
     try:

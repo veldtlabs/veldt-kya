@@ -10,27 +10,27 @@ from __future__ import annotations
 import base64
 import json
 import os
-import sys
 import time
-import types
 
 import pytest
 
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
-
 import jwt as pyjwt
-
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from kya_gateway.config import (
-    AuditConfig, BackendConfig, DIDConfig, GatewayBindConfig, GatewayConfig,
-    IdentityConfig, JWTConfig, PolicyConfig,
+    AuditConfig,
+    BackendConfig,
+    DIDConfig,
+    GatewayBindConfig,
+    GatewayConfig,
+    IdentityConfig,
+    PolicyConfig,
 )
 from kya_gateway.server import Gateway
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────
 

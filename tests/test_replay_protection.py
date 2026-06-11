@@ -21,7 +21,6 @@ from kya import (
     verify_request_nonce,
 )
 
-
 TENANT = "11111111-2222-3333-4444-dddddddddddd"
 PRINCIPAL = "alice_internal"
 

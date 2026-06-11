@@ -32,7 +32,6 @@ from kya import (
     verify_jwt_svid,
 )
 
-
 TENANT = "11111111-2222-3333-4444-aaaaaaaa4c00"
 
 
@@ -493,6 +492,7 @@ def test_lookup_filters_by_idp_kind(db):
 def test_unrestricted_allowlist_emits_warning(caplog):
     """Review fix #12: when no allowlist configured, emit warning."""
     import logging
+
     from kya import _reset_spiffe_warned_state
     _reset_spiffe_warned_state()
     with caplog.at_level(logging.WARNING, logger="kya.spiffe"):

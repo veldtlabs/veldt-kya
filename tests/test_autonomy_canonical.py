@@ -25,8 +25,8 @@ from kya.runtime import (
     ExplicitBindingCache,
     MavlinkSysidResolver,
     PrincipalHint,
-    ProcessRef,
     PrincipalResolverChain,
+    ProcessRef,
     RuntimeEvent,
     VehicleRef,
     decode_mavlink_sysid,
@@ -35,7 +35,6 @@ from kya.runtime import (
     set_principal_resolver,
     source_kind_of,
 )
-
 
 # ── Encoding helpers ──────────────────────────────────────────────
 
