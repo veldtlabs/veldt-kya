@@ -266,7 +266,20 @@ def _resolve_and_check_host(host: str) -> list[str]:
         # established the need for this -- in-cluster docker /
         # k8s testing pulls a private IP that allow_loopback
         # alone would refuse.
-        if allow_private and normalized.is_private and not normalized.is_loopback:
+        #
+        # CRITICAL: Python's ``ipaddress.is_private`` returns True
+        # for link-local (169.254/16) too because RFC 6890 groups
+        # them all as "private use." Link-local includes the
+        # canonical SSRF target (cloud metadata at 169.254.169.254),
+        # so we MUST exclude it explicitly here. The test
+        # ``test_link_local_metadata_ip_no_flag_unlocks_it`` pins
+        # this guard.
+        if (
+            allow_private
+            and normalized.is_private
+            and not normalized.is_loopback
+            and not normalized.is_link_local
+        ):
             safe_ips.append(str(normalized))
             continue
         # Precise error: name the category we hit and the flag
