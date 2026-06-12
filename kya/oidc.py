@@ -114,7 +114,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any
 
 import jwt as pyjwt
 
@@ -271,7 +271,7 @@ def verify_oidc_token(
     token: str,
     audience: str,
     trusted_issuers: dict[str, str],
-    jti_cache: Optional[Any] = None,
+    jti_cache: Any | None = None,
     ttl_seconds: int = 300,
     fetch_timeout_seconds: int = 5,
 ) -> dict:
@@ -329,10 +329,10 @@ def verify_oidc_token(
     # alg-confusion attacks (e.g., HS256-against-RSA-key). The JWK's
     # `alg` claim wins if present; else fall back to the kty/crv map.
     jwk_alg = jwk.get("alg") if isinstance(jwk, dict) else None
-    if isinstance(jwk_alg, str):
-        allowed_algorithms = [jwk_alg]
-    else:
-        allowed_algorithms = _algorithms_for_jwk(jwk)
+    allowed_algorithms = (
+        [jwk_alg] if isinstance(jwk_alg, str)
+        else _algorithms_for_jwk(jwk)
+    )
     if alg not in allowed_algorithms:
         raise OIDCAuthError(
             f"OIDC token alg {alg!r} not in JWK-derived allowlist "
