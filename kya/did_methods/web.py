@@ -289,6 +289,13 @@ def _resolve_and_check_host(host: str) -> list[str]:
         if normalized.is_loopback:
             hint = "KYA_DID_WEB_ALLOW_LOOPBACK=1"
             category = "loopback"
+        elif normalized.is_link_local:
+            # Must precede is_private (Python's ipaddress
+            # classifies 169.254/16 as both), otherwise the
+            # message would suggest ALLOW_PRIVATE unlocks
+            # link-local -- which it doesn't, and shouldn't.
+            hint = "neither flag relaxes this category"
+            category = "non-routable (link-local / metadata)"
         elif normalized.is_private:
             hint = "KYA_DID_WEB_ALLOW_PRIVATE=1"
             category = "RFC1918/ULA private"
