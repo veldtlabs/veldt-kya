@@ -521,3 +521,372 @@ def test_loopback_allowed_when_env_set(monkeypatch, example_doc):
 
     result = resolve_did("did:web:127.0.0.1")
     assert result.id == "did:web:127.0.0.1"
+
+
+# ─── Phase 13b follow-up: KYA_DID_WEB_ALLOW_PRIVATE flag ───────────
+
+
+def test_allow_loopback_permits_127_x(monkeypatch, example_doc):
+    """### KYA_DID_WEB_ALLOW_LOOPBACK=1 lets loopback through.
+
+    Pin the back-compat behavior: nothing about Phase 13b's new
+    private-IP flag changes the existing loopback contract.
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 443))
+    ])
+    # Stub the HTTP fetch so we don't actually hit 127.0.0.1.
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = '{"id": "did:web:loopback.test"}'
+        def json(self): import json; return json.loads(self.text)
+        def iter_content(self, chunk_size, decode_unicode=False): yield self.text.encode("utf-8")
+
+    import requests
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **kw: _R(),
+    )
+    # Resolver finalises the doc.id via _resolve_and_check_host; we
+    # care about whether it raises, not the doc content.
+    try:
+        resolve_did("did:web:loopback.test")
+    except (DIDResolutionFailed, DIDInvalidIdentifier) as exc:
+        pytest.fail(
+            f"ALLOW_LOOPBACK=1 should permit loopback; got {exc!r}"
+        )
+
+
+def test_allow_loopback_alone_still_rejects_rfc1918(monkeypatch):
+    """### Pre-fix bug: error message hinted at ALLOW_LOOPBACK as
+    the fix for ANY refused IP. In reality LOOPBACK only relaxes
+    127.x. A docker network IP (172.x) still gets refused with
+    ALLOW_LOOPBACK=1 alone.
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        resolve_did("did:web:172.25.0.3")
+    assert state["called"] is False
+    # The new error message names the precise flag that would
+    # unlock this IP -- ALLOW_PRIVATE, not ALLOW_LOOPBACK.
+    msg = str(exc_info.value)
+    assert "KYA_DID_WEB_ALLOW_PRIVATE" in msg, (
+        f"error must point at ALLOW_PRIVATE, not LOOPBACK; got: {msg}"
+    )
+
+
+def test_allow_private_permits_rfc1918(monkeypatch, example_doc):
+    """### Phase 13b new: ALLOW_PRIVATE=1 lets docker / k8s
+    private IPs through for in-cluster testing.
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_PRIVATE", "1")
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("172.25.0.3", 443))
+    ])
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = '{"id": "did:web:private.test"}'
+        def json(self): import json; return json.loads(self.text)
+        def iter_content(self, chunk_size, decode_unicode=False): yield self.text.encode("utf-8")
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _R())
+    try:
+        resolve_did("did:web:private.test")
+    except (DIDResolutionFailed, DIDInvalidIdentifier) as exc:
+        pytest.fail(
+            f"ALLOW_PRIVATE=1 should permit RFC1918; got {exc!r}"
+        )
+
+
+def test_allow_private_implies_loopback(monkeypatch):
+    """### Ergonomic shortcut: ALLOW_PRIVATE=1 alone covers BOTH
+    127.x AND RFC1918 so customers running an in-cluster test
+    don't have to set two flags."""
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_PRIVATE", "1")
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 443))
+    ])
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = '{"id": "did:web:lb.test"}'
+        def json(self): import json; return json.loads(self.text)
+        def iter_content(self, chunk_size, decode_unicode=False): yield self.text.encode("utf-8")
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _R())
+    try:
+        resolve_did("did:web:lb.test")
+    except (DIDResolutionFailed, DIDInvalidIdentifier) as exc:
+        pytest.fail(
+            f"ALLOW_PRIVATE should cover loopback too; got {exc!r}"
+        )
+
+
+def test_no_flag_rejects_with_precise_hint_loopback(monkeypatch):
+    """### Precise error: a 127.x IP refusal points at LOOPBACK,
+    not PRIVATE."""
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        resolve_did("did:web:127.0.0.1")
+    assert state["called"] is False
+    msg = str(exc_info.value)
+    assert "KYA_DID_WEB_ALLOW_LOOPBACK" in msg, (
+        f"loopback refusal must name LOOPBACK flag; got: {msg}"
+    )
+    assert "KYA_DID_WEB_ALLOW_PRIVATE" not in msg, (
+        f"loopback refusal must NOT name PRIVATE flag; got: {msg}"
+    )
+
+
+def test_no_flag_rejects_with_precise_hint_private(monkeypatch):
+    """### Precise error: an RFC1918 refusal points at PRIVATE,
+    not LOOPBACK -- the bug Phase 13b surfaced."""
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        resolve_did("did:web:192.168.1.50")
+    assert state["called"] is False
+    msg = str(exc_info.value)
+    assert "KYA_DID_WEB_ALLOW_PRIVATE" in msg
+    assert "KYA_DID_WEB_ALLOW_LOOPBACK" not in msg
+    # Category name in the message ("RFC1918/ULA private") is the
+    # actual user-facing breadcrumb -- pin it so a refactor of the
+    # message text can't silently regress to the misleading
+    # "internal IP" phrasing the pre-fix code used.
+    assert "RFC1918" in msg or "private" in msg.lower()
+
+
+def test_link_local_metadata_ip_no_flag_unlocks_it(monkeypatch):
+    """### Safety pin: AWS metadata IP (169.254.169.254) and the
+    rest of 169.254/16 link-local must NEVER be unlockable by a
+    dev-mode flag. The error must say so explicitly so a customer
+    misreading "internal" doesn't experiment with both flags
+    looking for a way in.
+
+    Cloud metadata endpoints in particular are the canonical SSRF
+    target; the multi-flag scheme this PR introduces must not
+    accidentally read as "set both flags and you're through."
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_PRIVATE", "1")
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        # AWS instance metadata IP -- the canonical SSRF target.
+        resolve_did("did:web:169.254.169.254")
+    assert state["called"] is False
+    msg = str(exc_info.value)
+    # Both flags are SET but neither unlocks link-local. The
+    # error must say "non-routable" with neither flag named
+    # as an escape hatch.
+    assert "non-routable" in msg, (
+        f"link-local refusal must call out 'non-routable' "
+        f"category; got: {msg}"
+    )
+    assert "neither flag" in msg, (
+        f"link-local refusal must explicitly say neither flag "
+        f"unlocks it; got: {msg}"
+    )
+
+
+# ─── Live integration test: real HTTPS server on loopback ─────────
+
+
+def test_live_loopback_resolve_against_real_https_server(
+    monkeypatch, tmp_path,
+):
+    """### Live: actual HTTPS server on 127.0.0.1, self-signed
+    cert with IPAddress SAN, real resolver fetch through the
+    full HTTP + TLS stack. Catches drift the mock tests miss:
+    HTTP client refactor (requests -> httpx), ssl.create_default_context
+    semantics, REQUESTS_CA_BUNDLE handling.
+
+    Belt-and-braces over the Phase 13b in-container live test;
+    runs in-process without docker so CI catches regressions
+    pre-merge.
+    """
+    import http.server
+    import ipaddress as _ipaddr_mod
+    import json as _json
+    import socketserver
+    import ssl
+    import threading
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+
+    # Self-signed cert. IPAddress SAN is the load-bearing piece --
+    # strict TLS validators (the default in OpenSSL 3.x +
+    # Python 3.12) refuse IP-literal hosts unless the IP is in
+    # IPAddress SAN. CommonName fallback was deprecated by RFC 6125
+    # and removed in modern stacks.
+    key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048,
+    )
+    now = _dt.now(_tz.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1"),
+        ]))
+        .issuer_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1"),
+        ]))
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - _td(minutes=5))
+        .not_valid_after(now + _td(minutes=30))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("localhost"),
+                x509.IPAddress(_ipaddr_mod.IPv4Address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, content_commitment=False,
+                key_encipherment=True, data_encipherment=False,
+                key_agreement=False, key_cert_sign=False,
+                crl_sign=False, encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = tmp_path / "server.crt"
+    key_pem = tmp_path / "server.key"
+    cert_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_pem.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+
+    # Doc root + did.json.
+    import base64 as _b64
+    doc_root = tmp_path / "www"
+    wellknown = doc_root / ".well-known"
+    wellknown.mkdir(parents=True)
+
+    # Bind to an ephemeral port on 127.0.0.1 FIRST so the doc's
+    # id can include the actual port. did:web spec ties the doc
+    # id to the URL; resolver refuses any mismatch.
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=str(doc_root), **kw)
+        def log_message(self, *a, **kw):
+            pass
+
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), _Handler)
+    port = httpd.server_address[1]
+
+    did_id_in_doc = f"did:web:127.0.0.1%3A{port}"
+    pub_jwk_x = _b64.urlsafe_b64encode(b"\x00" * 32).rstrip(
+        b"="
+    ).decode("ascii")
+    (wellknown / "did.json").write_text(_json.dumps({
+        "@context": [
+            "https://www.w3.org/ns/did/v1",
+            "https://w3id.org/security/jws/v1",
+        ],
+        "id": did_id_in_doc,
+        "verificationMethod": [{
+            "id": f"{did_id_in_doc}#k1",
+            "type": "JsonWebKey2020",
+            "controller": did_id_in_doc,
+            "publicKeyJwk": {
+                "kty": "OKP", "crv": "Ed25519", "x": pub_jwk_x,
+            },
+        }],
+        "authentication": [f"{did_id_in_doc}#k1"],
+        "assertionMethod": [f"{did_id_in_doc}#k1"],
+    }))
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile=str(cert_pem), keyfile=str(key_pem))
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+
+    try:
+        # Point ``requests`` (the resolver's HTTP client) at the
+        # self-signed cert + open the SSRF guard for loopback.
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert_pem))
+        monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+        monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+
+        # Encode the ephemeral port in the DID per spec
+        # (did:web:host%3Aport).
+        suffix = f"127.0.0.1%3A{port}"
+        doc = resolve_did(f"did:web:{suffix}")
+        # Doc fetched + parsed end-to-end through the real
+        # HTTP + TLS stack.
+        assert doc is not None
+        assert doc.id == did_id_in_doc, (
+            f"unexpected doc id: {doc.id}"
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_live_loopback_resolve_REJECTS_when_no_flag_set(
+    monkeypatch, tmp_path,
+):
+    """### Live counterpart: same real HTTPS server, but WITHOUT
+    ``KYA_DID_WEB_ALLOW_LOOPBACK`` set, the resolver must refuse
+    BEFORE the HTTP fetch. Belt-and-braces against a refactor
+    that reorders the SSRF check past the HTTP call.
+    """
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ):
+        resolve_did("did:web:127.0.0.1%3A8443")
+    # The fetch must NOT have been attempted -- SSRF guard fires
+    # first.
+    assert state["called"] is False
