@@ -200,15 +200,33 @@ def _is_ip_safe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return True
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip() in ("1", "true", "yes")
+
+
 def _resolve_and_check_host(host: str) -> list[str]:
     """Resolve ``host`` and return the list of safe IP strings to connect to.
 
-    Raises DIDResolutionFailed if no safe IP remains or all candidates are
-    internal. Set ``KYA_DID_WEB_ALLOW_LOOPBACK=1`` to bypass for local dev.
+    Raises DIDResolutionFailed if no safe IP remains. Two test-only
+    relaxations are available, scoped to RFC ranges so each opens
+    only what it advertises:
+
+    - ``KYA_DID_WEB_ALLOW_LOOPBACK=1`` permits 127.0.0.0/8 + ::1
+      (true loopback). Right for a single-host dev setup where
+      the did-doc server runs on the same machine as the
+      resolver.
+    - ``KYA_DID_WEB_ALLOW_PRIVATE=1`` permits the RFC1918 private
+      ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) + IPv6
+      ULA fc00::/7. Right for in-cluster testing (docker
+      networks, k8s pod IPs) where the did-doc server is on a
+      private LAN reachable from the resolver. Implies loopback.
+
+    Neither flag relaxes the multicast / reserved / unspecified /
+    extra-blocklist guards. Default behavior (both flags unset)
+    rejects every non-globally-routable address.
     """
-    allow_loopback = os.environ.get("KYA_DID_WEB_ALLOW_LOOPBACK", "").strip() in (
-        "1", "true", "yes"
-    )
+    allow_loopback = _env_truthy("KYA_DID_WEB_ALLOW_LOOPBACK")
+    allow_private = _env_truthy("KYA_DID_WEB_ALLOW_PRIVATE")
 
     candidate_ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     try:
@@ -237,12 +255,36 @@ def _resolve_and_check_host(host: str) -> list[str]:
         if _is_ip_safe(ip):
             safe_ips.append(str(_normalize_ip(ip)))
             continue
-        if allow_loopback and _normalize_ip(ip).is_loopback:
-            safe_ips.append(str(_normalize_ip(ip)))
+        normalized = _normalize_ip(ip)
+        # Loopback: covered by allow_loopback OR allow_private
+        # (private implies loopback so customers don't have to
+        # set both flags for the common dev setup).
+        if (allow_loopback or allow_private) and normalized.is_loopback:
+            safe_ips.append(str(normalized))
             continue
+        # RFC1918 / ULA: covered only by allow_private. Phase 13b
+        # established the need for this -- in-cluster docker /
+        # k8s testing pulls a private IP that allow_loopback
+        # alone would refuse.
+        if allow_private and normalized.is_private and not normalized.is_loopback:
+            safe_ips.append(str(normalized))
+            continue
+        # Precise error: name the category we hit and the flag
+        # that would unlock it. Pre-fix message hinted at
+        # ALLOW_LOOPBACK for every refused IP -- misleading
+        # since LOOPBACK only covers 127.x.
+        if normalized.is_loopback:
+            hint = "KYA_DID_WEB_ALLOW_LOOPBACK=1"
+            category = "loopback"
+        elif normalized.is_private:
+            hint = "KYA_DID_WEB_ALLOW_PRIVATE=1"
+            category = "RFC1918/ULA private"
+        else:
+            hint = "neither flag relaxes this category"
+            category = "non-routable"
         raise DIDResolutionFailed(
-            f"did:web host {host!r} resolves to internal IP {ip}; "
-            f"refusing to fetch (set KYA_DID_WEB_ALLOW_LOOPBACK=1 for dev)"
+            f"did:web host {host!r} resolves to {category} IP {ip}; "
+            f"refusing to fetch (set {hint} for dev/test ONLY)"
         )
     return safe_ips
 

@@ -521,3 +521,161 @@ def test_loopback_allowed_when_env_set(monkeypatch, example_doc):
 
     result = resolve_did("did:web:127.0.0.1")
     assert result.id == "did:web:127.0.0.1"
+
+
+# ─── Phase 13b follow-up: KYA_DID_WEB_ALLOW_PRIVATE flag ───────────
+
+
+def test_allow_loopback_permits_127_x(monkeypatch, example_doc):
+    """### KYA_DID_WEB_ALLOW_LOOPBACK=1 lets loopback through.
+
+    Pin the back-compat behavior: nothing about Phase 13b's new
+    private-IP flag changes the existing loopback contract.
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 443))
+    ])
+    # Stub the HTTP fetch so we don't actually hit 127.0.0.1.
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = '{"id": "did:web:loopback.test"}'
+        def json(self): import json; return json.loads(self.text)
+        def iter_content(self, chunk_size, decode_unicode=False): yield self.text.encode("utf-8")
+
+    import requests
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **kw: _R(),
+    )
+    # Resolver finalises the doc.id via _resolve_and_check_host; we
+    # care about whether it raises, not the doc content.
+    try:
+        resolve_did("did:web:loopback.test")
+    except (DIDResolutionFailed, DIDInvalidIdentifier) as exc:
+        pytest.fail(
+            f"ALLOW_LOOPBACK=1 should permit loopback; got {exc!r}"
+        )
+
+
+def test_allow_loopback_alone_still_rejects_rfc1918(monkeypatch):
+    """### Pre-fix bug: error message hinted at ALLOW_LOOPBACK as
+    the fix for ANY refused IP. In reality LOOPBACK only relaxes
+    127.x. A docker network IP (172.x) still gets refused with
+    ALLOW_LOOPBACK=1 alone.
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        resolve_did("did:web:172.25.0.3")
+    assert state["called"] is False
+    # The new error message names the precise flag that would
+    # unlock this IP -- ALLOW_PRIVATE, not ALLOW_LOOPBACK.
+    msg = str(exc_info.value)
+    assert "KYA_DID_WEB_ALLOW_PRIVATE" in msg, (
+        f"error must point at ALLOW_PRIVATE, not LOOPBACK; got: {msg}"
+    )
+
+
+def test_allow_private_permits_rfc1918(monkeypatch, example_doc):
+    """### Phase 13b new: ALLOW_PRIVATE=1 lets docker / k8s
+    private IPs through for in-cluster testing.
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_PRIVATE", "1")
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("172.25.0.3", 443))
+    ])
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = '{"id": "did:web:private.test"}'
+        def json(self): import json; return json.loads(self.text)
+        def iter_content(self, chunk_size, decode_unicode=False): yield self.text.encode("utf-8")
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _R())
+    try:
+        resolve_did("did:web:private.test")
+    except (DIDResolutionFailed, DIDInvalidIdentifier) as exc:
+        pytest.fail(
+            f"ALLOW_PRIVATE=1 should permit RFC1918; got {exc!r}"
+        )
+
+
+def test_allow_private_implies_loopback(monkeypatch):
+    """### Ergonomic shortcut: ALLOW_PRIVATE=1 alone covers BOTH
+    127.x AND RFC1918 so customers running an in-cluster test
+    don't have to set two flags."""
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_PRIVATE", "1")
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 443))
+    ])
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = '{"id": "did:web:lb.test"}'
+        def json(self): import json; return json.loads(self.text)
+        def iter_content(self, chunk_size, decode_unicode=False): yield self.text.encode("utf-8")
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _R())
+    try:
+        resolve_did("did:web:lb.test")
+    except (DIDResolutionFailed, DIDInvalidIdentifier) as exc:
+        pytest.fail(
+            f"ALLOW_PRIVATE should cover loopback too; got {exc!r}"
+        )
+
+
+def test_no_flag_rejects_with_precise_hint_loopback(monkeypatch):
+    """### Precise error: a 127.x IP refusal points at LOOPBACK,
+    not PRIVATE."""
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        resolve_did("did:web:127.0.0.1")
+    assert state["called"] is False
+    msg = str(exc_info.value)
+    assert "KYA_DID_WEB_ALLOW_LOOPBACK" in msg, (
+        f"loopback refusal must name LOOPBACK flag; got: {msg}"
+    )
+    assert "KYA_DID_WEB_ALLOW_PRIVATE" not in msg, (
+        f"loopback refusal must NOT name PRIVATE flag; got: {msg}"
+    )
+
+
+def test_no_flag_rejects_with_precise_hint_private(monkeypatch):
+    """### Precise error: an RFC1918 refusal points at PRIVATE,
+    not LOOPBACK -- the bug Phase 13b surfaced."""
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        resolve_did("did:web:192.168.1.50")
+    assert state["called"] is False
+    msg = str(exc_info.value)
+    assert "KYA_DID_WEB_ALLOW_PRIVATE" in msg
+    assert "KYA_DID_WEB_ALLOW_LOOPBACK" not in msg
+    # Category name in the message ("RFC1918/ULA private") is the
+    # actual user-facing breadcrumb -- pin it so a refactor of the
+    # message text can't silently regress to the misleading
+    # "internal IP" phrasing the pre-fix code used.
+    assert "RFC1918" in msg or "private" in msg.lower()
