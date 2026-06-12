@@ -483,3 +483,219 @@ def test_check_rate_negative_requests_per_minute_returns_true():
         ) is True
     finally:
         restore()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# RateLimitConfig two-mode API + check_rate(min_interval_seconds=...)
+#
+# These tests double as living documentation. Each docstring shows
+# the customer's exact YAML / Python config and explains when to
+# pick each mode. If you change behaviour, update the docs along
+# with the test.
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_doc_mode_a_requests_per_minute_for_http_bursty_traffic():
+    """### MODE A -- requests_per_minute (HTTP / bursty traffic)
+
+    Per-second token bucket with cap = ceil(rpm / 60). Use this for
+    any HTTP-synchronous gateway path where many clients hit the
+    same endpoint and short bursts within a second are normal.
+
+    Customer YAML::
+
+        rate_limit:
+          requests_per_minute: 120
+
+    Behaviour: up to 2 calls per wall-clock second per principal.
+    The 3rd call in the same second hits RATE_LIMIT.
+    """
+    from kya import check_rate
+
+    calls: list[tuple[str, float]] = []
+
+    def fake_check(target_id, rps):
+        calls.append((target_id, rps))
+        return True  # within budget
+
+    restore = _install_fake_runtime(fake_check)
+    try:
+        ok = check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=120,
+        )
+        assert ok is True
+        assert len(calls) == 1
+        # rps = 120 / 60 = 2.0 -- the >=1.0 bucket strategy.
+        assert calls[0][1] == 2.0
+    finally:
+        restore()
+
+
+def test_doc_mode_b_min_interval_seconds_for_cooldown_or_batch():
+    """### MODE B -- min_interval_seconds (cooldown / batch)
+
+    Refuses any two calls from the same principal within this many
+    seconds, regardless of total volume. Use for cron-scheduled
+    batch jobs or anti-replay-style cooldowns where bursting is
+    forbidden by policy.
+
+    Customer YAML::
+
+        rate_limit:
+          min_interval_seconds: 30
+
+    Behaviour: after each successful call, no further call from
+    that principal will be accepted for 30 seconds.
+    """
+    from kya import check_rate
+
+    calls: list[tuple[str, float]] = []
+
+    def fake_check(target_id, rps):
+        calls.append((target_id, rps))
+        return True
+
+    restore = _install_fake_runtime(fake_check)
+    try:
+        ok = check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            min_interval_seconds=30.0,
+        )
+        assert ok is True
+        # rps = 1 / 30 ≈ 0.033 -- the <1.0 minimum-interval branch.
+        assert 0 < calls[0][1] < 1.0
+        # Specifically: 1/30 ~= 0.0333
+        assert abs(calls[0][1] - (1.0 / 30.0)) < 1e-9
+    finally:
+        restore()
+
+
+def test_doc_misconfig_both_modes_set_is_rejected():
+    """### MISCONFIGURATION GUARD -- pick exactly one mode
+
+    The two modes have fundamentally different semantics. Allowing
+    both at once would be ambiguous. The validator refuses both-set.
+
+    Bad customer YAML::
+
+        rate_limit:
+          requests_per_minute: 120
+          min_interval_seconds: 30   # ← ambiguous; refused
+    """
+    import pytest
+
+    from kya import check_rate
+    with pytest.raises(ValueError, match="exactly one"):
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+            requests_per_minute=120,
+            min_interval_seconds=30.0,
+        )
+
+
+def test_doc_misconfig_neither_mode_set_is_rejected():
+    """### MISCONFIGURATION GUARD -- pick exactly one mode
+
+    If neither is set, the call has no policy to enforce.
+    Validator refuses rather than silently fail-open.
+    """
+    import pytest
+
+    from kya import check_rate
+    with pytest.raises(ValueError, match="exactly one"):
+        check_rate(
+            db=None, tenant_id="t1",
+            principal_kind="agent", principal_id="a-1",
+        )
+
+
+def test_doc_ratelimitconfig_accepts_at_most_one_field():
+    """### RateLimitConfig at config-load
+
+    At-most-one contract. Operators who set BOTH fields get a
+    loud ValueError at startup. Setting NEITHER is allowed and
+    falls back to the historical default of
+    ``requests_per_minute=600`` -- preserves the zero-arg
+    ergonomics of the pre-rename API (`RateLimitConfig()` was a
+    valid no-args construction).
+
+    Bad YAML at startup::
+
+        rate_limit:
+          requests_per_minute: 120
+          min_interval_seconds: 30   # ambiguous -- refused
+    """
+    import pytest
+
+    from kya_gateway.config import RateLimitConfig
+
+    # Both set -- refuse (ambiguous intent).
+    with pytest.raises(ValueError, match="at most one|may be set"):
+        RateLimitConfig(requests_per_minute=120, min_interval_seconds=30.0)
+    # Neither set -- fall back to historical default rpm=600.
+    cfg_default = RateLimitConfig()
+    assert cfg_default.requests_per_minute == 600
+    assert cfg_default.min_interval_seconds is None
+    # Mode A alone -- OK.
+    cfg_a = RateLimitConfig(requests_per_minute=120)
+    assert cfg_a.requests_per_minute == 120
+    assert cfg_a.min_interval_seconds is None
+    # Mode B alone -- OK.
+    cfg_b = RateLimitConfig(min_interval_seconds=30.0)
+    assert cfg_b.min_interval_seconds == 30.0
+    assert cfg_b.requests_per_minute is None
+
+
+def test_doc_ratelimitconfig_rejects_low_requests_per_minute():
+    """### MISCONFIGURATION GUARD -- requests_per_minute must be >= 60
+
+    Phase 12 surfaced this. Pre-rename, `requests_per_minute: 6`
+    silently switched the limiter to minimum-interval semantics
+    (`1 / 0.1 rps = 10s between calls`). Operators who wrote
+    `requests_per_minute: 6` overwhelmingly meant "6 per minute,
+    bursts OK" -- not "no two calls within 10 seconds".
+
+    Now the validator refuses values < 60 and tells the operator
+    the explicit min_interval_seconds value they probably wanted.
+
+    Bad YAML::
+
+        rate_limit:
+          requests_per_minute: 6   # ← refused; use min_interval_seconds=10.0
+
+    Good YAML for the intent::
+
+        rate_limit:
+          min_interval_seconds: 10
+    """
+    import pytest
+
+    from kya_gateway.config import RateLimitConfig
+
+    with pytest.raises(ValueError, match="< 60"):
+        RateLimitConfig(requests_per_minute=6)
+    # The error message must point to the explicit alternative.
+    try:
+        RateLimitConfig(requests_per_minute=6)
+    except ValueError as e:
+        assert "min_interval_seconds=10.0" in str(e), str(e)
+
+
+def test_doc_ratelimitconfig_rejects_nonpositive_min_interval():
+    """### MISCONFIGURATION GUARD -- min_interval_seconds must be > 0
+
+    A zero or negative interval would either disable the limit
+    silently (0) or cause arithmetic surprises downstream. Refuse
+    loudly at config-load.
+    """
+    import pytest
+
+    from kya_gateway.config import RateLimitConfig
+
+    for bad in (0, -1, -0.5):
+        with pytest.raises(ValueError, match="must be > 0"):
+            RateLimitConfig(min_interval_seconds=bad)

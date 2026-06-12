@@ -174,37 +174,66 @@ def check_rate(
     tenant_id: str,
     principal_kind: str,
     principal_id: str,
-    requests_per_minute: int,
+    requests_per_minute: int | None = None,
+    min_interval_seconds: float | None = None,
 ) -> bool:
     """Per-principal rate limit check called from the gateway's
-    policy pipeline.
+    policy pipeline. Two modes; exactly one must be supplied.
+
+    Mode A -- ``requests_per_minute`` (HTTP / bursty traffic)
+        Per-second token bucket with cap = ``ceil(rpm / 60)``. Use
+        for any HTTP-synchronous gateway path. ``rpm`` MUST be >= 60
+        so the internal rps is >= 1.0; ``RateLimitConfig`` validates
+        this at config-load time.
+
+    Mode B -- ``min_interval_seconds`` (cooldown / batch)
+        Refuses any two calls from the same principal within this
+        many seconds, regardless of total volume. Use for hard
+        cooldowns where bursting is forbidden.
 
     Returns True if the call should proceed, False if it should be
     rate-limited. The gateway translates False into a 403 with
-    ``RATE_LIMIT`` reason code (per `kya_gateway.policy_pipeline`).
+    ``RATE_LIMIT`` reason code (per ``kya_gateway.policy_pipeline``).
 
     Differs from :func:`maybe_rate_limit` in two ways:
 
-    1. **Caller-supplied rate.** The gateway has a per-route
-       ``requests_per_minute`` value in its config; we honor it
-       directly instead of resolving via
-       ``KYA_RATE_LIMIT_RPS_<primitive>`` env. ``requests_per_minute
-       <= 0`` returns True immediately (no limit configured).
-    2. **Per-principal bucket.** The token bucket key is
-       ``kya:gw:<tenant>:<kind>:<id>``, so two principals in the
-       same tenant don't share a budget. Mirrors the gateway's
-       per-principal verdict semantics.
+    1. **Caller-supplied rate.** The gateway has a per-route value
+       in its config; we honor it directly instead of resolving via
+       ``KYA_RATE_LIMIT_RPS_<primitive>`` env.
+    2. **Per-principal bucket.** The token bucket key is a sha256
+       hash of ``(tenant, kind, id)``, so two principals in the same
+       tenant don't share a budget AND a DID-shaped ``principal_id``
+       can't alias another principal's bucket via colon delimiter
+       collision.
 
     Fail-open contract: if the underlying token-bucket helper
-    (``kya_redteam.runtime.acquire_rate_token``) is unavailable
-    or raises, returns True so a transient operational fault does
-    not gate all MCP traffic. A security event is emitted whenever
-    the call would have been rate-limited so the audit chain
-    captures the signal even on fail-open.
+    (``kya_redteam.runtime.check_rate_token``) is unavailable or
+    raises, returns True so a transient operational fault does not
+    gate all MCP traffic. A security event is emitted whenever the
+    call would have been rate-limited so the audit chain captures
+    the signal even on fail-open.
+
+    Raises:
+        ValueError: when both modes or neither mode is supplied.
     """
-    if requests_per_minute <= 0:
-        return True
-    rps = float(requests_per_minute) / 60.0
+    # Mode selection: exactly one must be set. Loud failure if not.
+    if (requests_per_minute is None) == (min_interval_seconds is None):
+        raise ValueError(
+            "check_rate: exactly one of `requests_per_minute` or "
+            "`min_interval_seconds` must be set; got "
+            f"requests_per_minute={requests_per_minute!r}, "
+            f"min_interval_seconds={min_interval_seconds!r}"
+        )
+    if requests_per_minute is not None:
+        if requests_per_minute <= 0:
+            return True
+        rps = float(requests_per_minute) / 60.0
+    else:
+        # min_interval_seconds branch.
+        assert min_interval_seconds is not None
+        if min_interval_seconds <= 0:
+            return True
+        rps = 1.0 / float(min_interval_seconds)
     # Bucket key MUST hash the identity tuple. Colon-delimited
     # f-string is unsafe because principal_id can be a DID
     # (`did:key:zABC` -- itself contains colons), so two distinct

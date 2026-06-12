@@ -119,12 +119,16 @@ def evaluate(
             logger.debug("[KYA-GATEWAY] kya.rate_limit unavailable; skipping rate check")
         else:
             try:
+                # Pass through whichever mode the operator set.
+                # RateLimitConfig.__post_init__ guarantees exactly one
+                # is non-None, so the check_rate validator never fires.
                 rate_ok = check_rate(
                     db,
                     tenant_id=tenant_id,
                     principal_kind=principal.principal_kind,
                     principal_id=principal.principal_id,
                     requests_per_minute=cfg.rate_limit.requests_per_minute,
+                    min_interval_seconds=cfg.rate_limit.min_interval_seconds,
                 )
             except Exception as exc:
                 logger.warning("[KYA-GATEWAY] check_rate raised: %s", exc)

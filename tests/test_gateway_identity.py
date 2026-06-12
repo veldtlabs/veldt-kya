@@ -133,6 +133,8 @@ def test_did_header_alone_rejected_by_default(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_with_valid_pop_accepted(monkeypatch, did_keypair):
@@ -163,6 +165,8 @@ def test_did_with_valid_pop_accepted(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_with_pop_signed_by_other_key_rejected(monkeypatch, did_keypair,
@@ -193,6 +197,8 @@ def test_did_with_pop_signed_by_other_key_rejected(monkeypatch, did_keypair,
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_with_future_iat_pop_rejected(monkeypatch, did_keypair):
@@ -228,6 +234,8 @@ def test_did_with_future_iat_pop_rejected(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_pop_without_audience_when_not_configured_rejected(monkeypatch, did_keypair):
@@ -268,6 +276,8 @@ def test_did_pop_without_audience_when_not_configured_rejected(monkeypatch, did_
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_pop_with_empty_authentication_set_rejected(monkeypatch, did_keypair):
@@ -299,6 +309,8 @@ def test_did_pop_with_empty_authentication_set_rejected(monkeypatch, did_keypair
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_with_expired_pop_rejected(monkeypatch, did_keypair):
@@ -329,6 +341,8 @@ def test_did_with_expired_pop_rejected(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_with_wrong_audience_pop_rejected(monkeypatch, did_keypair):
@@ -361,6 +375,8 @@ def test_did_with_wrong_audience_pop_rejected(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_did_header_trust_mode_accepts_without_pop(monkeypatch, did_keypair):
@@ -388,6 +404,8 @@ def test_did_header_trust_mode_accepts_without_pop(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 # ─── B10: methods must NOT fall through on invalid credentials ───────
@@ -439,6 +457,8 @@ def test_malformed_jwt_does_not_fall_through_to_did(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 def test_missing_jwt_falls_through_to_did(monkeypatch, did_keypair):
@@ -473,6 +493,8 @@ def test_missing_jwt_falls_through_to_did(monkeypatch, did_keypair):
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
 
 
 # ─── B13: principal_kind from JWT claims must not be trusted by default ──
@@ -709,3 +731,48 @@ def test_try_did_extracts_principal_id_from_vc_credentialsubject_e2e(
     finally:
         if saved is not None:
             register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
+
+
+def test_jwk_resolver_fixture_cleanup_does_not_leak_when_saved_is_none(
+    monkeypatch, did_keypair,
+):
+    """Regression #113: fixtures in this file save the prior jwk
+    resolver, register a fake, and restore on exit -- but the
+    restore branch was guarded by `if saved is not None`, so when
+    no resolver was registered at the time of save (the common case
+    in pytest's clean process), the fake leaked into subsequent
+    tests in OTHER files (e.g. test_did_binding.py).
+
+    The fix: when saved is None, pop the registration outright so
+    no resolver remains. This test verifies the cleanup is complete
+    regardless of the saved state.
+    """
+    from kya.did import _resolvers, register_did_method
+    from kya.did_document import DIDDocument
+
+    # Snapshot whatever state pytest left us in.
+    pre = _resolvers.get("jwk")
+
+    saved = _resolvers.get("jwk")
+    try:
+        register_did_method("jwk", lambda _s: DIDDocument(
+            id=did_keypair["did"], verification_methods=[],
+            authentication=[], assertion_method=[],
+            raw={"id": did_keypair["did"]},
+        ))
+        # Resolver IS now registered while we're inside the block.
+        assert _resolvers.get("jwk") is not None
+    finally:
+        if saved is not None:
+            register_did_method("jwk", saved)
+        else:
+            _resolvers.pop("jwk", None)
+
+    # After the cleanup, we should be EXACTLY where we started --
+    # no leak whether `pre` was None or a real registration.
+    assert _resolvers.get("jwk") is pre, (
+        "jwk resolver leaked past the cleanup block; downstream "
+        "test files would see this fake resolver."
+    )

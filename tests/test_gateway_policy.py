@@ -197,7 +197,11 @@ def test_rate_limit_runtime_error_fails_closed(monkeypatch):
 
     cfg = PolicyConfig(
         min_trust=0,
-        rate_limit=RateLimitConfig(requests_per_minute=10),
+        # Any valid rate-limit value works for this fail-closed
+        # test; the boom helper above intercepts check_rate before
+        # the actual rate value matters. Was `requests_per_minute=10`
+        # pre-rename; the new validator requires >= 60.
+        rate_limit=RateLimitConfig(requests_per_minute=60),
     )
     v = evaluate(
         db=None,
