@@ -79,7 +79,70 @@ class IdentityConfig:
 
 @dataclass(frozen=True)
 class RateLimitConfig:
-    requests_per_minute: int = 600
+    """Per-principal rate-limit policy. Exactly one mode must be set.
+
+    Mode A -- ``requests_per_minute`` (HTTP / bursty traffic)
+        Per-second token bucket. The cap is ``ceil(requests_per_minute
+        / 60)`` calls per wall-clock second; bursts within a second
+        beyond the cap are rate-limited. Must be **>= 60** so the
+        internal rps is >= 1.0. Use this for any HTTP-synchronous
+        path where many simultaneous clients hit the gateway.
+
+    Mode B -- ``min_interval_seconds`` (cooldown / batch)
+        Strict minimum-interval enforcement: refuses any two calls
+        from the same principal within this many seconds, *regardless
+        of total volume*. Use this for cron-style batch jobs or hard
+        cooldowns where bursting is forbidden.
+
+    Why explicit modes?
+        Pre-Phase-12-gap-#4 the only knob was ``requests_per_minute``.
+        Setting it below 60 silently switched the helper into
+        minimum-interval mode (rps < 1.0 changes the underlying
+        token-bucket strategy in ``kya_redteam.runtime``), which is
+        almost never what an operator who wrote ``requests_per_minute``
+        intended. Splitting the two modes makes the intent loud
+        at config-load time -- ``requests_per_minute=6`` now raises
+        with a pointer to ``min_interval_seconds=10``.
+    """
+    requests_per_minute: int | None = None
+    min_interval_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        rpm = self.requests_per_minute
+        mis = self.min_interval_seconds
+        # Backwards compat: `RateLimitConfig()` with no args was a
+        # valid zero-arg call pre-rename (the field defaulted to
+        # 600). Preserve that ergonomics -- explicit constructor
+        # with neither field set falls back to the historical
+        # 600 rpm default. Only the both-set case is ambiguous.
+        if rpm is None and mis is None:
+            object.__setattr__(self, "requests_per_minute", 600)
+            rpm = 600
+        if (rpm is not None) and (mis is not None):
+            raise ValueError(
+                "RateLimitConfig: exactly one of `requests_per_minute` "
+                "or `min_interval_seconds` may be set; got "
+                f"requests_per_minute={rpm!r}, "
+                f"min_interval_seconds={mis!r}"
+            )
+        if rpm is not None:
+            if not isinstance(rpm, int):
+                raise TypeError(
+                    f"requests_per_minute must be int, got {type(rpm).__name__}"
+                )
+            if rpm < 60:
+                raise ValueError(
+                    f"requests_per_minute={rpm} < 60 would make the "
+                    "internal rps < 1.0 and silently switch the "
+                    "limiter to minimum-interval mode (1/rps seconds "
+                    "between any two calls). If that's what you want, "
+                    f"set min_interval_seconds={60.0 / rpm:.1f} explicitly."
+                )
+        if mis is not None:
+            if mis <= 0:
+                raise ValueError(
+                    f"min_interval_seconds must be > 0, got {mis!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -232,9 +295,7 @@ class GatewayConfig:
             pol = raw.get("policy") or {}
             policy = PolicyConfig(
                 min_trust=int(pol.get("min_trust", 0)),
-                rate_limit=RateLimitConfig(
-                    requests_per_minute=int(pol["rate_limit"]["requests_per_minute"])
-                ) if pol.get("rate_limit") else None,
+                rate_limit=_parse_rate_limit(pol.get("rate_limit")),
                 payload_caps=PayloadCapsConfig(
                     max_bytes=int(pol["payload_caps"]["max_bytes"])
                 ) if pol.get("payload_caps") else None,
@@ -301,6 +362,26 @@ class GatewayConfig:
             audit=audit,
             enforcement=enforcement,
         )
+
+
+def _parse_rate_limit(block: dict | None) -> RateLimitConfig | None:
+    """Parse the ``policy.rate_limit`` YAML block. Accepts EITHER
+    ``requests_per_minute`` (Mode A, HTTP/bursty) or
+    ``min_interval_seconds`` (Mode B, cooldown/batch). Returns None
+    when the block is absent (no rate limit configured).
+    The exactly-one constraint is enforced by
+    ``RateLimitConfig.__post_init__``; we let that be the single
+    source of truth so YAML and direct-Python paths agree on the
+    error message.
+    """
+    if not block:
+        return None
+    kwargs: dict = {}
+    if "requests_per_minute" in block:
+        kwargs["requests_per_minute"] = int(block["requests_per_minute"])
+    if "min_interval_seconds" in block:
+        kwargs["min_interval_seconds"] = float(block["min_interval_seconds"])
+    return RateLimitConfig(**kwargs)
 
 
 def _parse_rbac(block: dict | None) -> RBACConfig | None:
