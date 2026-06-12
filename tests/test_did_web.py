@@ -713,3 +713,180 @@ def test_link_local_metadata_ip_no_flag_unlocks_it(monkeypatch):
         f"link-local refusal must explicitly say neither flag "
         f"unlocks it; got: {msg}"
     )
+
+
+# ─── Live integration test: real HTTPS server on loopback ─────────
+
+
+def test_live_loopback_resolve_against_real_https_server(
+    monkeypatch, tmp_path,
+):
+    """### Live: actual HTTPS server on 127.0.0.1, self-signed
+    cert with IPAddress SAN, real resolver fetch through the
+    full HTTP + TLS stack. Catches drift the mock tests miss:
+    HTTP client refactor (requests -> httpx), ssl.create_default_context
+    semantics, REQUESTS_CA_BUNDLE handling.
+
+    Belt-and-braces over the Phase 13b in-container live test;
+    runs in-process without docker so CI catches regressions
+    pre-merge.
+    """
+    import http.server
+    import ipaddress as _ipaddr_mod
+    import json as _json
+    import socketserver
+    import ssl
+    import threading
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+
+    # Self-signed cert. IPAddress SAN is the load-bearing piece --
+    # strict TLS validators (the default in OpenSSL 3.x +
+    # Python 3.12) refuse IP-literal hosts unless the IP is in
+    # IPAddress SAN. CommonName fallback was deprecated by RFC 6125
+    # and removed in modern stacks.
+    key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048,
+    )
+    now = _dt.now(_tz.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1"),
+        ]))
+        .issuer_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1"),
+        ]))
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - _td(minutes=5))
+        .not_valid_after(now + _td(minutes=30))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("localhost"),
+                x509.IPAddress(_ipaddr_mod.IPv4Address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, content_commitment=False,
+                key_encipherment=True, data_encipherment=False,
+                key_agreement=False, key_cert_sign=False,
+                crl_sign=False, encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = tmp_path / "server.crt"
+    key_pem = tmp_path / "server.key"
+    cert_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_pem.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+
+    # Doc root + did.json.
+    import base64 as _b64
+    doc_root = tmp_path / "www"
+    wellknown = doc_root / ".well-known"
+    wellknown.mkdir(parents=True)
+
+    # Bind to an ephemeral port on 127.0.0.1 FIRST so the doc's
+    # id can include the actual port. did:web spec ties the doc
+    # id to the URL; resolver refuses any mismatch.
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=str(doc_root), **kw)
+        def log_message(self, *a, **kw):
+            pass
+
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), _Handler)
+    port = httpd.server_address[1]
+
+    did_id_in_doc = f"did:web:127.0.0.1%3A{port}"
+    pub_jwk_x = _b64.urlsafe_b64encode(b"\x00" * 32).rstrip(
+        b"="
+    ).decode("ascii")
+    (wellknown / "did.json").write_text(_json.dumps({
+        "@context": [
+            "https://www.w3.org/ns/did/v1",
+            "https://w3id.org/security/jws/v1",
+        ],
+        "id": did_id_in_doc,
+        "verificationMethod": [{
+            "id": f"{did_id_in_doc}#k1",
+            "type": "JsonWebKey2020",
+            "controller": did_id_in_doc,
+            "publicKeyJwk": {
+                "kty": "OKP", "crv": "Ed25519", "x": pub_jwk_x,
+            },
+        }],
+        "authentication": [f"{did_id_in_doc}#k1"],
+        "assertionMethod": [f"{did_id_in_doc}#k1"],
+    }))
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile=str(cert_pem), keyfile=str(key_pem))
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+
+    try:
+        # Point ``requests`` (the resolver's HTTP client) at the
+        # self-signed cert + open the SSRF guard for loopback.
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert_pem))
+        monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+        monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+
+        # Encode the ephemeral port in the DID per spec
+        # (did:web:host%3Aport).
+        suffix = f"127.0.0.1%3A{port}"
+        doc = resolve_did(f"did:web:{suffix}")
+        # Doc fetched + parsed end-to-end through the real
+        # HTTP + TLS stack.
+        assert doc is not None
+        assert doc.id == did_id_in_doc, (
+            f"unexpected doc id: {doc.id}"
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_live_loopback_resolve_REJECTS_when_no_flag_set(
+    monkeypatch, tmp_path,
+):
+    """### Live counterpart: same real HTTPS server, but WITHOUT
+    ``KYA_DID_WEB_ALLOW_LOOPBACK`` set, the resolver must refuse
+    BEFORE the HTTP fetch. Belt-and-braces against a refactor
+    that reorders the SSRF check past the HTTP call.
+    """
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
+    monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ):
+        resolve_did("did:web:127.0.0.1%3A8443")
+    # The fetch must NOT have been attempted -- SSRF guard fires
+    # first.
+    assert state["called"] is False
