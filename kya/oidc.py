@@ -116,7 +116,14 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-import jwt as pyjwt
+# ``pyjwt`` is imported lazily inside ``verify_oidc_token`` rather
+# than at module load (mirrors ``kya.auth.verify_jwt``'s pattern).
+# This keeps the bare ``pip install veldt-kya`` lean -- consumers
+# who don't call the verifier don't pay the pyjwt import cost and,
+# more importantly, can still reference ``OIDCAuthError`` /
+# ``OIDCJWKSFetchError`` for exception handling without installing
+# pyjwt themselves. Install the ``[did]`` extra (or any of the
+# higher-level extras like ``[all]``) to get pyjwt bundled.
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +300,15 @@ def verify_oidc_token(
     """
     if not trusted_issuers:
         raise OIDCAuthError("no OIDC trusted issuers configured")
+
+    try:
+        import jwt as pyjwt
+    except ImportError as exc:
+        raise OIDCAuthError(
+            "pyjwt is required for OIDC token verification. Install "
+            "with `pip install veldt-kya[did]` (or any extra that "
+            "includes pyjwt)."
+        ) from exc
 
     try:
         header = pyjwt.get_unverified_header(token)

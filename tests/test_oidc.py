@@ -737,3 +737,35 @@ def test_all_canonical_kinds_accepted_by_binding():
     from kya.principals import is_valid_principal_kind
     for k in ("user", "service_account", "agent", "admin"):
         assert is_valid_principal_kind(k), f"{k!r} not canonical in OSS"
+
+
+def test_kya_oidc_importable_without_pyjwt(monkeypatch):
+    """### Lean-install contract: importing ``kya.oidc`` (and its
+    exception classes) must NOT require pyjwt at module load.
+
+    Bare ``pip install veldt-kya`` (no extras) doesn't pull pyjwt.
+    Consumers handling ``OIDCAuthError`` from a downstream module
+    must still be able to import the class. pyjwt is only needed
+    when actually calling ``verify_oidc_token``.
+
+    Pin by blocking the ``jwt`` module on import and ensuring
+    ``from kya.oidc import OIDCAuthError, OIDCJWKSFetchError`` works.
+    """
+    import importlib
+    import sys
+    # Block ``jwt`` at import time.
+    monkeypatch.setitem(sys.modules, "jwt", None)
+    # Force a fresh import of kya.oidc so the top-level executes
+    # without pyjwt available.
+    sys.modules.pop("kya.oidc", None)
+    mod = importlib.import_module("kya.oidc")
+    assert hasattr(mod, "OIDCAuthError")
+    assert hasattr(mod, "OIDCJWKSFetchError")
+    assert hasattr(mod, "verify_oidc_token")
+    # Calling the verifier without pyjwt must raise OIDCAuthError
+    # (not bare ImportError -- helps callers map to 401).
+    with pytest.raises(mod.OIDCAuthError, match="pyjwt is required"):
+        mod.verify_oidc_token(
+            token="x.y.z", audience="a",
+            trusted_issuers={"https://i/": "https://i/jwks"},
+        )
