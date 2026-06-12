@@ -679,3 +679,37 @@ def test_no_flag_rejects_with_precise_hint_private(monkeypatch):
     # message text can't silently regress to the misleading
     # "internal IP" phrasing the pre-fix code used.
     assert "RFC1918" in msg or "private" in msg.lower()
+
+
+def test_link_local_metadata_ip_no_flag_unlocks_it(monkeypatch):
+    """### Safety pin: AWS metadata IP (169.254.169.254) and the
+    rest of 169.254/16 link-local must NEVER be unlockable by a
+    dev-mode flag. The error must say so explicitly so a customer
+    misreading "internal" doesn't experiment with both flags
+    looking for a way in.
+
+    Cloud metadata endpoints in particular are the canonical SSRF
+    target; the multi-flag scheme this PR introduces must not
+    accidentally read as "set both flags and you're through."
+    """
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
+    monkeypatch.setenv("KYA_DID_WEB_ALLOW_PRIVATE", "1")
+    state = _fail_on_http(monkeypatch)
+    with pytest.raises(
+        (DIDResolutionFailed, DIDInvalidIdentifier),
+    ) as exc_info:
+        # AWS instance metadata IP -- the canonical SSRF target.
+        resolve_did("did:web:169.254.169.254")
+    assert state["called"] is False
+    msg = str(exc_info.value)
+    # Both flags are SET but neither unlocks link-local. The
+    # error must say "non-routable" with neither flag named
+    # as an escape hatch.
+    assert "non-routable" in msg, (
+        f"link-local refusal must call out 'non-routable' "
+        f"category; got: {msg}"
+    )
+    assert "neither flag" in msg, (
+        f"link-local refusal must explicitly say neither flag "
+        f"unlocks it; got: {msg}"
+    )
