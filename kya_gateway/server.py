@@ -292,7 +292,9 @@ def _gateway_signal_debounced(
     """
     try:
         from datetime import datetime, timedelta, timezone
+
         from sqlalchemy import select
+
         from kya.principals import _PrincipalRow
         stmt = (
             select(_PrincipalRow.signal_counts,
