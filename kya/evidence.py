@@ -177,6 +177,13 @@ VALID_EVIDENCE_KINDS = {
     # rotation events.
     "issuer_vc_issued",
     "issuer_vc_revoked",
+    # Phase 14a #145 -- issuer /revoke called against an already-
+    # revoked VC. Distinct from `issuer_vc_revoked` so dashboards
+    # can isolate no-op probes from real state transitions; serves
+    # as the forensic floor for the dedupe path on /revoke (closes
+    # the silent-revocation-status-oracle attack flagged in the
+    # double-pass code review).
+    "issuer_vc_revoke_already_set",
     "trust_registry_change",
     "gateway_verdict",
     "revocation_blocked",

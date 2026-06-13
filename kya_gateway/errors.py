@@ -58,7 +58,23 @@ class RevocationBlocked(IdentityCredentialInvalid):
     a `revocation_blocked` security event (and surface the
     `IDENTITY_REVOKED` reason code) when this fires, separate from
     "JWT signature is wrong" or "DID didn't resolve."
+
+    Phase 14a #145 — carry the verified principal info (principal_kind
+    + principal_id) on the exception so the gateway's identity-failure
+    handler can ALSO write a ``revocation_blocked`` row into
+    ``kya_principal_trust.signal_counts``. Without this, the closed
+    behavioral-revoke loop is observable only via
+    ``kya_security_events`` (a separate table that
+    ``kya.rogue.get_rogue_signals`` does NOT read), and a detector
+    polling ``rogue_score`` can never see its own loop closing.
     """
+
+    def __init__(self, message: str = "",
+                 *, principal_kind: str | None = None,
+                 principal_id: str | None = None):
+        super().__init__(message)
+        self.principal_kind = principal_kind
+        self.principal_id = principal_id
 
 
 class PolicyDenied(GatewayError):

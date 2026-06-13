@@ -179,7 +179,17 @@ def _emit_identity_failure_event(
 
     Best-effort: any error inside emit_security_event is swallowed by
     the function itself; we never let a security-event failure block
-    a request."""
+    a request.
+
+    Phase 14a #145 — when the failure carries principal info (today:
+    ``RevocationBlocked.principal_kind`` / ``principal_id``), ALSO
+    record a ``signal_kind=revocation_blocked`` row into
+    ``kya_principal_trust.signal_counts``. That's the table
+    ``kya.rogue.get_rogue_signals`` reads, so a detector polling
+    ``rogue_score`` can observe the loop closing. Without this the
+    event is only visible in ``kya_security_events`` (a separate
+    table the rogue subsystem doesn't consult).
+    """
     kind = _identity_failure_sec_event(exc)
     if kind is None:
         return
@@ -203,6 +213,111 @@ def _emit_identity_failure_event(
             "_METRICS['sec_event_emit_failures']=%d",
             ev_exc, _METRICS["sec_event_emit_failures"],
         )
+
+    # Phase 14a #145 — bridge from security event to principal_trust
+    # signal counts. Only when the exception carries verified
+    # principal info (currently RevocationBlocked sets these in
+    # identity.py:_maybe_check_revocation). Best-effort: failure to
+    # record the signal is logged + counted, never raised.
+    #
+    # Review-pass #2 finding: `record_principal_signal` applies a
+    # trust-score delta on EVERY call (e.g., -10 for
+    # `revocation_blocked` via SIGNAL_DELTAS in users.py). Without
+    # debouncing, an attacker can burst-replay a revoked VC and
+    # drive an agent's trust_score to the `"blocked"` bucket in ~7
+    # calls (-10 each × clamp). To prevent that trust-laundering
+    # attack, debounce per (principal_kind, principal_id, kind):
+    # only record once per ``_GATEWAY_SIGNAL_DEBOUNCE_S`` seconds.
+    # Subsequent failures still surface in `kya_security_events`
+    # (already written above) and the HTTP response code, so
+    # operators don't lose observability -- they lose the
+    # repeated trust-score decrement.
+    p_kind = getattr(exc, "principal_kind", None)
+    p_id = getattr(exc, "principal_id", None)
+    if not (p_kind and p_id):
+        return
+    try:
+        from kya import default_session, record_principal_signal
+    except ImportError:
+        return
+    try:
+        with default_session() as db:
+            if _gateway_signal_debounced(
+                db,
+                tenant_id=gw.cfg.gateway.tenant_id,
+                principal_kind=p_kind,
+                principal_id=p_id,
+                signal_kind=kind,
+                window_seconds=_GATEWAY_SIGNAL_DEBOUNCE_S,
+            ):
+                return
+            record_principal_signal(
+                db,
+                tenant_id=gw.cfg.gateway.tenant_id,
+                principal_kind=p_kind,
+                principal_id=p_id,
+                signal_kind=kind,
+                attributes={"reason": str(exc)[:200]},
+            )
+            db.commit()
+    except Exception as ev_exc:  # pragma: no cover — defensive
+        _METRICS["sec_event_emit_failures"] += 1
+        logger.warning(
+            "[KYA-GATEWAY] identity-failure signal record failed: "
+            "%s — _METRICS['sec_event_emit_failures']=%d",
+            ev_exc, _METRICS["sec_event_emit_failures"],
+        )
+
+
+# Phase 14a #145 — debounce window for gateway-emitted identity-
+# failure signals (revocation_blocked, dpop_*). 60s suppresses the
+# burst-replay attack on trust scores without losing the first
+# occurrence in a session.
+_GATEWAY_SIGNAL_DEBOUNCE_S = 60
+
+
+def _gateway_signal_debounced(
+    db, *, tenant_id: str, principal_kind: str,
+    principal_id: str, signal_kind: str,
+    window_seconds: int,
+) -> bool:
+    """Return True if a signal of this kind was already recorded for
+    this principal within the debounce window. Caller short-circuits
+    the new `record_principal_signal` call to prevent trust-score
+    flooding from repeated revoked-VC replay.
+
+    Read-only and exception-safe -- on any DB read failure returns
+    False (i.e., proceed with the write), preserving the original
+    fail-open behavior of the surrounding code.
+    """
+    try:
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import select
+        from kya.principals import _PrincipalRow
+        stmt = (
+            select(_PrincipalRow.signal_counts,
+                   _PrincipalRow.last_signal_at)
+            .where(_PrincipalRow.tenant_id == tenant_id)
+            .where(_PrincipalRow.principal_kind == principal_kind)
+            .where(_PrincipalRow.principal_id == principal_id)
+        )
+        row = db.execute(stmt).first()
+        if row is None:
+            return False
+        counts, last_at = row
+        if not counts or signal_kind not in (counts or {}):
+            return False
+        if last_at is None:
+            return False
+        # Coerce naive timestamps to UTC for MySQL/SQLite parity.
+        if last_at.tzinfo is None:
+            last_at = last_at.replace(tzinfo=timezone.utc)
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=window_seconds,
+        )
+        return last_at >= cutoff
+    except Exception:
+        return False
 
 
 def _anon_principal_for(headers: dict) -> BoundPrincipal:
