@@ -251,14 +251,35 @@ def _emit_identity_failure_event(
                 window_seconds=_GATEWAY_SIGNAL_DEBOUNCE_S,
             ):
                 return
-            record_principal_signal(
+            # Phase 14a #147 -- cross-tenant attribution defence.
+            # The exception's ``principal_id`` came from a VC's
+            # credentialSubject (identity.py:_extract_vc_principal_attr).
+            # The VC was signed by a trusted issuer, but "trusted" in
+            # a federated multi-tenant setup includes OTHER tenants'
+            # issuers -- a revoked VC from tenant T2 presented to
+            # gateway tenant T1 would otherwise create a phantom
+            # ``(T1, T2_agent_did)`` row with a -10 trust delta,
+            # polluting T2's principal namespace in T1's tenant_id
+            # space. Setting ``allow_create=False`` drops the signal
+            # silently when no row exists under (gateway_tenant,
+            # principal); the operator-provisioned same-tenant
+            # principals work unchanged. Bump a metric so operators
+            # can see drops.
+            score = record_principal_signal(
                 db,
                 tenant_id=gw.cfg.gateway.tenant_id,
                 principal_kind=p_kind,
                 principal_id=p_id,
                 signal_kind=kind,
                 attributes={"reason": str(exc)[:200]},
+                allow_create=False,
             )
+            # Metric increment must happen BEFORE db.commit() so a
+            # spurious commit failure on a broken connection doesn't
+            # route the drop into the wrong counter (sec_event_emit_
+            # failures). Review-pass #1 #5.
+            if score == -1:
+                _METRICS["cross_tenant_signal_dropped"] += 1
             db.commit()
     except Exception as ev_exc:  # pragma: no cover — defensive
         _METRICS["sec_event_emit_failures"] += 1

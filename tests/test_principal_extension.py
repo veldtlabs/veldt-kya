@@ -1311,3 +1311,100 @@ class TestPrincipalEdges:
         # We assert at least one key is present.
         assert ("k0" in merged or "k1" in merged), \
             f"expected at least one writer's attribute, got {merged}"
+
+
+# ─── #147: cross-tenant signal-attribution defence ─────────────────
+
+
+class TestRecordPrincipalSignalAllowCreate:
+    """Phase 14a #147 — ``record_principal_signal(allow_create=False)``
+    must NOT create a new principal_trust row for an unknown
+    (tenant, kind, id) tuple. Used by the gateway identity-failure
+    path so that a VC signed by a cross-tenant federated trusted
+    issuer can't dump trust-score damage into a phantom row scoped
+    under the gateway's tenant_id.
+    """
+
+    def test_unknown_principal_returns_minus_one_and_writes_nothing(self):
+        from sqlalchemy import select
+        from kya import record_principal_signal
+        from kya.principals import _PrincipalRow
+        db = _fresh_db()
+
+        score = record_principal_signal(
+            db,
+            tenant_id="tenant-A",
+            principal_kind="agent",
+            principal_id="did:key:zUNKNOWN",
+            signal_kind="revocation_blocked",
+            allow_create=False,
+        )
+        assert score == -1, (
+            "allow_create=False on missing row must return -1 "
+            "(sentinel for 'skipped, no row exists')"
+        )
+        # Nothing landed in kya_principal_trust under any tenant_id.
+        rows = db.execute(select(_PrincipalRow)).scalars().all()
+        assert rows == [], (
+            f"allow_create=False MUST NOT create a row; got: "
+            f"{[(r.tenant_id, r.principal_kind, r.principal_id) for r in rows]}"
+        )
+
+    def test_existing_principal_still_updates_under_allow_create_false(self):
+        from sqlalchemy import select
+        from kya import record_principal_signal
+        from kya.principals import _PrincipalRow
+        db = _fresh_db()
+
+        # Seed an existing row via the normal create-on-first-signal
+        # path (allow_create defaults to True).
+        record_principal_signal(
+            db,
+            tenant_id="tenant-A",
+            principal_kind="agent",
+            principal_id="did:key:zEXISTS",
+            signal_kind="clean_invocation",
+        )
+
+        # Now hit it with allow_create=False -- the row exists, so
+        # we MUST update + increment, not skip.
+        score = record_principal_signal(
+            db,
+            tenant_id="tenant-A",
+            principal_kind="agent",
+            principal_id="did:key:zEXISTS",
+            signal_kind="revocation_blocked",
+            allow_create=False,
+        )
+        assert score != -1, (
+            "row exists, allow_create=False MUST update it (not skip)"
+        )
+        # Verify the signal count for revocation_blocked is now 1.
+        row = db.execute(
+            select(_PrincipalRow)
+            .where(_PrincipalRow.tenant_id == "tenant-A")
+            .where(_PrincipalRow.principal_id == "did:key:zEXISTS")
+        ).scalar_one()
+        assert row.signal_counts.get("revocation_blocked") == 1
+
+    def test_default_allow_create_true_preserves_legacy_behaviour(self):
+        from sqlalchemy import select
+        from kya import record_principal_signal
+        from kya.principals import _PrincipalRow
+        db = _fresh_db()
+
+        # No allow_create kwarg -> default True -> creates row.
+        # This pins the back-compat contract for existing callers
+        # (issuer-API admin tracking, gateway verdict path, manual
+        # record_oos_tool_attempt calls).
+        score = record_principal_signal(
+            db,
+            tenant_id="tenant-A",
+            principal_kind="agent",
+            principal_id="did:key:zNEW",
+            signal_kind="clean_invocation",
+        )
+        assert score != -1
+        rows = db.execute(select(_PrincipalRow)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].principal_id == "did:key:zNEW"
