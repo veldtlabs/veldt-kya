@@ -1193,13 +1193,26 @@ def record_principal_signal(
     actor_human_id: str | None = None,
     attributes: dict | None = None,
     occurred_at: datetime | None = None,
+    allow_create: bool = True,
 ) -> int:
     """Record a rogue signal attributed to a principal. Returns the new
-    trust score. Mirrors to Valkey windowed counters.
+    trust score, or ``-1`` when ``allow_create=False`` and no row exists
+    for ``(tenant_id, principal_kind, principal_id)``.
 
     `occurred_at` — event-time of the signal. Defaults to record-time.
     Supply when replaying signals from a log to keep `last_signal_at`
     semantically correct.
+
+    `allow_create` (Phase 14a #147) — when False, only update an
+    existing row; never create one. Callers that resolve
+    ``principal_id`` from an untrusted carrier (e.g. a VC signed by a
+    cross-tenant federated issuer) MUST set this to False, otherwise
+    they'll silently provision a phantom row for a principal that
+    belongs to a different tenant's namespace. The default ``True``
+    preserves the historical "create-on-first-signal" behaviour for
+    legitimate same-tenant call sites (issuer-API admin tracking, the
+    gateway verdict path for new same-tenant agents, manual
+    record_oos_tool_attempt calls).
 
     Portable upsert: SELECT-then-INSERT-or-UPDATE in Python. The
     JSONB-merge atomic ON-CONFLICT pattern (PG-only) is replaced by an
@@ -1278,6 +1291,22 @@ def record_principal_signal(
             raise
 
         if row is None:
+            # #147 -- caller refuses to create rows. Used by the gateway
+            # identity-failure path so that a VC signed by a cross-tenant
+            # federated trusted issuer can't create a phantom
+            # ``(gateway_tenant, that_other_tenant's_principal_id)`` row.
+            # Drop silently (debug-level so high-volume drops don't
+            # spam logs); the security-event row in kya_security_events
+            # still carries the failure for observability.
+            if not allow_create:
+                if _inproc_lock is not None:
+                    _inproc_lock.release()
+                logger.debug(
+                    "[KYP] signal dropped (allow_create=False, no "
+                    "existing row) tenant=%s %s::%s signal=%s",
+                    tenant_id, principal_kind, principal_id, signal_kind,
+                )
+                return -1
             new_score = max(MIN_TRUST, min(MAX_TRUST, STARTING_TRUST + delta))
             row = _PrincipalRow(
                 tenant_id=tenant_id,

@@ -121,6 +121,118 @@ def test_revocation_blocked_emits_security_event(monkeypatch, caplog):
     )
 
 
+def test_revocation_blocked_passes_allow_create_false_to_signal_record(
+    monkeypatch,
+):
+    """Phase 14a #147 — the gateway's identity-failure path MUST
+    invoke ``record_principal_signal`` with ``allow_create=False`` so
+    a VC signed by a cross-tenant federated trusted issuer can't
+    create a phantom ``(gateway_tenant, that_other_tenant's_principal_id)``
+    row. A future refactor that drops the kwarg would silently reopen
+    the vulnerability, so we pin the contract here.
+
+    Also asserts that the ``cross_tenant_signal_dropped`` metric
+    increments when the OSS function returns ``-1`` (the sentinel for
+    "skipped, no existing row"), since the metric is the only
+    operator-visible signal that the defence fired.
+    """
+    sec_events = _stub_kya_for_gateway(monkeypatch)
+
+    # Override the stubbed `record_principal_signal` to (a) capture
+    # the kwargs it was called with and (b) return -1 so the metric
+    # bump path fires.
+    captured_signal_calls: list = []
+    import sys
+
+    def captured_record(db, **kw):
+        captured_signal_calls.append(kw)
+        return -1
+
+    sys.modules["kya"].record_principal_signal = captured_record
+
+    from fastapi.testclient import TestClient
+
+    from kya_gateway.config import (
+        AuditConfig, BackendConfig, DIDConfig, EnforcementConfig,
+        GatewayBindConfig, GatewayConfig, IdentityConfig, JWTConfig,
+        PolicyConfig,
+    )
+    from kya_gateway.errors import RevocationBlocked
+    from kya_gateway.server import Gateway, _METRICS
+
+    cfg = GatewayConfig(
+        gateway=GatewayBindConfig(bind="127.0.0.1:0",
+                                  tenant_id="t-147"),
+        identity=IdentityConfig(
+            methods=["bearer_jwt"], jwt=JWTConfig(),
+            did=DIDConfig(
+                resolvers=["key"], trusted_issuers=[],
+                allow_header_trust=True,
+                pop_audience="http://testserver/mcp",
+                dpop_audience="http://testserver",
+                require_dpop_on_me=False,
+            ),
+        ),
+        backends=[BackendConfig(name="default",
+                                url="http://localhost:1")],
+        policy=PolicyConfig(),
+        audit=AuditConfig(),
+        enforcement=EnforcementConfig(mode="audit_only"),
+    )
+    gw = Gateway(cfg)
+
+    # Raise RevocationBlocked with principal info attached
+    # (matches identity.py:_maybe_check_revocation post-#145).
+    from kya_gateway import identity as _id_mod
+    def fail(self, h):
+        raise RevocationBlocked(
+            "VC was revoked",
+            principal_kind="agent",
+            principal_id="did:key:zCROSSTENANT",
+        )
+    monkeypatch.setattr(_id_mod.IdentityResolver, "resolve", fail)
+
+    from kya_gateway import forwarder as _fwd
+    async def fake_forward(self, backend_name, payload, **_kw):
+        return _fwd.ForwardResult(
+            status_code=200, body=b'{}',
+            headers={"content-type": "application/json"},
+        )
+    monkeypatch.setattr(_fwd.Forwarder, "forward_json", fake_forward)
+
+    before = _METRICS["cross_tenant_signal_dropped"]
+    client = TestClient(gw.app)
+    client.post("/mcp", data=json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "filesystem.read", "arguments": {}},
+    }), headers={
+        "Content-Type": "application/json",
+        "Authorization": "Bearer revoked-token",
+    })
+
+    # The contract: at least one principal_signal call landed AND it
+    # carried allow_create=False.
+    assert captured_signal_calls, (
+        "_emit_identity_failure_event did not invoke "
+        "record_principal_signal -- the #145 bridge regressed"
+    )
+    allow_create_kwargs = [
+        c.get("allow_create") for c in captured_signal_calls
+    ]
+    assert False in allow_create_kwargs, (
+        f"gateway identity-failure path MUST pass "
+        f"allow_create=False to defend cross-tenant attribution. "
+        f"Captured kwargs: {captured_signal_calls}"
+    )
+    # And: when the OSS function returns -1, the operator-visible
+    # drop counter increments.
+    after = _METRICS["cross_tenant_signal_dropped"]
+    assert after == before + 1, (
+        f"cross_tenant_signal_dropped expected {before + 1}, "
+        f"got {after}"
+    )
+
+
 # ─── #4 — DPoP errors emit dpop_* events ──────────────────────────
 
 

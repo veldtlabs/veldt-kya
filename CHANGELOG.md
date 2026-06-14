@@ -6,6 +6,22 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`record_principal_signal(allow_create=False)`** (#147). New
+  keyword-only parameter that suppresses row creation when no
+  existing `(tenant_id, principal_kind, principal_id)` row is found
+  and returns the sentinel `-1` instead. Used by the gateway's
+  identity-failure path to defend against cross-tenant principal
+  attribution: a VC signed by a federated trusted issuer for a
+  principal owned by a DIFFERENT tenant can no longer create a
+  phantom row scoped under the gateway's tenant_id and dump
+  trust-score damage into it. Default `True` preserves the legacy
+  create-on-first-signal behaviour for legitimate same-tenant
+  callers (issuer-API admin tracking, manual
+  `record_oos_tool_attempt`, etc.). The gateway also exposes a
+  `cross_tenant_signal_dropped` metric so operators can observe
+  drops without grepping logs.
+
 ## [0.3.4] — 2026-06-11
 
 ### Changed
