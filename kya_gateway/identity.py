@@ -364,8 +364,25 @@ class IdentityResolver:
             # Phase 5g #3 — distinct subclass so the gateway can emit a
             # `revocation_blocked` security event when this fires,
             # separate from generic credential-invalid failures.
+            #
+            # Phase 14a #145 — attach the verified VC's principal
+            # info to the exception so the failure handler can also
+            # record a `revocation_blocked` signal into
+            # `kya_principal_trust.signal_counts` (the table
+            # `kya.rogue.get_rogue_signals` reads). Without this,
+            # a detector polling rogue_score cannot observe its own
+            # loop closing.
+            vc_claims = dict(getattr(verified, "claims", {}) or {})
+            p_kind = _extract_vc_principal_attr(
+                vc_claims, "principal_kind",
+            )
+            p_id = _extract_vc_principal_attr(
+                vc_claims, "principal_id",
+            ) or getattr(verified, "subject_did", None)
             raise RevocationBlocked(
-                f"VC was revoked or status check failed: {exc}"
+                f"VC was revoked or status check failed: {exc}",
+                principal_kind=p_kind,
+                principal_id=p_id,
             ) from exc
 
     def _verify_did_pop(self, pop_jwt: str, *, did: str, doc) -> None:

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -44,6 +45,14 @@ _engine = None  # SQLAlchemy Engine (set on first call)
 _session_factory = None
 _warned = False
 _storage_initialized = False
+# Phase 14a #146 — serialize the lazy first-call engine init. Without
+# this, two concurrent first-callers (e.g., a burst of identity
+# failures hitting the gateway's new revocation-signal-record path)
+# can both pass the `_engine is not None` check, both call
+# create_engine, and the second's assignment to the module globals
+# orphans the first engine -- it never gets dispose()'d, leaking a
+# connection-pool worth of file handles / sockets per race instance.
+_engine_lock = threading.Lock()
 
 
 def _resolve_db_url() -> tuple[str, bool]:
@@ -59,22 +68,37 @@ def _resolve_db_url() -> tuple[str, bool]:
 
 def _ensure_engine():
     global _engine, _session_factory, _warned
+    # Fast path: hot reads of the module global skip the lock entirely
+    # once the engine is set. The lock only matters on the first
+    # contended call.
     if _engine is not None:
         return
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
+    with _engine_lock:
+        # Double-check inside the lock -- another thread may have
+        # finished initialization while we were waiting.
+        if _engine is not None:
+            return
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
 
-    url, is_default = _resolve_db_url()
-    _engine = create_engine(url, future=True)
-    _session_factory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
-
-    if is_default and not _warned:
-        logger.warning(
-            "[KYA] no KYA_DB_URL set — using sqlite:///%s/kya.db. "
-            "Set KYA_DB_URL=postgresql://... for production.",
-            os.environ.get("KYA_HOME", str(_DEFAULT_HOME)),
+        url, is_default = _resolve_db_url()
+        engine = create_engine(url, future=True)
+        factory = sessionmaker(
+            bind=engine, expire_on_commit=False, future=True,
         )
-        _warned = True
+        # Assign the engine LAST so the fast-path read at the top
+        # sees a fully-initialized factory whenever it observes
+        # ``_engine is not None``.
+        _session_factory = factory
+        _engine = engine
+
+        if is_default and not _warned:
+            logger.warning(
+                "[KYA] no KYA_DB_URL set — using sqlite:///%s/kya.db. "
+                "Set KYA_DB_URL=postgresql://... for production.",
+                os.environ.get("KYA_HOME", str(_DEFAULT_HOME)),
+            )
+            _warned = True
 
 
 def _ensure_storage(db) -> None:
