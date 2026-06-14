@@ -158,6 +158,15 @@ def emit_security_event(
         return
     try:
         from .principals import record_principal_signal
+        # #152 audit (Phase 14a follow-up): allow_create=True (default)
+        # is safe here. The gateway's identity-failure path
+        # (server.py:_emit_identity_failure_event) calls
+        # ``emit_security_event`` WITHOUT principal_kind/principal_id
+        # so the guard at lines ~157-158 returns before this point.
+        # Other callers of emit_security_event are operator-trusted
+        # (no request-controlled principal_id). If a future caller
+        # threads attacker-controlled principal_id through, switch
+        # this to allow_create=False.
         record_principal_signal(
             db, tenant_id=tenant_id,
             principal_kind=principal_kind,

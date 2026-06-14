@@ -599,6 +599,9 @@ def _maybe_record(
     if result.get("breached"):
         try:
             from kya.principals import record_principal_signal
+            # #152 audit (Phase 14a follow-up): allow_create=True
+            # is safe -- principal_id comes from a Fiddler webhook
+            # the operator deployed (operator-trusted source).
             new_score = record_principal_signal(
                 db,
                 tenant_id=tenant_id,

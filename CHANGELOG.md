@@ -18,9 +18,101 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trust-score damage into it. Default `True` preserves the legacy
   create-on-first-signal behaviour for legitimate same-tenant
   callers (issuer-API admin tracking, manual
-  `record_oos_tool_attempt`, etc.). The gateway also exposes a
-  `cross_tenant_signal_dropped` metric so operators can observe
-  drops without grepping logs.
+  `record_oos_tool_attempt`, etc.). The gateway tracks drops in an
+  in-process `_METRICS["cross_tenant_signal_dropped"]` counter
+  (inspectable from pro deployments that wire a `/metrics`
+  endpoint; not currently exposed in OSS-only deployments — see
+  follow-up task #153).
+
+### Fixed
+- **In-process lock leak in `record_principal_signal`** (#151).
+  The SQLite/DuckDB per-(tenant, principal_kind, principal_id)
+  lock acquired at the top of the function was NOT released when
+  `db.execute(SELECT)` raised — `db.rollback(); raise` leaked
+  the lock for the process lifetime, so a noisy DB outage could
+  DoS that specific key. Wrapped the entire retry loop in
+  `try/finally` so every exit path (success, retry-bailout,
+  `allow_create=False` skip, SELECT failure) releases. Pre-existed
+  the #147 work; flagged during the two-pass review of #147.
+
+### Operator notes
+- **Phantom-row cleanup for upgrades from 0.3.7** (#150). The
+  cross-tenant attribution gap (#147) was active between 0.3.7
+  and 0.3.8. Operators running federated multi-tenant
+  deployments (gateway's `trusted_issuers` includes issuers
+  owned by other tenants) may have phantom rows in
+  `kya_principal_trust` from `revocation_blocked` signals
+  attributed to cross-tenant principals. **Single-tenant
+  deployments and operators who did NOT add cross-tenant
+  issuers to their gateway's `trusted_issuers` are unaffected;
+  no cleanup needed.**
+
+  **Step 1 — find candidate rows.** The JSONB containment
+  operator below is **Postgres-specific**; equivalents for
+  other supported dialects are noted inline. The audit is
+  per-`tenant_id`:
+
+  ```sql
+  -- Postgres
+  SELECT tenant_id, principal_kind, principal_id, signal_counts,
+         trust_score, last_signal_at
+  FROM kya_principal_trust
+  WHERE signal_counts ? 'revocation_blocked'
+    AND tenant_id = :gateway_tenant_id
+    AND last_signal_at >= :v037_deploy_timestamp -- only the gap window
+    AND last_signal_at <  :v038_deploy_timestamp;
+
+  -- MySQL:  JSON_CONTAINS_PATH(signal_counts, 'one',
+  --                            '$.revocation_blocked') = 1
+  -- SQLite: json_extract(signal_counts,
+  --                      '$.revocation_blocked') IS NOT NULL
+  -- DuckDB: signal_counts->'revocation_blocked' IS NOT NULL
+  ```
+
+  **Step 2 — identify which candidate rows are actually
+  phantoms.** A row is a phantom only if the `principal_id` is
+  owned by a DIFFERENT tenant in your federation, not by the
+  gateway tenant. Inspect manually -- the "known inventory"
+  predicate depends on your onboarding flow:
+  - **kya-pro / issuer-API deployments**: cross-reference
+    `principal_id NOT IN (SELECT subject_did FROM
+    kya_pending_credentials WHERE tenant_id = :gw_tenant)`
+    (pro-only table; the issuer-API maintains it).
+  - **OSS-only deployments**: cross-reference against your
+    admin-registered DID list or VC issuance log (operator
+    knowledge; OSS does not ship a canonical inventory table).
+
+  **Step 3 — purge confirmed phantoms in batches.** Do NOT run
+  an unbounded `DELETE` on a busy production
+  `kya_principal_trust` -- the JSONB predicate is unlikely to
+  hit an index and a single `DELETE` can lock the table for
+  minutes. Batch by primary key:
+
+  ```sql
+  -- Postgres-style batched delete
+  DO $$
+  DECLARE batch_size int := 10000;
+  DECLARE rows_deleted int;
+  BEGIN
+    LOOP
+      DELETE FROM kya_principal_trust
+      WHERE id IN (
+        SELECT id FROM kya_principal_trust
+        WHERE tenant_id = :gateway_tenant_id
+          AND signal_counts ? 'revocation_blocked'
+          AND principal_id IN (:confirmed_phantom_ids)
+        LIMIT batch_size
+      );
+      GET DIAGNOSTICS rows_deleted = ROW_COUNT;
+      EXIT WHEN rows_deleted = 0;
+      COMMIT;
+    END LOOP;
+  END $$;
+  ```
+
+  Adapt the batched-loop pattern for MySQL (`LIMIT` in DELETE
+  directly), SQLite (no DO blocks; use a script loop), DuckDB
+  (single-statement DELETE is fine at typical scale).
 
 ## [0.3.4] — 2026-06-11
 
