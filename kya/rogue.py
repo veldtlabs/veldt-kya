@@ -259,6 +259,9 @@ def _emit_user_signal(tenant_id: str, user_id: str | None, signal_kind: str) -> 
             except Exception as exc:
                 logger.debug("[KYU] legacy table write skipped: %s", exc)
             # New unified Principal table — Round 13.2
+            # #152 audit (Phase 14a follow-up): allow_create=True is
+            # safe -- user_id comes from caller's invocation row,
+            # not an external HTTP header.
             record_principal_signal(db, tenant_id, "user", user_id, signal_kind)
         finally:
             try:
@@ -286,6 +289,10 @@ def _emit_actor_agent_signal(tenant_id: str, actor_agent_key: str | None, signal
         if db is None:
             return
         try:
+            # #152 audit (Phase 14a follow-up): allow_create=True is
+            # safe -- actor_agent_key comes from the OOS-attempt
+            # caller's invocation context, not an external HTTP
+            # header.
             record_principal_signal(db, tenant_id, "agent", actor_agent_key, signal_kind)
         finally:
             try:

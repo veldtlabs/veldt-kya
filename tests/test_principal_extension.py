@@ -1408,3 +1408,70 @@ class TestRecordPrincipalSignalAllowCreate:
         rows = db.execute(select(_PrincipalRow)).scalars().all()
         assert len(rows) == 1
         assert rows[0].principal_id == "did:key:zNEW"
+
+    def test_lock_released_on_select_failure(self, monkeypatch):
+        """Phase 14a #151 -- the SQLite/DuckDB in-process lock acquired
+        at the top of ``record_principal_signal`` MUST be released even
+        when ``db.execute(SELECT)`` raises. Pre-fix the SELECT-failure
+        path did ``db.rollback(); raise`` without releasing, leaking
+        the per-(tenant, kind, id) lock for the process lifetime. A
+        noisy DB outage would have DoS'd that specific key.
+
+        We force the SELECT to raise, then re-acquire the same lock
+        key from a fresh perspective: if the leak fix landed, the
+        lock is acquirable immediately; if it leaked, we'd block
+        forever (and pytest would time out).
+        """
+        # Unique tenant + principal per test invocation so retries,
+        # pytest-rerun, and pytest-xdist parallel workers don't
+        # collide on the process-global ``_INPROC_CHAIN_LOCKS``
+        # dict (kya/evidence.py). Without this, a sibling worker's
+        # leaked-and-since-released lock would let this test pass
+        # for the wrong reason.
+        from uuid import uuid4
+        tenant_uuid = f"tenant-LOCKLEAK-{uuid4()}"
+        principal_uuid = f"did:key:zLOCK{uuid4().hex}"
+
+        from kya import record_principal_signal
+        from kya.evidence import _get_chain_lock
+        db = _fresh_db()
+
+        # SQLite-backed _fresh_db so the in-process lock path fires.
+        # Force `scalar_one_or_none` to raise on the FIRST attempt.
+        from sqlalchemy.engine import Result
+        orig = Result.scalar_one_or_none
+
+        calls = {"n": 0}
+        def boom(self):
+            calls["n"] += 1
+            raise RuntimeError("simulated DB read failure")
+        monkeypatch.setattr(Result, "scalar_one_or_none", boom)
+
+        try:
+            with pytest.raises(RuntimeError, match="simulated"):
+                record_principal_signal(
+                    db,
+                    tenant_id=tenant_uuid,
+                    principal_kind="agent",
+                    principal_id=principal_uuid,
+                    signal_kind="rbac_refusal",
+                )
+        finally:
+            monkeypatch.setattr(Result, "scalar_one_or_none", orig)
+
+        # If the leak fix landed, the lock for the same key is
+        # acquirable RIGHT NOW. If it leaked, acquire() would block.
+        # Use a non-blocking probe so the test fails loudly on
+        # regression instead of hanging CI.
+        lock = _get_chain_lock(
+            tenant_uuid, f"principal:agent:{principal_uuid}",
+        )
+        acquired = lock.acquire(blocking=False)
+        try:
+            assert acquired, (
+                "lock NOT released on SELECT-failure path -- "
+                "#151 lock-leak regressed"
+            )
+        finally:
+            if acquired:
+                lock.release()

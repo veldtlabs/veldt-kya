@@ -1263,93 +1263,114 @@ def record_principal_signal(
     except Exception:
         _inproc_lock = None
 
-    last_exc: Exception | None = None
-    # 10 retries handle the worst contention observed in the load test
-    # (20 workers x 50 ops on the same principal -> 99% land). If you
-    # raise this, also raise the ``attempt == 9`` bailout below.
-    for attempt in range(10):
-        stmt = (
-            select(_PrincipalRow)
-            .where(_PrincipalRow.tenant_id == tenant_id)
-            .where(_PrincipalRow.principal_kind == principal_kind)
-            .where(_PrincipalRow.principal_id == principal_id)
-        )
-        # SELECT FOR UPDATE on PG/MySQL serializes the read-modify-write
-        # against concurrent writers. Without this, two workers can both
-        # SELECT the same row, both merge their increment locally, then
-        # both UPDATE — and the second write silently overwrites the
-        # first (lost-update anomaly).
-        try:
-            if db.bind.dialect.name in ("postgresql", "mysql"):
-                stmt = stmt.with_for_update()
-        except Exception:
-            pass
-        try:
-            row = db.execute(stmt).scalar_one_or_none()
-        except Exception:
-            db.rollback()
-            raise
-
-        if row is None:
-            # #147 -- caller refuses to create rows. Used by the gateway
-            # identity-failure path so that a VC signed by a cross-tenant
-            # federated trusted issuer can't create a phantom
-            # ``(gateway_tenant, that_other_tenant's_principal_id)`` row.
-            # Drop silently (debug-level so high-volume drops don't
-            # spam logs); the security-event row in kya_security_events
-            # still carries the failure for observability.
-            if not allow_create:
-                if _inproc_lock is not None:
-                    _inproc_lock.release()
-                logger.debug(
-                    "[KYP] signal dropped (allow_create=False, no "
-                    "existing row) tenant=%s %s::%s signal=%s",
-                    tenant_id, principal_kind, principal_id, signal_kind,
-                )
-                return -1
-            new_score = max(MIN_TRUST, min(MAX_TRUST, STARTING_TRUST + delta))
-            row = _PrincipalRow(
-                tenant_id=tenant_id,
-                principal_kind=principal_kind,
-                principal_id=principal_id,
-                trust_score=new_score,
-                signal_counts={signal_kind: 1},
-                actor_human_id=actor_human_id,
-                attributes=dict(attributes or {}),
-                last_signal_at=occurred_at,
+    # #151 -- wrap the entire retry-loop in try/finally so every exit
+    # path releases the lock. The pre-#151 code only released on the
+    # success path (final unconditional release outside the loop), the
+    # `attempt == 9` retry bailout, and the new #147 ``allow_create=False``
+    # skip path -- but the SELECT-execution-failure path
+    # (``db.rollback(); raise`` below) leaked the per-(tenant, kind, id)
+    # lock for the process lifetime. A noisy DB outage could DoS that
+    # specific lock key under sustained pressure.
+    try:
+        # 10 retries handle the worst contention observed in the load
+        # test (20 workers x 50 ops on the same principal -> 99% land).
+        # If you raise this, also raise the ``attempt == 9`` bailout
+        # below.
+        for attempt in range(10):
+            stmt = (
+                select(_PrincipalRow)
+                .where(_PrincipalRow.tenant_id == tenant_id)
+                .where(_PrincipalRow.principal_kind == principal_kind)
+                .where(_PrincipalRow.principal_id == principal_id)
             )
-            db.add(row)
-        else:
-            new_score = max(MIN_TRUST, min(MAX_TRUST, int(row.trust_score) + delta))
-            merged_counts = dict(row.signal_counts or {})
-            merged_counts[signal_kind] = merged_counts.get(signal_kind, 0) + 1
-            merged_attrs = {**(dict(row.attributes or {})), **(attributes or {})}
-
-            row.trust_score = new_score
-            row.signal_counts = merged_counts
-            if actor_human_id:
-                row.actor_human_id = actor_human_id
-            row.attributes = merged_attrs
-            row.last_signal_at = occurred_at
-            row.updated_at = func.now()
-
-        try:
-            db.commit()
-            break
-        except (IntegrityError, OperationalError) as exc:
-            last_exc = exc
-            db.rollback()
-            if attempt == 9:
-                if _inproc_lock is not None:
-                    _inproc_lock.release()
+            # SELECT FOR UPDATE on PG/MySQL serializes the read-modify-
+            # write against concurrent writers. Without this, two
+            # workers can both SELECT the same row, both merge their
+            # increment locally, then both UPDATE — and the second
+            # write silently overwrites the first (lost-update anomaly).
+            try:
+                if db.bind.dialect.name in ("postgresql", "mysql"):
+                    stmt = stmt.with_for_update()
+            except Exception:
+                pass
+            try:
+                row = db.execute(stmt).scalar_one_or_none()
+            except Exception:
+                db.rollback()
                 raise
-            # Sleep with exponential backoff + jitter so retries don't
-            # synchronize across workers and re-collide on the same tick.
-            _time.sleep(0.001 * (2 ** attempt) + _random.uniform(0, 0.002))
-            continue
 
-    if _inproc_lock is not None:
-        _inproc_lock.release()
+            if row is None:
+                # #147 -- caller refuses to create rows. Used by the
+                # gateway identity-failure path so that a VC signed by
+                # a cross-tenant federated trusted issuer can't create
+                # a phantom
+                # ``(gateway_tenant, that_other_tenant's_principal_id)``
+                # row. Drop silently (debug-level so high-volume drops
+                # don't spam logs); the security-event row in
+                # kya_security_events still carries the failure for
+                # observability.
+                if not allow_create:
+                    logger.debug(
+                        "[KYP] signal dropped (allow_create=False, no "
+                        "existing row) tenant=%s %s::%s signal=%s",
+                        tenant_id, principal_kind, principal_id,
+                        signal_kind,
+                    )
+                    return -1
+                new_score = max(
+                    MIN_TRUST, min(MAX_TRUST, STARTING_TRUST + delta),
+                )
+                row = _PrincipalRow(
+                    tenant_id=tenant_id,
+                    principal_kind=principal_kind,
+                    principal_id=principal_id,
+                    trust_score=new_score,
+                    signal_counts={signal_kind: 1},
+                    actor_human_id=actor_human_id,
+                    attributes=dict(attributes or {}),
+                    last_signal_at=occurred_at,
+                )
+                db.add(row)
+            else:
+                new_score = max(
+                    MIN_TRUST,
+                    min(MAX_TRUST, int(row.trust_score) + delta),
+                )
+                merged_counts = dict(row.signal_counts or {})
+                merged_counts[signal_kind] = (
+                    merged_counts.get(signal_kind, 0) + 1
+                )
+                merged_attrs = {
+                    **(dict(row.attributes or {})),
+                    **(attributes or {}),
+                }
+
+                row.trust_score = new_score
+                row.signal_counts = merged_counts
+                if actor_human_id:
+                    row.actor_human_id = actor_human_id
+                row.attributes = merged_attrs
+                row.last_signal_at = occurred_at
+                row.updated_at = func.now()
+
+            try:
+                db.commit()
+                break
+            except (IntegrityError, OperationalError):
+                db.rollback()
+                if attempt == 9:
+                    raise
+                # Sleep with exponential backoff + jitter so retries
+                # don't synchronize across workers and re-collide on
+                # the same tick.
+                _time.sleep(
+                    0.001 * (2 ** attempt)
+                    + _random.uniform(0, 0.002),
+                )
+                continue
+    finally:
+        if _inproc_lock is not None:
+            _inproc_lock.release()
 
     _set_trust_gauge(tenant_id, principal_kind, principal_id, new_score)
 
