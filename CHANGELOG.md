@@ -24,6 +24,13 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   endpoint; not currently exposed in OSS-only deployments — see
   follow-up task #153).
 
+### Changed
+- **README rewritten** around a 30-second tamper-detection demo
+  (refund $50 → tampered to $5000 → KYA pinpoints the broken row).
+  The principal-kind taxonomy, delegation, drift detection,
+  multi-judge orchestration, full framework adapter list, and
+  full regime list moved out of the README into the docs site.
+
 ### Fixed
 - **In-process lock leak in `record_principal_signal`** (#151).
   The SQLite/DuckDB per-(tenant, principal_kind, principal_id)
