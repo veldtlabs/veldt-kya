@@ -27,6 +27,8 @@ pip install veldt-kya
 
 ## The 30-second demo
 
+**Step 1.** An AI agent issues a $50 refund.
+
 ```python
 import json
 from kya import (
@@ -35,7 +37,6 @@ from kya import (
 from sqlalchemy import text
 
 with default_session() as db:
-    # 1. The agent does something — issue a $50 refund.
     inv = record_invocation(
         db, tenant_id="acme", agent_key="support_bot",
         principal_kind="agent", principal_id="support_bot",
@@ -46,24 +47,35 @@ with default_session() as db:
         payload={"tool": "refund", "customer": "alice", "amount_usd": 50},
     )
     db.commit()
+```
 
-    # 2. Verify the record — clean.
+**Step 2.** Verify the audit chain — clean.
+
+```python
     print(verify_chain(db, tenant_id="acme", invocation_id=inv))
     # → {'valid': True, 'broken_at': None, 'checked': 1, 'reason': None}
+```
 
-    # 3. Someone tampers — changes the refund from $50 to $5000.
+**Step 3.** Someone tampers — changes the refund from $50 to $5000 directly in the database.
+
+```python
     tampered = json.dumps({"tool": "refund", "customer": "alice", "amount_usd": 5000})
     db.execute(
         text("UPDATE kya_evidence SET payload = :p WHERE invocation_id = :i"),
         {"i": inv, "p": tampered},
     )
     db.commit()
+```
 
-    # 4. Verify again — KYA pinpoints the modified row.
+**Step 4.** Verify again — KYA pinpoints the modified row.
+
+```python
     print(verify_chain(db, tenant_id="acme", invocation_id=inv))
     # → {'valid': False, 'broken_at': 1, 'checked': 1,
     #    'reason': 'payload_hash mismatch — payload was modified'}
 ```
+
+All four steps run inside the same `with default_session() as db:` block from Step 1.
 
 That's the whole pitch. The rest of this README is what to do next.
 
