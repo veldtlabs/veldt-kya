@@ -47,6 +47,7 @@ Design
 """
 from .claude_agent import claude_agent_hooks
 from .client import KyaClient, KyaClientError
+from .mcp import wrap_mcp_client
 from .openai_agents import openai_agents_hooks
 from .scanner import DataLeakScanner, ScanMatch
 
@@ -57,6 +58,7 @@ __all__ = [
     "ScanMatch",
     "openai_agents_hooks",
     "claude_agent_hooks",
+    "wrap_mcp_client",
 ]
 
 __version__ = "0.1.0"
