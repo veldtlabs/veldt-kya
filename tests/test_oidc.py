@@ -374,6 +374,144 @@ def test_missing_jti_refused(reset_jwks_cache, jwks_server):
         )
 
 
+def test_missing_jti_accepted_when_require_jti_false(
+    reset_jwks_cache, jwks_server,
+):
+    """`require_jti=False` opt-out lets a jti-less id_token through.
+
+    Used for one-shot OAuth code-exchange flows (Auth0 hosted-login,
+    Google id_token, Microsoft Entra without id_token_jti_required)
+    where replay protection comes from PKCE + `state` binding at
+    /authorize, not from jti tracking.
+    """
+    from kya.oidc import verify_oidc_token
+    now = int(time.time())
+    # Mint a token WITHOUT a jti claim — the shape Auth0 / Google emit
+    # on id_tokens from the /authorize code-exchange flow.
+    token = pyjwt.encode(
+        {
+            "iss": jwks_server["iss"], "sub": "user-123",
+            "aud": "kya-oss-verifier",
+            "iat": now, "nbf": now, "exp": now + 300,
+            "email": "kola@veldtlabs.ai", "email_verified": True,
+        },
+        jwks_server["sk_pem"], algorithm="RS256",
+        headers={"kid": jwks_server["kid"], "alg": "RS256"},
+    )
+    claims = verify_oidc_token(
+        token=token, audience="kya-oss-verifier",
+        trusted_issuers={jwks_server["iss"]: jwks_server["jwks_uri"]},
+        require_jti=False,
+    )
+    # Signature + audience + issuer + expiry are still enforced —
+    # only the jti presence requirement is relaxed.
+    assert claims["iss"] == jwks_server["iss"]
+    assert claims["aud"] == "kya-oss-verifier"
+    assert claims["email"] == "kola@veldtlabs.ai"
+    assert "jti" not in claims
+
+
+def test_jti_cache_skipped_when_token_has_no_jti(
+    reset_jwks_cache, jwks_server,
+):
+    """`jti_cache.observe()` MUST NOT be called for jti-less tokens.
+
+    Guards the `if jti_cache is not None and "jti" in claims:` line
+    — without it, a jti-less token would KeyError on `claims["jti"]`
+    inside the cache-observe branch.
+    """
+    from kya.oidc import verify_oidc_token
+
+    observed: list[str] = []
+
+    class SpyCache:
+        def observe(self, jti, exp_at):
+            observed.append(jti)
+
+    now = int(time.time())
+    token = pyjwt.encode(
+        {
+            "iss": jwks_server["iss"], "sub": "x",
+            "aud": "kya-oss-verifier",
+            "iat": now, "nbf": now, "exp": now + 300,
+        },
+        jwks_server["sk_pem"], algorithm="RS256",
+        headers={"kid": jwks_server["kid"], "alg": "RS256"},
+    )
+    verify_oidc_token(
+        token=token, audience="kya-oss-verifier",
+        trusted_issuers={jwks_server["iss"]: jwks_server["jwks_uri"]},
+        jti_cache=SpyCache(),
+        require_jti=False,
+    )
+    assert observed == [], "cache.observe was called for a jti-less token"
+
+
+def test_jti_cache_still_observed_when_require_jti_false_but_token_has_jti(
+    reset_jwks_cache, jwks_server,
+):
+    """Mixed environment: opt-out is set, but a jti-bearing token
+    arrives → cache MUST still observe it.
+
+    Guards against a future refactor that inverts the `and "jti" in
+    claims` guard to key off `require_jti` instead. If that regressed,
+    an operator running mixed flows (opt-out for Auth0 SSO + jti-
+    tracking for admin API) would silently lose replay protection on
+    the admin path the moment they enabled the SSO one.
+    """
+    from kya.oidc import verify_oidc_token
+
+    observed: list[str] = []
+
+    class SpyCache:
+        def observe(self, jti, exp_at):
+            observed.append(jti)
+
+    token = _mint_token(
+        sk_pem=jwks_server["sk_pem"], kid=jwks_server["kid"],
+        iss=jwks_server["iss"], aud="kya-oss-verifier",
+    )
+    verify_oidc_token(
+        token=token, audience="kya-oss-verifier",
+        trusted_issuers={jwks_server["iss"]: jwks_server["jwks_uri"]},
+        jti_cache=SpyCache(),
+        require_jti=False,  # opt-out set, but token still has a jti
+    )
+    assert len(observed) == 1
+    assert isinstance(observed[0], str) and observed[0], (
+        "jti-bearing token was NOT observed by cache — replay tracking "
+        "would silently break on the admin path"
+    )
+
+
+def test_require_jti_default_is_true_backward_compat(
+    reset_jwks_cache, jwks_server,
+):
+    """Default `require_jti=True` preserves the pre-0.4 behavior.
+
+    A caller that omits the new kwarg keeps the strict jti requirement
+    that admin-auth callers depend on. Locks in backward compatibility.
+    """
+    from kya.oidc import OIDCAuthError, verify_oidc_token
+    now = int(time.time())
+    token = pyjwt.encode(
+        {
+            "iss": jwks_server["iss"], "sub": "x",
+            "aud": "kya-oss-verifier",
+            "iat": now, "nbf": now, "exp": now + 300,
+        },
+        jwks_server["sk_pem"], algorithm="RS256",
+        headers={"kid": jwks_server["kid"], "alg": "RS256"},
+    )
+    # Same call as test_missing_jti_refused — proves default hasn't
+    # changed and no downstream caller silently loses jti enforcement.
+    with pytest.raises(OIDCAuthError):
+        verify_oidc_token(
+            token=token, audience="kya-oss-verifier",
+            trusted_issuers={jwks_server["iss"]: jwks_server["jwks_uri"]},
+        )
+
+
 def test_expired_refused(reset_jwks_cache, jwks_server):
     from kya.oidc import OIDCAuthError, verify_oidc_token
     token = _mint_token(

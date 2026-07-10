@@ -281,6 +281,7 @@ def verify_oidc_token(
     jti_cache: Any | None = None,
     ttl_seconds: int = 300,
     fetch_timeout_seconds: int = 5,
+    require_jti: bool = True,
 ) -> dict:
     """Verify an OIDC JWT against the configured trusted-issuer JWKS.
 
@@ -290,9 +291,19 @@ def verify_oidc_token(
     Keycloak / Auth0 tenant can't authenticate just because the
     signature happens to verify.
 
-    Required claims: ``iss``, ``aud``, ``iat``, ``exp``, ``nbf``,
-    ``jti``. ``aud`` must equal the configured ``audience`` value
-    (or contain it if the IdP issued an audience array).
+    Required claims: ``iss``, ``aud``, ``iat``, ``exp``. ``jti`` is
+    ALSO required by default (needed for the replay-cache contract on
+    admin-auth flows), but can be relaxed via ``require_jti=False``
+    for providers whose default id_token flow may omit ``jti`` — this
+    includes Google's id_token, Microsoft Entra's default v2 flow,
+    and some Auth0 pipelines (behavior varies by tenant and by
+    custom-actions configuration). If your provider does emit ``jti``,
+    keep ``require_jti=True`` — the default is safer.
+
+    Callers who disable ``jti`` MUST have their own replay protection
+    (e.g., single-use OAuth ``state`` + PKCE ``code_verifier`` bound
+    at authorize time) or accept the exposure. This is why the safe
+    default is ``True``.
 
     Returns the decoded claim set on success. Raises ``OIDCAuthError``
     (or subclass) on any failure. The verifier is identity-blind:
@@ -355,6 +366,9 @@ def verify_oidc_token(
             f"{allowed_algorithms!r}"
         )
 
+    required_claims = ["iss", "aud", "iat", "exp"]
+    if require_jti:
+        required_claims.append("jti")
     try:
         claims = pyjwt.decode(
             token,
@@ -367,13 +381,13 @@ def verify_oidc_token(
                 "verify_iat": True,
                 "verify_nbf": True,
                 "verify_aud": True,
-                "require": ["iss", "aud", "iat", "exp", "jti"],
+                "require": required_claims,
             },
         )
     except pyjwt.InvalidTokenError as exc:
         raise OIDCAuthError(f"OIDC token signature/claims invalid: {exc}") from exc
 
-    if jti_cache is not None:
+    if jti_cache is not None and "jti" in claims:
         # A downstream replay-cache fault (Valkey outage, OOM, etc.)
         # must not poison a token that already passed signature +
         # claims verification. The cache exists to prevent replay;
@@ -381,6 +395,9 @@ def verify_oidc_token(
         # into a fleet-wide auth lockout. Log loudly; the next
         # request from the same JTI will still be caught once the
         # cache is healthy again.
+        #
+        # Guarded on "jti" in claims because require_jti=False callers
+        # (Auth0 hosted-login, Google id_token) legitimately omit it.
         try:
             jti_cache.observe(claims["jti"], exp_at=claims.get("exp"))
         except Exception as exc:
