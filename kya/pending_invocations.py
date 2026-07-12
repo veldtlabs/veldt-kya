@@ -319,6 +319,7 @@ def decide(
     decision: Literal["approved", "denied"],
     decided_by: str,
     now: Optional[datetime] = None,
+    tenant_id: Optional[str] = None,
 ) -> bool:
     """Flip a pending row's status. Returns True iff we won the race.
 
@@ -335,30 +336,40 @@ def decide(
     there. We use ``RETURNING id`` where supported and fall back to a
     SELECT-after-UPDATE gate for MySQL where RETURNING isn't in the
     UPDATE grammar. Both paths preserve the race semantics.
+
+    ``tenant_id`` is optional; when passed, the UPDATE also requires
+    ``AND tenant_id = :tid``. That gives cross-tenant callers a clean
+    "row not found" (returns False) without a separate SELECT round
+    trip, eliminating any TOCTOU window between an existence check
+    and the write. Recommended for batch code paths where the caller
+    already knows the tenant.
     """
     if decision not in ("approved", "denied"):
         raise ValueError(f"decision must be 'approved' or 'denied', got {decision!r}")
     ts = now or datetime.now(timezone.utc)
+    tenant_clause = " AND tenant_id = :tid" if tenant_id is not None else ""
+    params: dict[str, Any] = {
+        "id": pending_id, "dec": decision, "ts": ts, "by": decided_by,
+    }
+    if tenant_id is not None:
+        params["tid"] = tenant_id
     with engine.begin() as conn:
         if _supports_returning(engine.dialect.name):
-            result = conn.execute(_sql("""
+            result = conn.execute(_sql(f"""
                 UPDATE kya_pending_invocations
                 SET status = :dec, decided_at = :ts, decided_by = :by
-                WHERE id = :id AND status = 'pending' AND expires_at > :ts
+                WHERE id = :id AND status = 'pending'
+                  AND expires_at > :ts{tenant_clause}
                 RETURNING id
-            """), {
-                "id": pending_id, "dec": decision, "ts": ts, "by": decided_by,
-            })
+            """), params)
             return result.fetchone() is not None
         # MySQL path — do the UPDATE, then SELECT to see if we won.
-        # Race-safe because the WHERE clause guarantees at most one
-        # writer sees the row in 'pending' state during the UPDATE
-        # scan; the follow-up SELECT confirms our decided_by landed.
-        conn.execute(_sql("""
+        conn.execute(_sql(f"""
             UPDATE kya_pending_invocations
             SET status = :dec, decided_at = :ts, decided_by = :by
-            WHERE id = :id AND status = 'pending' AND expires_at > :ts
-        """), {"id": pending_id, "dec": decision, "ts": ts, "by": decided_by})
+            WHERE id = :id AND status = 'pending'
+              AND expires_at > :ts{tenant_clause}
+        """), params)
         confirm = conn.execute(_sql("""
             SELECT 1 FROM kya_pending_invocations
             WHERE id = :id AND status = :dec AND decided_by = :by
