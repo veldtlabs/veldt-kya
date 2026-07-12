@@ -962,19 +962,37 @@ def build_app(gw: Gateway) -> FastAPI:
                 from kya_gateway.errors import (
                     JSONRPC_ERR_HUMAN_APPROVAL_REQUIRED,
                 )
+                # #101 layer 2 — persist a kya_pending_invocations row
+                # so the approver dashboard has a target to decide and
+                # the SDK can poll for status. Stamp the id on the 428
+                # header so the caller has a handle to poll.
+                pending_id = _create_pending_row(
+                    gw=gw,
+                    principal=principal,
+                    action=action,
+                    body=body,
+                    invocation_id=invocation_id,
+                    request_headers=dict(request.headers),
+                )
+                headers_out: dict[str, str] = {
+                    "WWW-Authenticate":
+                        'KYA-Human-Approval realm="kya-gateway"',
+                }
+                if pending_id:
+                    headers_out["X-Kya-Pending-Id"] = pending_id
                 return JSONResponse(
                     make_error(
                         req.request_id,
                         JSONRPC_ERR_HUMAN_APPROVAL_REQUIRED,
-                        "KYA verdict: require_human approval",
-                        data={"reason_codes": verdict.reason_codes,
-                              "verdict": "require_human"},
+                        "KYA verdict: flag_for_review",
+                        data={
+                            "reason_codes": verdict.reason_codes,
+                            "verdict": "flag_for_review",
+                            "pending_id": pending_id,
+                        },
                     ),
                     status_code=428,
-                    headers={
-                        "WWW-Authenticate":
-                            'KYA-Human-Approval realm="kya-gateway"',
-                    },
+                    headers=headers_out,
                 )
 
         # ─── 6b. Forward to backend (audit_only/advise always; enforce on allow) ─
@@ -1085,6 +1103,128 @@ async def _proxy_passthrough(
             make_error(req.request_id, exc.jsonrpc_code, str(exc)),
             status_code=exc.http_status,
         )
+
+
+def _create_pending_row(
+    *,
+    gw: Gateway,
+    principal,
+    action: str,
+    body: bytes,
+    invocation_id: int | None,
+    request_headers: dict,
+) -> str | None:
+    """Persist a kya_pending_invocations row so the 428 response has
+    something to poll against (#101 layer 2).
+
+    Fail-soft — if the write fails, log ERROR and return None. The
+    gateway still emits the 428 without ``X-Kya-Pending-Id``. Callers
+    checking the header see it missing and fall back to "no resume
+    available, must retry from scratch" — better than a 500 that
+    obscures the deny reason.
+
+    Body ciphertext note: OSS ships raw body bytes. Pro deployments
+    wrap this call in a per-tenant DEK encrypt before the write, so
+    at-rest bytes are always encrypted in Pro. OSS-only self-hosted
+    deploys accept the operational risk of plaintext at rest (documented
+    in the ops guide).
+    """
+    try:
+        from kya import default_session
+        from kya.pending_invocations import (
+            create_pending, ensure_table, hash_policy_config,
+        )
+    except ImportError:
+        logger.error(
+            "[KYA-GATEWAY] pending_invocations unavailable — 428 will "
+            "ship without X-Kya-Pending-Id; caller cannot resume"
+        )
+        return None
+
+    try:
+        with default_session() as db:
+            engine = db.get_bind()
+            ensure_table(engine)
+            # Header names come lowercased from Starlette; a full copy
+            # is fine — approver / SDK can filter as needed. Drop
+            # authorization header so a leaked pending row can't
+            # replay the caller's bearer.
+            safe_headers = {
+                k: v for k, v in request_headers.items()
+                if k.lower() not in (
+                    "authorization", "cookie", "proxy-authorization",
+                    "x-api-key", "x-auth-token", "x-access-token",
+                )
+            }
+            # M3 fix — cap body size so an adversarial 100 MB call
+            # doesn't inflate the pending table. Default 1 MB, tunable
+            # via ``KYA_HITL_MAX_BODY_BYTES``. On overflow, we still
+            # ship the 428 but without a pending id — the caller can't
+            # resume this specific body. That's the correct posture:
+            # oversized bodies should never have hit the gateway with
+            # a policy that requires human approval, and if they did,
+            # the operator should investigate.
+            import os as _os
+            max_body = int(_os.environ.get(
+                "KYA_HITL_MAX_BODY_BYTES", "1048576"  # 1 MB
+            ))
+            if len(body) > max_body:
+                logger.error(
+                    "[KYA-GATEWAY] pending body %d bytes exceeds cap %d "
+                    "— 428 ships without X-Kya-Pending-Id (M3). tenant=%s",
+                    len(body), max_body, gw.cfg.gateway.tenant_id,
+                )
+                return None
+            # B1 fix — Pro deploys wrap the body with per-tenant DEK
+            # AES-GCM before persisting. Soft import so OSS-only
+            # deploys (no kya_pro) fall through to plaintext-at-rest,
+            # which is the documented ops-accepted risk when
+            # KYA_HITL_MASTER_KEY isn't configured.
+            body_to_store = body
+            try:
+                from kya_pro.policy.hitl_encryption import encrypt as _pro_encrypt
+                body_to_store = _pro_encrypt(
+                    body, tenant_id=gw.cfg.gateway.tenant_id,
+                )
+            except ImportError:
+                pass  # OSS-only deploy — plaintext by design.
+            pending_id = create_pending(
+                engine,
+                tenant_id=gw.cfg.gateway.tenant_id,
+                agent_key=_short_agent_key(principal.principal_id),
+                principal_kind=principal.principal_kind,
+                principal_id=principal.principal_id,
+                action=action,
+                original_invocation_id=invocation_id,
+                request_body_ciphertext=body_to_store,
+                request_headers=safe_headers,
+                policy_config_hash=hash_policy_config(
+                    getattr(gw.cfg, "policy", None)
+                ),
+            )
+            logger.info(
+                "[KYA-GATEWAY] pending row created for 428 pending_id=%s "
+                "invocation_id=%s tenant=%s",
+                pending_id, invocation_id, gw.cfg.gateway.tenant_id,
+            )
+            return pending_id
+    except Exception as exc:  # noqa: BLE001
+        # Any failure — DB down, schema mismatch, oversized body — must
+        # not kill the 428 in production. Ops sees ERROR in the log and
+        # can correlate. M2 fix — in dev/staging, re-raise so integration
+        # tests + local development don't silently mask real bugs (schema
+        # migration missed, oversized-body Postgres error, etc.). The
+        # KYA_ENV var is the canonical deploy signal.
+        import os as _os
+        env = _os.environ.get("KYA_ENV", "").lower()
+        logger.error(
+            "[KYA-GATEWAY] create_pending failed — 428 ships without "
+            "X-Kya-Pending-Id. env=%s error=%s tenant=%s",
+            env, exc, gw.cfg.gateway.tenant_id,
+        )
+        if env not in ("production", "prod"):
+            raise
+        return None
 
 
 def _run_policy(

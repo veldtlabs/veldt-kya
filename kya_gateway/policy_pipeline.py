@@ -97,7 +97,7 @@ def evaluate(
                 reason_codes=["RBAC_DENY"],
                 signal_kind="rbac_refusal",
             )
-        if rbac_outcome == "require_human":
+        if rbac_outcome in ("flag_for_review", "require_human"):
             reasons.append("REQUIRES_HUMAN")
 
     # ─── Payload caps ───────────────────────────────────────────
