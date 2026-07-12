@@ -953,7 +953,7 @@ def build_app(gw: Gateway) -> FastAPI:
                     ),
                     status_code=403,
                 )
-            if verdict.verdict == "require_human":
+            if verdict.verdict in ("flag_for_review", "require_human"):
                 # Phase 5g-tail — 428 Precondition Required (RFC 6585 §3)
                 # is the correct semantic: the action isn't denied, it
                 # needs a precondition (human approval) before it can

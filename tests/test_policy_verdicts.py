@@ -18,7 +18,7 @@ from kya.policy_verdicts import (
     MUTATION_KEYS,
     AllowHandler,
     GatewayDenyHandler,
-    GatewayRequireHumanHandler,
+    GatewayFlagForReviewHandler,
     HandlerResult,
     VerdictContext,
     VerdictHandler,
@@ -101,8 +101,11 @@ def test_defaults_are_registered_after_import(blank_registry):
     """
     assert registered_verdicts() == []
     register_default_handlers()
+    # ``require_human`` is registered as a backward-compat alias for
+    # ``flag_for_review`` (paper Figure 4 vocab) — see #105 for the
+    # UI/docs sweep. Alias is dropped after that lands.
     assert set(registered_verdicts()) == {
-        "allow", "deny", "require_human",
+        "allow", "deny", "flag_for_review", "require_human",
     }
 
 
@@ -296,9 +299,9 @@ def test_registered_verdicts_filters_by_layer():
 
     # deny + require_human are gateway-only.
     assert "deny" in at_gateway
-    assert "require_human" in at_gateway
+    assert "flag_for_review" in at_gateway
     assert "deny" not in at_action_gate
-    assert "require_human" not in at_action_gate
+    assert "flag_for_review" not in at_action_gate
     # allow is both — appears in each.
     assert "allow" in at_gateway
     assert "allow" in at_action_gate
@@ -307,7 +310,7 @@ def test_registered_verdicts_filters_by_layer():
 def test_registered_verdicts_none_returns_all():
     """layer=None returns every registered verdict — OSS defaults only."""
     assert set(registered_verdicts()) == {
-        "allow", "deny", "require_human",
+        "allow", "deny", "flag_for_review", "require_human",
     }
 
 
@@ -366,7 +369,7 @@ def test_deny_response_body_reason_codes_are_a_fresh_copy():
 
 def test_require_human_handler_emits_428_with_www_authenticate():
     result = apply(_ctx(
-        verdict="require_human",
+        verdict="flag_for_review",
         layer="gateway",
         reason_codes=["REQUIRES_HUMAN"],
     ))
@@ -376,13 +379,13 @@ def test_require_human_handler_emits_428_with_www_authenticate():
         'KYA-Human-Approval realm="kya-gateway"'
     )
     assert result.response_body["error"] == "human_approval_required"
-    assert result.response_body["verdict"] == "require_human"
+    assert result.response_body["verdict"] == "flag_for_review"
 
 
 def test_require_human_signals_pending_row_via_mutations():
     """The mutations bag tells #101's persistence layer to write a
     kya_pending_invocations row and stamp the id on the response."""
-    result = apply(_ctx(verdict="require_human", layer="gateway"))
+    result = apply(_ctx(verdict="flag_for_review", layer="gateway"))
     assert result.mutations.get("hitl.needs_pending_row") is True
 
 
@@ -489,7 +492,7 @@ def test_deny_at_gateway_matches_current_server_behavior():
 def test_require_human_at_gateway_matches_current_server_behavior():
     """Regression guard for the current 428 emission."""
     result = apply(_ctx(
-        verdict="require_human",
+        verdict="flag_for_review",
         layer="gateway",
         reason_codes=["REQUIRES_HUMAN"],
     ))
@@ -497,7 +500,44 @@ def test_require_human_at_gateway_matches_current_server_behavior():
     assert 'KYA-Human-Approval' in result.response_headers.get("WWW-Authenticate", "")
     body = result.response_body
     assert body is not None
-    assert body["verdict"] == "require_human"
+    assert body["verdict"] == "flag_for_review"
+
+
+def test_require_human_alias_emits_same_wire_shape_as_flag_for_review():
+    """Backward-compat alias for #105 rename. Existing customer configs
+    saying ``verdict: require_human`` continue to work; the wire
+    response is bit-identical to ``flag_for_review`` except the body's
+    ``verdict`` field carries the legacy name so SDK clients pattern-
+    matching on it still route correctly."""
+    canonical = apply(_ctx(verdict="flag_for_review", layer="gateway",
+                           reason_codes=["REQUIRES_HUMAN"]))
+    aliased = apply(_ctx(verdict="require_human", layer="gateway",
+                         reason_codes=["REQUIRES_HUMAN"]))
+    # Everything except the verdict-body string must match.
+    assert aliased.forward == canonical.forward
+    assert aliased.http_status == canonical.http_status
+    assert aliased.jsonrpc_error_code == canonical.jsonrpc_error_code
+    assert aliased.response_headers == canonical.response_headers
+    assert aliased.mutations == canonical.mutations
+    # Legacy name preserved in the body so pattern-matching clients
+    # still see what they expect.
+    assert aliased.response_body["verdict"] == "require_human"
+    assert canonical.response_body["verdict"] == "flag_for_review"
+
+
+def test_require_human_alias_emits_deprecation_warning(recwarn):
+    """Ops should see a deprecation notice so they can migrate. Warning
+    fires at most once per process — the module-level sentinel
+    prevents log flood on a busy gateway."""
+    # Reset the sentinel so this test can fire it fresh.
+    import kya.policy_verdicts as pv
+    pv._ALIAS_WARNED = False
+    apply(_ctx(verdict="require_human", layer="gateway"))
+    assert any(
+        issubclass(w.category, DeprecationWarning)
+        and "require_human" in str(w.message)
+        for w in recwarn.list
+    )
 
 
 def test_operator_can_swap_default_handler_with_custom_impl():
@@ -528,7 +568,7 @@ def test_oss_verdict_matrix_dispatches_without_error():
 
     Action-gate verdicts (redact / throttle / block) are covered by
     the Pro-side test file."""
-    verdicts = ["allow", "deny", "require_human"]
+    verdicts = ["allow", "deny", "flag_for_review", "require_human"]
     layers: list[pv.ContextLayer] = ["gateway", "action_gate"]
     for v in verdicts:
         for l in layers:
@@ -555,7 +595,7 @@ def test_require_human_handler_emits_jsonrpc_error_code_minus_32007():
     """B1 — RFC 6585 428 pairs with JSON-RPC -32007 on the current
     wire format. Verify the handler carries the code so the gateway
     envelope stays compatible."""
-    result = apply(_ctx(verdict="require_human", layer="gateway"))
+    result = apply(_ctx(verdict="flag_for_review", layer="gateway"))
     assert result.jsonrpc_error_code == -32007
 
 
@@ -631,7 +671,7 @@ def test_register_default_handlers_is_atomic_under_concurrent_apply(blank_regist
             swap([
                 AllowHandler(),
                 GatewayDenyHandler(),
-                GatewayRequireHumanHandler(),
+                GatewayFlagForReviewHandler(),
             ])
 
     def query_loop():
@@ -711,7 +751,7 @@ def test_all_default_oss_handler_mutations_are_documented_in_mutation_keys():
     Pro-shipped handlers maintain their own MUTATION_KEYS_ACTION_GATE
     and their own equivalent test."""
     seen_keys = set()
-    seen_keys.update(apply(_ctx(verdict="require_human", layer="gateway")).mutations.keys())
+    seen_keys.update(apply(_ctx(verdict="flag_for_review", layer="gateway")).mutations.keys())
     unknown = seen_keys - MUTATION_KEYS
     assert not unknown, (
         f"OSS handlers emitted mutation keys not listed in MUTATION_KEYS: "

@@ -35,9 +35,10 @@ class Verdict:
     """The result of running an MCP request through the policy stack.
 
     ``verdict`` is one of:
-        ``"allow"``          — KYA recommends the customer platform proceed
-        ``"deny"``           — KYA recommends the customer platform stop
-        ``"require_human"``  — KYA recommends escalation to a human approver
+        ``"allow"``            — KYA recommends the customer platform proceed
+        ``"deny"``             — KYA recommends the customer platform stop
+        ``"flag_for_review"``  — KYA recommends escalation to a human approver
+        ``"require_human"``    — deprecated alias for ``flag_for_review`` (#105)
 
     Always assume the customer platform is the one that **enforces**.
     KYA's role is to **score, sign, and record** — never to block by
@@ -228,8 +229,11 @@ def evaluate(
 
     # ─── All checks passed ─────────────────────────────────────
     if "REQUIRES_HUMAN" in reasons:
+        # Paper Figure 4 canonical vocabulary is ``flag_for_review``;
+        # ``require_human`` remains accepted at the registry via an
+        # alias handler through #105. Emit canonical going forward.
         return Verdict(
-            verdict="require_human",
+            verdict="flag_for_review",
             reason_codes=reasons,
             signal_kind="governance_block",
         )

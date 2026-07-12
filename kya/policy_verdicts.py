@@ -534,8 +534,14 @@ class GatewayDenyHandler:
 
 
 @dataclass(frozen=True)
-class GatewayRequireHumanHandler:
-    """Gateway-layer require_human — HTTP 428 Precondition Required.
+class GatewayFlagForReviewHandler:
+    """Gateway-layer flag_for_review — HTTP 428 Precondition Required.
+
+    Paper alignment: the KYA whitepaper (main.pdf, Figure 4) canonical
+    Layer 2 vocabulary uses ``flag_for_review``. Prior code shipped
+    with the alias ``require_human``; the alias is still accepted at
+    dispatch (see ``GatewayRequireHumanAliasHandler`` below) so
+    existing customer configs continue to work.
 
     RFC 6585 §3: the action is not denied, it needs a precondition
     (human approval) before it can proceed. Sets a
@@ -547,7 +553,7 @@ class GatewayRequireHumanHandler:
     ``jsonrpc_error_code=-32007`` preserves wire compatibility for
     existing SDK clients pattern-matching on the numeric code.
     """
-    verdict: str = "require_human"
+    verdict: str = "flag_for_review"
     layer: HandlerLayer = "gateway"
 
     def apply(self, ctx: VerdictContext) -> HandlerResult:
@@ -558,13 +564,67 @@ class GatewayRequireHumanHandler:
             response_body={
                 "error": "human_approval_required",
                 "reason_codes": list(ctx.reason_codes),
-                "verdict": "require_human",
+                "verdict": "flag_for_review",
             },
             response_headers={
                 "WWW-Authenticate": 'KYA-Human-Approval realm="kya-gateway"',
             },
             mutations={"hitl.needs_pending_row": True},
         )
+
+
+@dataclass(frozen=True)
+class GatewayRequireHumanAliasHandler:
+    """Backward-compat alias: emit the same 428 as ``flag_for_review``.
+
+    Existing RBAC configs, tests, and SDK clients that use
+    ``verdict: require_human`` continue to work. On the first apply()
+    a DeprecationWarning is logged (once per process via a module
+    sentinel) so operators can migrate at their pace. Ship this
+    alongside the canonical handler; when #105 finishes the UI/docs
+    sweep and a full deprecation cycle passes, drop it.
+    """
+    verdict: str = "require_human"
+    layer: HandlerLayer = "gateway"
+
+    def apply(self, ctx: VerdictContext) -> HandlerResult:
+        _warn_require_human_alias_once()
+        # Delegate to the canonical handler so wire shape stays
+        # bit-identical — only the ``verdict`` string in the body
+        # differs to match the legacy name.
+        canonical = GatewayFlagForReviewHandler().apply(ctx)
+        canonical_body = dict(canonical.response_body or {})
+        canonical_body["verdict"] = "require_human"
+        return HandlerResult(
+            forward=canonical.forward,
+            http_status=canonical.http_status,
+            jsonrpc_error_code=canonical.jsonrpc_error_code,
+            response_body=canonical_body,
+            response_headers=dict(canonical.response_headers),
+            mutations=dict(canonical.mutations),
+        )
+
+
+_ALIAS_WARNED = False
+
+
+def _warn_require_human_alias_once() -> None:
+    """Emit DeprecationWarning + log exactly once per process."""
+    global _ALIAS_WARNED
+    if _ALIAS_WARNED:
+        return
+    _ALIAS_WARNED = True
+    logger.warning(
+        "[policy_verdicts] verdict 'require_human' is deprecated — "
+        "use 'flag_for_review' (paper Figure 4 vocabulary). Existing "
+        "configs continue to work but will be removed after #105."
+    )
+    import warnings
+    warnings.warn(
+        "verdict='require_human' is deprecated; use 'flag_for_review'",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 # Action-gate handlers (redact, throttle, block) live in
@@ -598,7 +658,10 @@ def register_default_handlers() -> None:
     for handler in (
         AllowHandler(),
         GatewayDenyHandler(),
-        GatewayRequireHumanHandler(),
+        GatewayFlagForReviewHandler(),
+        # Alias for backward compat during the paper-alignment
+        # rename. Drop after #105 finishes the sweep.
+        GatewayRequireHumanAliasHandler(),
     ):
         register(handler)
 
@@ -629,6 +692,7 @@ __all__ = [
     "resolves",
     "AllowHandler",
     "GatewayDenyHandler",
-    "GatewayRequireHumanHandler",
+    "GatewayFlagForReviewHandler",
+    "GatewayRequireHumanAliasHandler",
     "register_default_handlers",
 ]

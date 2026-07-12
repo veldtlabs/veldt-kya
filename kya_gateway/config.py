@@ -159,7 +159,7 @@ class BudgetConfig:
 class RBACRule:
     principal_kind: str
     actions: list[str]
-    verdict: str  # "allow" | "deny" | "require_human"
+    verdict: str  # "allow" | "deny" | "flag_for_review" (paper) | "require_human" (deprecated alias, #105)
 
 
 @dataclass(frozen=True)
@@ -394,9 +394,24 @@ def _parse_rbac(block: dict | None) -> RBACConfig | None:
     rules: list[RBACRule] = []
     for r in rules_raw:
         verdict = r.get("verdict", "deny")
-        if verdict not in ("allow", "deny", "require_human"):
+        # Accept the paper's canonical ``flag_for_review`` alongside
+        # the legacy ``require_human`` alias. When a config uses the
+        # legacy name, normalize to canonical at parse time so
+        # downstream code sees one value; the alias handler in the
+        # registry still emits with the legacy string in the body so
+        # SDK clients pattern-matching on it are unaffected.
+        if verdict == "require_human":
+            import logging as _log
+            _log.getLogger("kya_gateway.config").warning(
+                "[gateway.config] verdict 'require_human' is deprecated "
+                "— use 'flag_for_review' (paper Figure 4). Config still "
+                "loads; alias will be removed after #105."
+            )
+            verdict = "flag_for_review"
+        if verdict not in ("allow", "deny", "flag_for_review"):
             raise GatewayConfigError(
-                f"rbac rule verdict must be allow/deny/require_human, got {verdict!r}"
+                "rbac rule verdict must be allow/deny/flag_for_review, "
+                f"got {verdict!r}"
             )
         rules.append(RBACRule(
             principal_kind=r["principal_kind"],
