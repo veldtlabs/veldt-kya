@@ -369,6 +369,21 @@ def _hmac_sign(key: bytes, prev_hash: str, payload_hash: str) -> str:
 if _HAS_SQLALCHEMY:
     _JsonType = JSON().with_variant(JSONB(), "postgresql")
 
+    # MySQL's DATETIME defaults to 0 fractional-seconds precision, which
+    # collapses sub-second event ordering — the evidence chain relies on
+    # deterministic time-ordering, and #121 replay's evidence-slice bound
+    # ``occurred_at <= :ts`` fails when the write time and query time
+    # collide on the same second. DATETIME(6) fixes this at the column
+    # level. Imported here so the ORM column definition below can request
+    # it via with_variant().
+    try:
+        from sqlalchemy.dialects.mysql import DATETIME as _MYSQLDateTime
+        _MYSQL_DATETIME_MICROSEC = _MYSQLDateTime(fsp=6, timezone=True)
+    except Exception:
+        # Fall back to plain DateTime — precision loss, but at least
+        # nothing breaks at import if a future SQLAlchemy renames things.
+        _MYSQL_DATETIME_MICROSEC = DateTime(timezone=True)
+
     class _Base(DeclarativeBase):
         pass
 
@@ -405,10 +420,25 @@ if _HAS_SQLALCHEMY:
         signed_hash: Mapped[str] = mapped_column(String(64), nullable=False)
         signing_key_id: Mapped[str] = mapped_column(String(40), nullable=False)
 
-        # Event-time vs ingest-time
-        occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        # Event-time vs ingest-time — DATETIME(6) on MySQL to preserve
+        # microsecond precision. SQLAlchemy's default DateTime(timezone=True)
+        # maps to plain DATETIME (0 µs precision) on MySQL, which causes
+        # sub-second boundary rows in the evidence chain to collide on the
+        # same second. #121 replay's evidence-slice query then can't
+        # distinguish "row written 5 µs ago" from "row written 1s ago",
+        # inflating the slice count on MySQL. Fix: request 6-digit
+        # fractional-second precision explicitly, which MySQL 5.6+
+        # honors and other dialects ignore.
+        occurred_at: Mapped[datetime] = mapped_column(
+            DateTime(timezone=True).with_variant(
+                _MYSQL_DATETIME_MICROSEC, "mysql",
+            ),
+            nullable=False,
+        )
         ingested_at: Mapped[datetime] = mapped_column(
-            DateTime(timezone=True),
+            DateTime(timezone=True).with_variant(
+                _MYSQL_DATETIME_MICROSEC, "mysql",
+            ),
             server_default=func.now(),
             nullable=False,
         )

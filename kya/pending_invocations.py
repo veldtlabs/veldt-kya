@@ -116,6 +116,36 @@ class PendingInvocation:
 _ENSURED_ENGINES: set[int] = set()
 
 
+def _create_index_if_missing(
+    conn, dialect: str, *,
+    index_name: str, table_name: str, columns: str,
+) -> None:
+    """Dialect-portable CREATE INDEX IF NOT EXISTS.
+
+    Postgres/sqlite/duckdb accept the ``IF NOT EXISTS`` syntax
+    natively. MySQL 8 rejects it at parse time — so on MySQL we probe
+    ``information_schema.statistics`` first + create only if missing.
+    Idempotent + safe under concurrent boot.
+    """
+    if dialect == "mysql":
+        existing = conn.execute(_sql("""
+            SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name   = :tbl
+              AND index_name   = :idx
+        """), {"tbl": table_name, "idx": index_name}).scalar()
+        if existing:
+            return
+        conn.execute(_sql(
+            f"CREATE INDEX {index_name} ON {table_name} {columns}"
+        ))
+        return
+    conn.execute(_sql(
+        f"CREATE INDEX IF NOT EXISTS {index_name} "
+        f"ON {table_name} {columns}"
+    ))
+
+
 def ensure_table(engine) -> None:
     """CREATE TABLE IF NOT EXISTS kya_pending_invocations.
 
@@ -129,11 +159,17 @@ def ensure_table(engine) -> None:
         return
     dialect = engine.dialect.name
     # BLOB is universal enough — postgres BYTEA, mysql BLOB, sqlite BLOB,
-    # duckdb BLOB. TIMESTAMP WITH TIME ZONE works on postgres + duckdb;
-    # sqlite/mysql accept the same DDL and treat it as their TIMESTAMP.
+    # duckdb BLOB. TIMESTAMP WITH TIME ZONE works on postgres + duckdb
+    # natively. sqlite treats the DDL as its own TIMESTAMP affinity so it
+    # accepts it verbatim. MySQL 8, however, rejects `TIMESTAMP WITH TIME
+    # ZONE` at parse time — earlier docs in this module incorrectly
+    # claimed otherwise. MySQL's closest equivalent is DATETIME (naive)
+    # with app-layer tz handling — the SQLAlchemy ORM already normalizes
+    # on read/write via the `datetime(timezone=True)` column type on Pro's
+    # side, so the wire semantics match.
     body_type = "BYTEA" if dialect == "postgresql" else "BLOB"
     json_type = "JSONB" if dialect == "postgresql" else "TEXT"
-    ts_type = "TIMESTAMP WITH TIME ZONE"
+    ts_type = "DATETIME" if dialect == "mysql" else "TIMESTAMP WITH TIME ZONE"
     with engine.begin() as conn:
         conn.execute(_sql(f"""
             CREATE TABLE IF NOT EXISTS kya_pending_invocations (
@@ -157,15 +193,22 @@ def ensure_table(engine) -> None:
         """))
         # Index for the sweeper's expired-row scan + approver-queue
         # list ordered by expires_at ASC (most-urgent first).
-        conn.execute(_sql("""
-            CREATE INDEX IF NOT EXISTS ix_kya_pending_invocations_status_expires
-            ON kya_pending_invocations (status, expires_at)
-        """))
+        # MySQL rejects `CREATE INDEX IF NOT EXISTS` at parse time.
+        # Probe information_schema first, then create — the (schema,
+        # table, index) triple is unique so the check is deterministic.
+        _create_index_if_missing(
+            conn, dialect,
+            index_name="ix_kya_pending_invocations_status_expires",
+            table_name="kya_pending_invocations",
+            columns="(status, expires_at)",
+        )
         # Per-tenant queries are the common approver-UI shape.
-        conn.execute(_sql("""
-            CREATE INDEX IF NOT EXISTS ix_kya_pending_invocations_tenant_status
-            ON kya_pending_invocations (tenant_id, status)
-        """))
+        _create_index_if_missing(
+            conn, dialect,
+            index_name="ix_kya_pending_invocations_tenant_status",
+            table_name="kya_pending_invocations",
+            columns="(tenant_id, status)",
+        )
     _ENSURED_ENGINES.add(key)
 
 
