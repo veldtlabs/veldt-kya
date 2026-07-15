@@ -358,7 +358,7 @@ def score_agent(
     # --- Data sensitivity ------------------------------------------------
     # Take the MAX-weight class as the contribution (not the sum) — see
     # data_classes.sensitivity_weight for rationale.
-    sens_delta = sensitivity_weight(data_classes)
+    sens_delta = sensitivity_weight(data_classes, weights=_class_weights)
     max_class = data_classes[0] if data_classes else "public"
     if sens_delta > 0:
         score += sens_delta
@@ -383,7 +383,7 @@ def score_agent(
         cap_set = set(infer_capabilities(list(tools)))
         cap_set.update(skill_caps)
         sec_caps = sorted(cap_set, key=lambda c: -CAPABILITY_WEIGHTS.get(c, 0))
-    cap_delta = capability_weight(sec_caps)
+    cap_delta = capability_weight(sec_caps, weights=_capability_weights)
     if cap_delta > 0:
         score += cap_delta
         worst = sec_caps[0] if sec_caps else ""
@@ -451,7 +451,9 @@ def score_agent(
     # arbitrary web fetches) materially raise prompt-injection + data-
     # poisoning risk. See input_sources.py.
     isources = agent_def.get("input_sources") or []
-    isrc_delta = input_source_weight(isources) if isources else 0
+    isrc_delta = (
+        input_source_weight(isources, weights=_source_weights) if isources else 0
+    )
     if isrc_delta > 0:
         worst = isources[0] if isources else "unknown"
         factors.append(
@@ -492,12 +494,22 @@ def score_agent(
     # Each helper returns (delta, label). Skip the factor when delta == 0.
     # Order matters for readability in the factor breakdown; positive
     # deltas first (risks), then negative (trust reductions).
+    # deployment_weight is called separately so it can receive the
+    # tenant-scoped _deployment_weights dict. The other helpers in this
+    # loop don't consume tenant weights.
+    try:
+        d_delta, d_label = deployment_weight(agent_def, weights=_deployment_weights)
+    except Exception:
+        d_delta, d_label = 0, ""
+    if d_delta != 0:
+        score += d_delta
+        factors.append(RiskFactor("deployment", d_label, d_delta))
+
     for name, fn in (
         ("ownership", ownership_weight),
         ("approval", approval_weight),
         ("lifecycle", lifecycle_weight),
         ("supply_chain", supply_chain_weight),
-        ("deployment", deployment_weight),
         ("cost_burn", cost_burn_weight),
         ("citation", citation_weight),  # may be negative
         ("trust_audits", trust_score_weight),  # may be negative

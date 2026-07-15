@@ -74,21 +74,29 @@ def set_source_weights(weights: dict, merge: bool = True) -> None:
     SOURCE_WEIGHTS.update(weights or {})
 
 
-def input_source_weight(sources: list[str] | None) -> int:
+def input_source_weight(
+    sources: list[str] | None, weights: dict | None = None,
+) -> int:
     """Compute the input-source risk contribution.
 
     MAX(worst source weight) + small premium for additional untrusted
     sources beyond the first. Capped at SOURCE_CAP. Unknown source names
     are silently mapped to the "unknown" weight (NOT zero) — declaring
     something unrecognized is treated like not declaring at all.
+
+    ``weights`` — optional dict overriding SOURCE_WEIGHTS for the
+    duration of this call. Enables tenant-scoped overrides via
+    tenant_weights.set_override; missing keys fall through to module
+    defaults. Signature mirrors sensitivity_weight.
     """
+    weight_source = weights if weights is not None else SOURCE_WEIGHTS
     if not sources:
-        return SOURCE_WEIGHTS["unknown"]  # not declaring is a signal
-    weights = [SOURCE_WEIGHTS.get(s, SOURCE_WEIGHTS["unknown"]) for s in sources]
-    if not weights:
-        return SOURCE_WEIGHTS["unknown"]
-    base = max(weights)
+        return weight_source.get("unknown", SOURCE_WEIGHTS["unknown"])
+    ws = [weight_source.get(s, weight_source.get("unknown", SOURCE_WEIGHTS["unknown"])) for s in sources]
+    if not ws:
+        return weight_source.get("unknown", SOURCE_WEIGHTS["unknown"])
+    base = max(ws)
     # Premium: +2 for each ADDITIONAL untrusted source (weight >= 5)
-    extras = sum(1 for w in weights if w >= 5) - 1
+    extras = sum(1 for w in ws if w >= 5) - 1
     premium = max(0, extras * 2)
     return min(SOURCE_CAP, base + premium)

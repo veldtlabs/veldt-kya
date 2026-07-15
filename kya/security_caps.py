@@ -125,7 +125,7 @@ def infer_capabilities(tools: list[str]) -> list[str]:
     return sorted(seen, key=lambda c: -CAPABILITY_WEIGHTS.get(c, 0))
 
 
-def capability_weight(caps: list[str]) -> int:
+def capability_weight(caps: list[str], weights: dict | None = None) -> int:
     """Compute the total security-capability risk contribution.
 
     Unlike sensitivity (MAX), capabilities SUM up to the cap — having
@@ -134,5 +134,6 @@ def capability_weight(caps: list[str]) -> int:
     """
     if not caps:
         return 0
-    total = sum(CAPABILITY_WEIGHTS.get(c, 0) for c in set(caps))
+    weight_source = weights if weights is not None else CAPABILITY_WEIGHTS
+    total = sum(weight_source.get(c, 0) for c in set(caps))
     return min(CAPABILITY_CAP, total)

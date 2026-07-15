@@ -44,15 +44,23 @@ def set_deployment_weights(weights: dict, merge: bool = True) -> None:
     DEPLOYMENT_WEIGHTS.update(weights or {})
 
 
-def deployment_weight(agent_def: dict) -> tuple[int, str]:
+def deployment_weight(
+    agent_def: dict, weights: dict | None = None,
+) -> tuple[int, str]:
     """Read agent_def['environment'] (or 'deployment_env' alias).
-    Default 'unknown' → prod-equivalent risk."""
+    Default 'unknown' → prod-equivalent risk.
+
+    ``weights`` — optional dict overriding DEPLOYMENT_WEIGHTS for the
+    duration of this call. Enables tenant-scoped overrides via
+    tenant_weights.set_override; missing keys fall through to module
+    defaults. Signature mirrors sensitivity_weight."""
     env = (
         (agent_def.get("environment") or agent_def.get("deployment_env") or "unknown")
         .strip()
         .lower()
     )
-    delta = DEPLOYMENT_WEIGHTS.get(env, DEPLOYMENT_WEIGHTS["unknown"])
+    weight_source = weights if weights is not None else DEPLOYMENT_WEIGHTS
+    delta = weight_source.get(env, weight_source.get("unknown", DEPLOYMENT_WEIGHTS["unknown"]))
     if delta == 0:
         return 0, ""
     return delta, f"environment={env}"
