@@ -4,6 +4,46 @@ All notable changes to **veldt-kya** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] — 2026-07-15
+
+### Fixed
+- **`score_agent` silently dropped tenant weight overrides**
+  (score-flow silent-drop, discovered during a Pro dashboard review
+  2026-07-15). Every operator who tightened a weight via
+  `kya.tenant_weights.set_override` or a downstream policy console
+  saw the new value in `get_effective_weights()` reads but got
+  scored + gated at the platform default — a hidden
+  policy-enforcement gap.
+  * Root cause: `score_agent` populated `_class_weights` /
+    `_capability_weights` / `_source_weights` / `_deployment_weights`
+    from `get_effective_weights` at lines 258-269 and NEVER
+    referenced them again. The four downstream helpers
+    (`sensitivity_weight`, `capability_weight`,
+    `input_source_weight`, `deployment_weight`) were called
+    without the resolved weights; three of them didn't even
+    accept a `weights=` kwarg.
+  * Fix: added `weights: dict | None = None` to
+    `capability_weight`, `input_source_weight`, and
+    `deployment_weight` (mirroring `sensitivity_weight`'s
+    existing signature). Wired all four calls in `score_agent`
+    to pass the corresponding tenant-resolved dict. `deployment_weight`
+    was lifted out of the shared helpers tuple so it can receive
+    weights independently.
+  * Security impact: `score_agent` is the single source of truth
+    for bucket assignment + verdict decisions (allow / deny /
+    flag_for_review / redact / throttle / block). A customer with
+    a compromised admin who tightened a weight would previously
+    see the change accepted + audited but their agents would
+    keep being gated at the pre-tighten weights until the next
+    manual code change.
+  * Regression coverage: new
+    `tests/test_tenant_weights_affect_scoring.py` (8 tests, 375 LOC)
+    exercises all 4 scopes end-to-end (`set_override` →
+    `get_effective_weights` → `score_agent` → `AgentRiskScore`)
+    on SQLite plus a cross-backend Postgres proof gated on
+    `KYA_TEST_POSTGRES_URL`. RED verified pre-fix; GREEN
+    post-fix. Full suite: 217 passed, 24 skipped, no regressions.
+
 ## [Unreleased]
 
 ### Added
