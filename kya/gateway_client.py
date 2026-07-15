@@ -37,7 +37,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,8 @@ class KyaGatewayClient:
         self,
         gateway_url: str,
         *,
-        dashboard_url: Optional[str] = None,
-        default_headers: Optional[dict[str, str]] = None,
+        dashboard_url: str | None = None,
+        default_headers: dict[str, str] | None = None,
         request_timeout_sec: float = 30.0,
     ):
         self.gateway_url = gateway_url.rstrip("/")
@@ -147,7 +147,7 @@ class KyaGatewayClient:
         *,
         path: str = "/mcp",
         body: bytes,
-        headers: Optional[dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
     ) -> GatewayResponse:
         """POST to the gateway. Returns the raw response.
 
@@ -281,7 +281,7 @@ class KyaGatewayClient:
         *,
         path: str = "/mcp",
         body: bytes,
-        headers: Optional[dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         wait_timeout_sec: float = 600.0,
         poll_interval_sec: float = 5.0,
         retry_after_respect: bool = True,

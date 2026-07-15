@@ -50,11 +50,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import secrets
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from sqlalchemy import text as _sql
 from sqlalchemy.exc import IntegrityError
@@ -98,16 +97,16 @@ class PendingInvocation:
     principal_kind: str
     principal_id: str
     action: str
-    original_invocation_id: Optional[int]
+    original_invocation_id: int | None
     request_body_ciphertext: bytes
     request_headers: dict[str, str]
     policy_config_hash: str
     status: PendingStatus
     submitted_at: datetime
     expires_at: datetime
-    decided_at: Optional[datetime]
-    decided_by: Optional[str]
-    resume_result_evidence_id: Optional[int]
+    decided_at: datetime | None
+    decided_by: str | None
+    resume_result_evidence_id: int | None
 
 
 # ── Table creation ──────────────────────────────────────────────────
@@ -249,12 +248,12 @@ def create_pending(
     principal_kind: str,
     principal_id: str,
     action: str,
-    original_invocation_id: Optional[int],
+    original_invocation_id: int | None,
     request_body_ciphertext: bytes,
     request_headers: dict[str, str],
     policy_config_hash: str,
-    now: Optional[datetime] = None,
-    ttl: Optional[timedelta] = None,
+    now: datetime | None = None,
+    ttl: timedelta | None = None,
 ) -> str:
     """Write a pending row + return its uuid (stamp on the 428 response).
 
@@ -361,8 +360,8 @@ def decide(
     pending_id: str,
     decision: Literal["approved", "denied"],
     decided_by: str,
-    now: Optional[datetime] = None,
-    tenant_id: Optional[str] = None,
+    now: datetime | None = None,
+    tenant_id: str | None = None,
 ) -> bool:
     """Flip a pending row's status. Returns True iff we won the race.
 
@@ -423,7 +422,7 @@ def decide(
 # ── Read ─────────────────────────────────────────────────────────────
 
 
-def _coerce_datetime(value: Any) -> Optional[datetime]:
+def _coerce_datetime(value: Any) -> datetime | None:
     """Coerce a datetime column back to a tz-aware ``datetime``.
 
     Portability quirk: SQLite (default adapter) round-trips
@@ -442,12 +441,13 @@ def _coerce_datetime(value: Any) -> Optional[datetime]:
             return None
     else:
         dt = value
-    if dt.tzinfo is None:
-        # Naive datetime — treat as UTC (that's what we always write).
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        # Aware but perhaps in local time (DuckDB) — normalize to UTC.
-        dt = dt.astimezone(timezone.utc)
+    # Naive → treat as UTC (that's what we always write). Aware → normalize
+    # to UTC to handle DuckDB's local-time returns.
+    dt = (
+        dt.replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None
+        else dt.astimezone(timezone.utc)
+    )
     return dt
 
 
@@ -490,7 +490,7 @@ def _row_to_view(row) -> PendingInvocation:
     )
 
 
-def get_by_id(engine, pending_id: str) -> Optional[PendingInvocation]:
+def get_by_id(engine, pending_id: str) -> PendingInvocation | None:
     """Fetch one pending row by id. Returns None if not found."""
     with engine.connect() as conn:
         result = conn.execute(_sql("""
@@ -508,8 +508,8 @@ def get_by_id(engine, pending_id: str) -> Optional[PendingInvocation]:
 
 
 def find_ready_to_resume(
-    engine, pending_id: str, *, now: Optional[datetime] = None,
-) -> Optional[PendingInvocation]:
+    engine, pending_id: str, *, now: datetime | None = None,
+) -> PendingInvocation | None:
     """Return a row iff it is approved AND not expired AND not already resumed.
 
     The resume endpoint MUST call this instead of ``get_by_id`` — it
@@ -541,7 +541,7 @@ def list_by_tenant(
     engine,
     *,
     tenant_id: str,
-    status: Optional[PendingStatus] = None,
+    status: PendingStatus | None = None,
     limit: int = 100,
 ) -> list[PendingInvocation]:
     """Approver-UI list, most-urgent (earliest expiry) first.
@@ -627,7 +627,7 @@ def mark_resumed(
 
 
 def sweep_expired(
-    engine, *, now: Optional[datetime] = None, batch_size: int = 500,
+    engine, *, now: datetime | None = None, batch_size: int = 500,
 ) -> int:
     """Flip status='pending' AND expires_at<=now → status='expired'.
 

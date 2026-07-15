@@ -58,7 +58,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Protocol, TypedDict, runtime_checkable
+from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class VerdictContext:
     # B2 fix: signal_kind is what the gateway writes to the trust
     # ledger — dropping it would break audit correlation. Populated
     # by the gateway from the Verdict.signal_kind produced upstream.
-    signal_kind: Optional[str] = None
+    signal_kind: str | None = None
     """Trust-ledger signal name — audit correlation key.
 
     Values are the enum-like ledger tags: ``rbac_refusal``,
@@ -147,9 +147,9 @@ class VerdictContext:
     gateway integration MUST populate it — the audit chain expects it.
     """
     # ── Optional context for action-gate handlers ────────────────────
-    upstream_body: Optional[bytes] = None
+    upstream_body: bytes | None = None
     """The response body from upstream. Only populated at layer=action_gate."""
-    upstream_status: Optional[int] = None
+    upstream_status: int | None = None
     """The response status from upstream. Only populated at layer=action_gate."""
     rich: dict[str, Any] = field(default_factory=dict)
     """Verdict-specific config passed through from the policy engine.
@@ -169,9 +169,9 @@ class HandlerResult:
     """
     forward: bool = True
     """True to continue the pipeline; False to short-circuit."""
-    http_status: Optional[int] = None
+    http_status: int | None = None
     """Status code when short-circuiting. Ignored when forward=True."""
-    jsonrpc_error_code: Optional[int] = None
+    jsonrpc_error_code: int | None = None
     """JSON-RPC error code for the gateway envelope.
 
     B1 fix — the gateway wraps handler output in ``make_error(req_id,
@@ -182,7 +182,7 @@ class HandlerResult:
     integration reads it. Ignored at the action-gate layer where the
     envelope shape is different.
     """
-    response_body: Optional[dict[str, Any]] = None
+    response_body: dict[str, Any] | None = None
     """JSON body. When forward=False, replaces the response entirely.
 
     When forward=True and layer=action_gate, replaces the upstream
@@ -368,7 +368,7 @@ def swap(handlers: list[VerdictHandler]) -> None:
         _REGISTRY = new_registry
 
 
-def _resolve(verdict: str, layer: ContextLayer) -> Optional[VerdictHandler]:
+def _resolve(verdict: str, layer: ContextLayer) -> VerdictHandler | None:
     """Return the handler for this verdict + layer, or None.
 
     Lookup order:
@@ -441,7 +441,7 @@ def apply(ctx: VerdictContext) -> HandlerResult:
     return HandlerResult(forward=True)
 
 
-def registered_verdicts(layer: Optional[HandlerLayer] = None) -> list[str]:
+def registered_verdicts(layer: HandlerLayer | None = None) -> list[str]:
     """List currently-registered verdict names, sorted.
 
     Used by tests and admin surfaces (Platform admin observability →
@@ -449,10 +449,10 @@ def registered_verdicts(layer: Optional[HandlerLayer] = None) -> list[str]:
     is set, filters to handlers registered for that layer OR "both".
     """
     if layer is None:
-        return sorted({v for v, _ in _REGISTRY.keys()})
+        return sorted({v for v, _ in _REGISTRY})
     return sorted({
-        v for v, l in _REGISTRY.keys()
-        if l == layer or l == "both"
+        v for v, lyr in _REGISTRY
+        if lyr == layer or lyr == "both"
     })
 
 
