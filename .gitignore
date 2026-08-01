@@ -111,3 +111,21 @@ BACKLOG.md
 bench_results/
 .test_falco_live_capture.json
 
+# Private founder material — funding research, strategy, opportunities.
+# Root-level uppercase KYA_* / VELDT_* / STRATEGY_* etc. Production
+# code lives under kya/ and kya_pro/ (lowercase). Never commit.
+/KYA_*
+/VELDT_*
+/RESEARCH_*
+/STRATEGY_*
+/FOUNDER_*
+/OPPORTUNITIES_*
+/FUNDING_*
+TASK_*_HANDOFF.md
+/private/
+/internal/
+/_private/
+# Alice demo already covered above; scoping to root as safety belt.
+/alice_*.py
+/kya-demo/
+
