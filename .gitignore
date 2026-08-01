@@ -111,3 +111,9 @@ BACKLOG.md
 bench_results/
 .test_falco_live_capture.json
 
+# Alice demo — founder's private live-presentation demo. Lives at
+# D:/scratch/kya-demo/ (outside this repo). If ever copied in, do
+# not commit — see companion rule in veldt-kya-pro/.gitignore.
+alice_*.py
+kya-demo/
+
