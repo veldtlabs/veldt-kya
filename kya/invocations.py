@@ -72,9 +72,12 @@ VALID_MODES = {
 
 VALID_OUTCOMES = {
     "success",
+    "failure",
     "refused",
+    "denied",
     "blocked",
     "error",
+    "throttled",
     "partial",
     "in_progress",
 }
@@ -342,8 +345,14 @@ def record_invocation(
         logger.debug("[KYA-INV] unknown mode=%s -> 'observed'", mode)
         mode = "observed"
     if outcome not in VALID_OUTCOMES:
-        logger.debug("[KYA-INV] unknown outcome=%s -> 'success'", outcome)
-        outcome = "success"
+        # Task #242 — was silent-coerce to "success". That cascaded into
+        # Pro deriving verdict="allow" for every failure AND ticking
+        # principal trust upward on every failure. Fail-loud so callers
+        # (SDKs, bridges) surface the bug immediately.
+        raise ValueError(
+            f"invalid outcome: {outcome!r} - must be one of "
+            f"{sorted(VALID_OUTCOMES)}"
+        )
 
     # Phase 4a.1 — rate limit on KYA's write primitive. Off-by-default;
     # operators opt in via KYA_RATE_LIMIT_DEFAULT_RPS or per-primitive
