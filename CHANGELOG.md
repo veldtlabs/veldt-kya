@@ -4,6 +4,50 @@ All notable changes to **veldt-kya** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6rc1] — 2026-08-01
+
+### Fixed — verdict-always-allow (Task #242, breaking-behavior fail-loud)
+
+- **`record_invocation` was silent-coercing unknown outcomes to `"success"`**
+  via a debug-level log line. Combined with a `VALID_OUTCOMES` set that
+  omitted three values the public API docs advertised (`failure`,
+  `denied`, `throttled`), every SDK / OTLP-bridge call that used the
+  documented-but-undeclared vocabulary was stored as `outcome="success"`.
+
+  Downstream in the Pro dashboard-api (`veldt-kya-pro >=0.11.2`):
+    1. `/v1/activity` derived `verdict="allow"` for the whole failure
+       population — the customer-visible "verdict-always-allow" bug.
+    2. The principal-trust ticker gate (`if outcome == "success":`) fired
+       on every failure, ratcheting principal trust UPWARD on broken calls.
+
+  **Fix:**
+    * Expanded `VALID_OUTCOMES` to the full canonical set:
+      `{success, failure, refused, denied, blocked, error, throttled,
+        partial, in_progress}`.
+    * Replaced the silent-coerce with `raise ValueError(...)`. Fail-loud
+      so SDK / bridge callers surface the bug immediately instead of
+      silently corrupting downstream verdict + trust math.
+
+### Breaking (behavior)
+
+- **`record_invocation(outcome=<unknown>)` now raises `ValueError`.**
+  Prior versions silently mapped unknowns to `"success"`. Callers
+  currently producing outcomes NOT in `VALID_OUTCOMES` must normalize
+  before calling. This is documented as breaking because the public
+  contract (accept + store the tag) has changed, even though the
+  pre-fix behavior was actively harmful (wrong verdict + wrong trust
+  score). If your integration was previously "working" with an
+  outcome like `outcome="fail"`, `outcome="ok"`, or an uppercased
+  variant, it must be updated to one of the nine canonical values.
+
+### Added
+
+- `tests/test_invocations.py` — 17-case regression suite covering
+  the 9 valid outcomes (round-trip through `list_invocations` without
+  silent-mutation) and 6 known-bad values (all raise `ValueError`).
+  Sabotage-verified: reverting either half of the fix breaks the
+  corresponding tests.
+
 ## [0.4.4] — 2026-07-15
 
 ### Fixed
