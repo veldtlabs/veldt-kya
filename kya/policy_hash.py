@@ -46,7 +46,6 @@ import json
 import unicodedata
 from typing import Any
 
-
 # Version prefix so a future canonicalisation change (unlikely but
 # conceivable — e.g. Unicode normalisation form) can be rolled without
 # a silent collision. Consumers that store the hash SHOULD store the
@@ -210,7 +209,7 @@ def get_effective_policy(db, tenant_id: str | None) -> dict[str, dict[str, int]]
     weakening the comparison. See docs/WHAT_GOVERNS_THE_GOVERNOR.md
     §4 acceptance criteria.
     """
-    from .tenant_weights import known_scopes, get_effective_weights
+    from .tenant_weights import get_effective_weights, known_scopes
 
     scopes = known_scopes()
     if not scopes:

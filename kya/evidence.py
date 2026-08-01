@@ -292,17 +292,36 @@ def _get_signing_key() -> tuple[bytes, str]:
         except Exception as exc:
             logger.warning("[KYA-EVIDENCE] invalid signing key in env: %s", exc)
 
-    # Path 3 — dev fallback (process-local random key)
+    # Path 3 — dev fallback (process-local random key).
+    #
+    # #245 fix — key_id is derived from a fingerprint of the key bytes
+    # (``dev-local-<sha256-prefix>``) so DIFFERENT worker processes get
+    # DIFFERENT key_ids even though both fall through to this path.
+    # The handoff-VC (and any other) verify path's key-rotation guard
+    # then correctly detects the mismatch and returns UNVERIFIABLE with
+    # a clear "signed under key_id=X but current is Y" reason —
+    # replacing the misleading TAMPERED signal that dogfood-2 observed
+    # when verify requests round-robined across uvicorn workers that
+    # each held a distinct per-process ``_dev_key``.
+    #
+    # The value STAYS stable within a single process (fingerprint of
+    # the cached key bytes), so single-worker dev / test flows verify
+    # exactly as before. Downstream callers that used to compare
+    # ``key_id == "dev-local"`` now use ``key_id.startswith("dev-local")``
+    # (see kya_pro.policy.replay._replay_signing_key et al).
     if not hasattr(_get_signing_key, "_dev_key"):
         _get_signing_key._dev_key = secrets.token_bytes(32)
     if not _DEV_KEY_WARNING_LOGGED:
         logger.warning(
             "[KYA-EVIDENCE] no KYA_EVIDENCE_KEY_PROVIDER or KYA_EVIDENCE_SIGNING_KEY "
-            "set — using process-local dev key. Chain will NOT survive restart. "
-            "Mount a real key (KMS provider or env secret) in prod."
+            "set — using process-local dev key. Chain will NOT survive restart "
+            "AND cross-worker verifies WILL flip to UNVERIFIABLE (different "
+            "workers = different fingerprints). Mount a real key (KMS provider "
+            "or env secret) in prod."
         )
         _DEV_KEY_WARNING_LOGGED = True
-    return _get_signing_key._dev_key, "dev-local"
+    _fp = hashlib.sha256(_get_signing_key._dev_key).hexdigest()[:8]
+    return _get_signing_key._dev_key, f"dev-local-{_fp}"
 
 
 # ── Canonicalization + hashing ──────────────────────────────────────
