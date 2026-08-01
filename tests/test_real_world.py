@@ -1224,9 +1224,13 @@ def test_evidence_kms_provider_resolves():
         fake_mod.bad_provider = bad_provider
         os.environ["KYA_EVIDENCE_KEY_PROVIDER"] = "fake_kms_provider:bad_provider"
 
-        # Should NOT raise, but should log a warning and use the dev key
+        # Should NOT raise, but should log a warning and use the dev key.
+        # #245 fix — dev-fallback key_id now has a per-process fingerprint
+        # suffix ("dev-local-<sha256-prefix>") so cross-worker verifies
+        # report UNVERIFIABLE instead of TAMPERED. Accept the prefixed
+        # form OR the env-fallback form.
         key, key_id = _ev_mod._get_signing_key()
-        assert key_id in ("dev-local", "env-v1")  # fell back
+        assert key_id.startswith("dev-local") or key_id == "env-v1"  # fell back
 
     finally:
         if old is None:

@@ -125,7 +125,9 @@ TASK_*_HANDOFF.md
 /private/
 /internal/
 /_private/
-# Alice demo already covered above; scoping to root as safety belt.
-/alice_*.py
-/kya-demo/
+# Alice demo — founder's private live-presentation demo. Lives at
+# D:/scratch/kya-demo/ (outside this repo). If ever copied in, do
+# not commit — see companion rule in veldt-kya-pro/.gitignore.
+alice_*.py
+kya-demo/
 
