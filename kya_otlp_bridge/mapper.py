@@ -470,6 +470,229 @@ class SpanMapper:
 
         return evidence
 
+    # ── GenAI cost extraction (task #263 Part B) ─────────────────────
+    #
+    # LangChain / CrewAI / AutoGen customers use OTel spans emitted by
+    # OpenInference or OpenLLMetry auto-instrumentation. Those spans
+    # carry usage attributes (input_tokens, output_tokens, model) but
+    # KYA's OTLP bridge previously extracted only prompt/completion/
+    # tool_call evidence — never cost. That left every OTel-instrumented
+    # customer with an empty "$ spend" tile even though LangChain has
+    # all the data needed.
+    #
+    # This method reads the standardized attribute names and returns a
+    # dict compatible with kya.tenant_budget.record_cost_event(). The
+    # writer layer (bridge or Pro-side ingest) is responsible for
+    # persistence — this method is pure extraction.
+
+    def extract_gen_ai_cost(self, span: dict) -> dict | None:
+        """Extract cost + usage from a GenAI span.
+
+        Returns None when the span has no usage/model attributes (i.e.
+        this is not an LLM span). Returns a dict shaped for
+        record_cost_event(...) otherwise:
+
+            {
+              "provider": "openai" | "anthropic" | ...,
+              "model_used": "gpt-4o-mini",
+              "input_tokens": int | None,
+              "output_tokens": int | None,
+              "usd_amount": float,      # 0.0 when unresolvable
+              "latency_ms": int | None,
+            }
+
+        Recognized attribute families:
+          * OTel GenAI semconv (spec): gen_ai.request.model,
+            gen_ai.usage.input_tokens, gen_ai.usage.output_tokens,
+            gen_ai.system, gen_ai.usage.cost (some emitters)
+          * OpenLLMetry / Traceloop: llm.request.model,
+            llm.usage.prompt_tokens, llm.usage.completion_tokens,
+            gen_ai.response.total_cost
+          * OpenInference: llm.token_count.prompt,
+            llm.token_count.completion, llm.model_name
+
+        Cost source hierarchy (authoritative first):
+          1) gen_ai.usage.cost   — provider-returned billed cost
+          2) gen_ai.response.total_cost / llm.usage.total_cost
+          3) litellm.cost_per_token() on (model, tokens)  — fallback
+          4) 0.0 — signals "we don't know", record_cost_event drops it
+        """
+        attrs = span.get("attributes") or {}
+        if not isinstance(attrs, dict):
+            return None
+
+        # Model — try every convention. Prefer request.model over
+        # response.model since request is what the customer paid for.
+        model_used = (
+            attrs.get("gen_ai.request.model")
+            or attrs.get("gen_ai.response.model")
+            or attrs.get("llm.request.model")
+            or attrs.get("llm.model_name")
+        )
+
+        # Provider — OTel GenAI semconv puts this in gen_ai.system.
+        # OpenLLMetry sometimes uses llm.vendor.
+        provider = (
+            attrs.get("gen_ai.system")
+            or attrs.get("llm.vendor")
+            or attrs.get("llm.provider")
+        )
+
+        # Usage tokens — three overlapping conventions
+        def _int(*keys):
+            for k in keys:
+                v = attrs.get(k)
+                if v is not None:
+                    try:
+                        return int(v)
+                    except (TypeError, ValueError):
+                        continue
+            return None
+
+        input_tokens = _int(
+            "gen_ai.usage.input_tokens",
+            "gen_ai.usage.prompt_tokens",
+            "llm.usage.prompt_tokens",
+            "llm.token_count.prompt",
+        )
+        output_tokens = _int(
+            "gen_ai.usage.output_tokens",
+            "gen_ai.usage.completion_tokens",
+            "llm.usage.completion_tokens",
+            "llm.token_count.completion",
+        )
+
+        # LlamaIndex + some AutoGen emit only total_tokens (no prompt/
+        # completion split). Surface it as a fallback so the display
+        # tile has SOMETHING to show — cost will still be zero without
+        # the split, but at least "known usage, unknown cost breakdown"
+        # is honest.
+        total_tokens = _int(
+            "gen_ai.usage.total_tokens",
+            "llm.usage.total_tokens",
+            "llm.token_count.total",
+        )
+        if total_tokens is not None and input_tokens is None and output_tokens is None:
+            # Store the total in input_tokens with output=0 so downstream
+            # analytics see the correct total. Not a lie: prompt+completion
+            # ~= total for chat completions.
+            input_tokens = total_tokens
+
+        # If nothing usage-related was present, this is not an LLM span.
+        # Return None so the caller can skip it entirely.
+        if not (model_used or input_tokens or output_tokens):
+            return None
+
+        # Cost — prefer provider-returned then LiteLLM's pricing table
+        usd = 0.0
+        for k in (
+            "gen_ai.usage.cost",
+            "gen_ai.response.total_cost",
+            "llm.usage.total_cost",
+        ):
+            v = attrs.get(k)
+            if v is not None:
+                try:
+                    usd = float(v)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        if not usd and model_used and (input_tokens or output_tokens):
+            try:
+                import litellm
+                # cost_per_token returns (prompt_cost_usd, completion_cost_usd)
+                pc, cc = litellm.cost_per_token(
+                    model=str(model_used),
+                    prompt_tokens=input_tokens or 0,
+                    completion_tokens=output_tokens or 0,
+                )
+                usd = float((pc or 0.0) + (cc or 0.0))
+            except Exception as _cost_exc:
+                # DEBUG log so SREs can distinguish two failure modes:
+                #   1) model not in LiteLLM's pricing map (silent-drift
+                #      when LiteLLM releases upstream but our pin is
+                #      stale — expected, not an error)
+                #   2) LiteLLM API surface changed (cost_per_token
+                #      signature drift) — that IS a bug we need to
+                #      catch fast. The exception message tells them
+                #      apart.
+                _log = logging.getLogger(__name__)
+                _log.debug(
+                    "[KYA-OTLP-BRIDGE] litellm.cost_per_token failed for model=%s: %s",
+                    model_used, _cost_exc,
+                )
+                usd = 0.0
+
+        # Latency — span end - start. OTLP-native spans emit nanoseconds
+        # (the spec), but some collector pipelines (Jaeger-derived,
+        # jsontrace exporter) emit microseconds as ints. Detect the
+        # anomaly: if the raw delta is small enough that ns interpretation
+        # yields sub-millisecond latency for a REAL LLM call (which is
+        # never <10ms in practice), treat the delta as microseconds.
+        latency_ms = None
+        start_ts = span.get("startTimeUnixNano") or span.get("start_time_unix_nano")
+        end_ts = span.get("endTimeUnixNano") or span.get("end_time_unix_nano")
+        try:
+            if start_ts is not None and end_ts is not None:
+                delta = int(end_ts) - int(start_ts)
+                if delta <= 0:
+                    latency_ms = 0
+                else:
+                    # ns interpretation
+                    lat_ms_ns = delta // 1_000_000
+                    # µs interpretation
+                    lat_ms_us = delta // 1_000
+                    # If ns interpretation yields <1ms but µs yields a
+                    # sensible LLM latency (10ms..10min), the source is
+                    # microseconds. LLM calls under 1ms are impossible
+                    # in the real world; this heuristic only kicks in
+                    # for pathological pipelines.
+                    if lat_ms_ns < 1 and 10 <= lat_ms_us <= 600_000:
+                        latency_ms = lat_ms_us
+                    else:
+                        latency_ms = max(0, lat_ms_ns)
+        except (TypeError, ValueError):
+            latency_ms = None
+
+        return {
+            "provider": str(provider) if provider else None,
+            "model_used": str(model_used) if model_used else None,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "usd_amount": usd,
+            "latency_ms": latency_ms,
+        }
+
+    def _attach_cost_to_body(self, inv_body: dict, span: dict) -> None:
+        """Merge extracted GenAI cost into an invocation POST body.
+
+        Called at every invocation-body construction site. Guards against
+        non-LLM spans (returns None from extract) and zero-cost extractions
+        (no usable data — avoid emitting cost=0.0 which would double as
+        signal on the dashboard).
+
+        Only populates the 5 fields the Pro-side InvocationEventBody
+        Pydantic model accepts (task #263 Part B-2).
+        """
+        try:
+            cost = self.extract_gen_ai_cost(span)
+        except Exception:
+            return
+        if not cost:
+            return
+        usd = cost.get("usd_amount") or 0.0
+        if usd <= 0:
+            return
+        inv_body["cost_usd_amount"] = float(usd)
+        if cost.get("provider"):
+            inv_body["cost_provider"] = str(cost["provider"])[:64]
+        if cost.get("model_used"):
+            inv_body["cost_model_used"] = str(cost["model_used"])[:256]
+        if cost.get("input_tokens") is not None:
+            inv_body["cost_input_tokens"] = int(cost["input_tokens"])
+        if cost.get("output_tokens") is not None:
+            inv_body["cost_output_tokens"] = int(cost["output_tokens"])
+
     # ── built-in matchers ─────────────────────────────────────────────
 
     def _explicit_rogue_attr(self, span: dict) -> list[MapResult]:
@@ -570,6 +793,7 @@ class SpanMapper:
         dur = self.get_duration_ms(span)
         if dur is not None:
             inv_body["duration_ms"] = dur
+        self._attach_cost_to_body(inv_body, span)
         results.append(MapResult(event_type="invocation", body=inv_body))
 
         allowlist_raw = os.environ.get("KYA_OPENCLAW_TOOL_ALLOWLIST", "").strip()
@@ -663,6 +887,7 @@ class SpanMapper:
                 inv_body["duration_ms"] = dur
             if attrs.get("session.id"):
                 inv_body["correlation_id"] = attrs["session.id"]
+            self._attach_cost_to_body(inv_body, span)
             return [
                 MapResult(
                     event_type="invocation",
@@ -718,6 +943,7 @@ class SpanMapper:
             inv_body["duration_ms"] = dur
         if attrs.get("session.id"):
             inv_body["correlation_id"] = attrs["session.id"]
+        self._attach_cost_to_body(inv_body, span)
 
         # Extract content evidence so the bridge can chain it to this
         # invocation post (the bridge fills invocation_id once the
@@ -822,6 +1048,7 @@ class SpanMapper:
             inv_body["duration_ms"] = dur
         if attrs.get("gen_ai.conversation.id") or attrs.get("session.id"):
             inv_body["correlation_id"] = attrs.get("gen_ai.conversation.id") or attrs["session.id"]
+        self._attach_cost_to_body(inv_body, span)
 
         # Same evidence chain pattern as the OpenInference matcher — extract
         # prompts/responses/tool args from gen_ai.* semconv attributes.
@@ -909,4 +1136,8 @@ class SpanMapper:
             body["duration_ms"] = dur
         if attrs.get("correlation_id"):
             body["correlation_id"] = attrs["correlation_id"]
+        # Failed LLM calls still cost money (rate-limit 429, timeout after
+        # provider consumed input tokens, etc.) — attach cost so error-heavy
+        # tenants get accurate spend attribution.
+        self._attach_cost_to_body(body, span)
         return [MapResult(event_type="invocation", body=body)]
