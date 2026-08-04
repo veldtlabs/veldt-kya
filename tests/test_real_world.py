@@ -9,6 +9,16 @@ import sys
 
 import pytest
 
+# Warm litellm at collection time so later tests can stub `openai` in
+# sys.modules without wedging litellm's own import chain (litellm
+# eagerly re-imports openai during its module init, and if it finds
+# our synthetic stub first it hits `openai._models` missing and enters
+# a circular-import state). Fixed once here for the whole test file.
+try:
+    import litellm  # noqa: F401
+except ImportError:
+    pass
+
 
 def test_pure_scoring_no_storage():
     """Pure functions need zero infra."""
@@ -1351,6 +1361,703 @@ def test_autoinstrument_captures_openai_call():
             "openai.resources.chat.completions",
         ]:
             sys.modules.pop(k, None)
+
+
+# ── autoinstrument cost tracking (task #263, Part A) ────────────────
+
+
+# Cross-backend fixture — cost tracking has to work on the real prod
+# dialects, not just sqlite. Sqlite silently accepts things Postgres/
+# MySQL reject (schema mismatches, JSONB, TIMESTAMPTZ, VARCHAR width),
+# so an sqlite-only pass would let a prod-dialect bug ship. Mirrors
+# the fixture in test_tenant_budget_cross_backend.py. Set the env vars
+# to opt each backend in; missing envs → clean skip.
+import pytest  # noqa: E402 — local re-import for the fixture below
+
+
+def _duckdb_available() -> bool:
+    try:
+        import duckdb_engine  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.fixture(
+    params=[
+        "sqlite",
+        pytest.param(
+            "duckdb",
+            marks=pytest.mark.skipif(
+                not _duckdb_available(),
+                reason="duckdb_engine not installed",
+            ),
+        ),
+        pytest.param(
+            "pg",
+            marks=pytest.mark.skipif(
+                "KYA_TEST_PG_URL" not in os.environ,
+                reason="Postgres integration — set KYA_TEST_PG_URL",
+            ),
+        ),
+        pytest.param(
+            "mysql",
+            marks=pytest.mark.skipif(
+                "KYA_TEST_MYSQL_URL" not in os.environ,
+                reason="MySQL integration — set KYA_TEST_MYSQL_URL",
+            ),
+        ),
+    ],
+    ids=["sqlite", "duckdb", "pg", "mysql"],
+)
+def cost_backend(request):
+    """Yield (engine, Session) bound to a fresh schema on the requested
+    backend. Ensures kya_invocations + kya_evidence + kya_cost_events
+    exist. Per-test isolation: drops+recreates the tables we touch so
+    leftover rows from a previous run don't leak into row counts."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
+    from kya import ensure_invocations_table, init_evidence_table
+    from kya.tenant_budget import ensure_tables as ensure_cost_tables
+
+    if request.param == "sqlite":
+        engine = create_engine("sqlite:///:memory:")
+    elif request.param == "duckdb":
+        engine = create_engine("duckdb:///:memory:")
+    elif request.param == "pg":
+        engine = create_engine(os.environ["KYA_TEST_PG_URL"])
+        with engine.begin() as conn:
+            for tbl in (
+                "kya_cost_events",
+                "kya_budget_changes",
+                "kya_tenant_cost_budgets",
+                "kya_evidence",
+                "kya_invocations",
+            ):
+                try:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
+                except Exception:
+                    pass
+    else:  # mysql
+        engine = create_engine(os.environ["KYA_TEST_MYSQL_URL"])
+        with engine.begin() as conn:
+            for tbl in (
+                "kya_cost_events",
+                "kya_budget_changes",
+                "kya_tenant_cost_budgets",
+                "kya_evidence",
+                "kya_invocations",
+            ):
+                try:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
+                except Exception:
+                    pass
+
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        ensure_invocations_table(db)
+        init_evidence_table(db)
+        ensure_cost_tables(db)
+    try:
+        yield engine, Session
+    finally:
+        engine.dispose()
+
+
+def _mount_fake_openai_with_usage(sys_modules, usd_from_completion_cost: float):
+    """Install a synthetic openai module whose responses carry usage
+    fields, and stub litellm.completion_cost to return a known USD so
+    the test is deterministic (independent of the live pricing table).
+
+    Returns the Completions class so the caller can instantiate it as a
+    customer would. The caller is responsible for cleanup (pop the
+    module keys after deinstrument()).
+    """
+    import types
+
+    # IMPORTANT: import litellm BEFORE stubbing openai in sys.modules.
+    # litellm eagerly imports openai during its own module init (for
+    # response-shape compat). If we stub openai first, litellm's import
+    # chain finds our synthetic module (which lacks openai._models) and
+    # fails at import time. Loading litellm first pins the real openai
+    # references it needs, then the sys.modules swap below only affects
+    # what autoinstrument's `from openai...` sees.
+    import litellm  # noqa: F401 — must load before the stub
+
+    fake_openai = types.ModuleType("openai")
+    fake_resources = types.ModuleType("openai.resources")
+    fake_chat = types.ModuleType("openai.resources.chat")
+    fake_completions_mod = types.ModuleType("openai.resources.chat.completions")
+
+    class FakeUsage:
+        def __init__(self, prompt_tokens, completion_tokens):
+            self.prompt_tokens = prompt_tokens
+            self.completion_tokens = completion_tokens
+
+    class FakeChoice:
+        def __init__(self, content):
+            self.message = types.SimpleNamespace(content=content, tool_calls=None)
+
+    class FakeCompletion:
+        def __init__(self, model, content, prompt_tokens, completion_tokens):
+            self.model = model
+            self.choices = [FakeChoice(content)]
+            self.usage = FakeUsage(prompt_tokens, completion_tokens)
+
+    class Completions:
+        def create(self, *, model, messages, **kw):
+            return FakeCompletion(
+                model=model,
+                content="ok",
+                prompt_tokens=17,
+                completion_tokens=42,
+            )
+
+    fake_completions_mod.Completions = Completions
+    fake_chat.completions = fake_completions_mod
+    fake_resources.chat = fake_chat
+    fake_openai.resources = fake_resources
+
+    sys_modules["openai"] = fake_openai
+    sys_modules["openai.resources"] = fake_resources
+    sys_modules["openai.resources.chat"] = fake_chat
+    sys_modules["openai.resources.chat.completions"] = fake_completions_mod
+
+    # Stub litellm.completion_cost so the test doesn't need the real
+    # pricing table (which changes over time) and doesn't require
+    # network. The autoinstrument hook only depends on this one call.
+    import litellm
+
+    def _fake_cost(*, completion_response=None):
+        return usd_from_completion_cost
+
+    orig_cost = litellm.completion_cost
+    litellm.completion_cost = _fake_cost
+    return Completions, orig_cost
+
+
+def _load_cost_rows(engine, tenant_id: str) -> list[dict]:
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT usd_amount, model_used, provider, input_tokens, "
+                "output_tokens, latency_ms, invocation_id, outcome "
+                "FROM kya_cost_events WHERE tenant_id = :t"
+            ),
+            {"t": tenant_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def test_autoinstrument_writes_cost_event_from_openai_response(cost_backend):
+    """A patched openai call with usage populated must write a row to
+    kya_cost_events. Model + provider + tokens + latency all come from
+    the response object; USD comes from litellm.completion_cost().
+
+    This is the anchor test. If it goes green while the hook is broken,
+    the test is worthless — hence the sabotage script alongside.
+    Parameterized across sqlite + postgres so a pg-only bug can't ship."""
+    import sys
+
+    from kya import autoinstrument, deinstrument
+
+    engine, Session = cost_backend
+    Completions, orig_litellm_cost = _mount_fake_openai_with_usage(
+        sys.modules, usd_from_completion_cost=0.00042
+    )
+    # Postgres tenant_id column is UUID-typed; a plain string like
+    # "t_cost" would raise. Use a valid UUID string for both backends.
+    tenant = "aaaaaaaa-0000-0000-0000-000000000001"
+    try:
+        autoinstrument(
+            db_factory=Session,
+            tenant_id=tenant,
+            agent_key="cost_test_agent",
+        )
+        Completions().create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        rows = _load_cost_rows(engine, tenant)
+        assert len(rows) == 1, f"expected 1 cost row, got {len(rows)}"
+        r = rows[0]
+        # Cast to float — DuckDB/Postgres return Decimal; sqlite float.
+        assert abs(float(r["usd_amount"]) - 0.00042) < 1e-9
+        assert r["model_used"] == "gpt-4o-mini"
+        assert r["provider"] == "openai"
+        assert int(r["input_tokens"]) == 17
+        assert int(r["output_tokens"]) == 42
+        # latency is measured with perf_counter — non-negative int
+        assert r["latency_ms"] is not None and int(r["latency_ms"]) >= 0
+        # cost row is linked to the KYA invocation
+        assert r["invocation_id"] is not None and int(r["invocation_id"]) > 0
+
+    finally:
+        import litellm
+
+        litellm.completion_cost = orig_litellm_cost
+        deinstrument()
+        for k in [
+            "openai",
+            "openai.resources",
+            "openai.resources.chat",
+            "openai.resources.chat.completions",
+        ]:
+            sys.modules.pop(k, None)
+
+
+def test_autoinstrument_skips_cost_when_usd_zero(cost_backend):
+    """record_cost_event() drops usd_amount <= 0 rows. Verify the hook
+    respects that — no phantom rows written when the pricing table
+    doesn't know the model (returns 0.0). Cross-backend."""
+    import sys
+
+    from kya import autoinstrument, deinstrument
+
+    engine, Session = cost_backend
+    Completions, orig_litellm_cost = _mount_fake_openai_with_usage(
+        sys.modules, usd_from_completion_cost=0.0
+    )
+    tenant = "aaaaaaaa-0000-0000-0000-000000000002"
+    try:
+        autoinstrument(
+            db_factory=Session,
+            tenant_id=tenant,
+            agent_key="zero_cost_agent",
+        )
+        Completions().create(
+            model="unknown-model",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        rows = _load_cost_rows(engine, tenant)
+        assert rows == [], f"expected 0 cost rows for usd=0, got {rows}"
+
+    finally:
+        import litellm
+
+        litellm.completion_cost = orig_litellm_cost
+        deinstrument()
+        for k in [
+            "openai",
+            "openai.resources",
+            "openai.resources.chat",
+            "openai.resources.chat.completions",
+        ]:
+            sys.modules.pop(k, None)
+
+
+@pytest.mark.skipif(
+    "OPENROUTER_API_KEY" not in os.environ,
+    reason="Real LLM integration — set OPENROUTER_API_KEY",
+)
+def test_autoinstrument_real_openrouter_gpt4o_mini_writes_cost():
+    """End-to-end proof: patch litellm, make a REAL call to gpt-4o-mini
+    via OpenRouter, verify a kya_cost_events row lands with:
+      - non-zero usd_amount (from LiteLLM's real pricing table)
+      - model_used containing "gpt-4o-mini"
+      - provider = "openrouter" (LiteLLM detects it from the model prefix)
+      - non-zero latency_ms
+      - linked invocation_id
+
+    Costs a fraction of a cent per run. Skips cleanly when
+    OPENROUTER_API_KEY isn't set. Kept sqlite-only so we don't need
+    a running Postgres for this leg — the cross-backend fixture above
+    already proves dialect portability with mocked responses."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
+    import litellm
+
+    from kya import (
+        autoinstrument,
+        deinstrument,
+        ensure_invocations_table,
+        init_evidence_table,
+    )
+    from kya.tenant_budget import ensure_tables as ensure_cost_tables
+
+    engine = create_engine("sqlite:///:memory:")
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        ensure_invocations_table(db)
+        init_evidence_table(db)
+        ensure_cost_tables(db)
+
+    tenant = "aaaaaaaa-0000-0000-0000-00000000ffff"
+    try:
+        autoinstrument(
+            db_factory=Session,
+            tenant_id=tenant,
+            agent_key="real_openrouter_agent",
+            sdks=["litellm"],  # scope: only patch litellm — avoids side effects
+        )
+        # Deliberately tiny prompt (~1 completion token) to keep cost minimal.
+        # LiteLLM route: openrouter/openai/gpt-4o-mini reads OPENROUTER_API_KEY
+        # from env automatically.
+        resp = litellm.completion(
+            model="openrouter/openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "Reply with the single word ok."}],
+            max_tokens=5,
+        )
+        # sanity: the response actually came back
+        assert resp is not None
+        assert getattr(resp, "usage", None) is not None
+
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT usd_amount, model_used, provider, "
+                    "input_tokens, output_tokens, latency_ms, "
+                    "invocation_id, outcome "
+                    "FROM kya_cost_events WHERE tenant_id = :t"
+                ),
+                {"t": tenant},
+            ).mappings().all()
+            rows = [dict(r) for r in rows]
+
+        assert len(rows) == 1, f"expected 1 cost row, got {len(rows)}"
+        r = rows[0]
+        assert float(r["usd_amount"]) > 0, (
+            f"real LLM call must yield non-zero cost, got {r['usd_amount']!r}"
+        )
+        assert r["model_used"] and "gpt-4o-mini" in r["model_used"], (
+            f"model_used should contain 'gpt-4o-mini', got {r['model_used']!r}"
+        )
+        # LiteLLM's provider detection labels this "openrouter" (the route),
+        # not the underlying "openai" — that's the honest attribution since
+        # OpenRouter is what the customer paid.
+        assert r["provider"] and "openrouter" in r["provider"].lower(), (
+            f"provider should include 'openrouter', got {r['provider']!r}"
+        )
+        assert int(r["input_tokens"]) > 0
+        assert int(r["output_tokens"]) > 0
+        assert int(r["latency_ms"]) > 0
+        assert int(r["invocation_id"]) > 0
+
+    finally:
+        deinstrument()
+        engine.dispose()
+
+
+@pytest.mark.skipif(
+    "OPENROUTER_API_KEY" not in os.environ,
+    reason="Real LLM integration — set OPENROUTER_API_KEY",
+)
+def test_264_two_concurrent_agents_dont_leak_context_via_openrouter():
+    """PROOF #264 fix works. Before ContextVar swap:
+    two asyncio tasks calling autoinstrument() concurrently would clobber
+    each other's _CONTEXT — the second call would overwrite the first's
+    agent_key + invocation_id, so cost rows from Agent A could end up
+    attributed to Agent B's tenant.
+
+    After ContextVar swap: each asyncio task carries its own _CONTEXT
+    copy, so isolation holds even under concurrent real LLM traffic.
+
+    We run two REAL OpenRouter calls in parallel via asyncio.gather,
+    each in its own autoinstrument() context with distinct tenant_ids
+    and agent_keys. Then we inspect kya_cost_events and assert:
+    - Exactly 2 cost rows landed (one per agent)
+    - Tenant A's row belongs to Tenant A (no leak to Tenant B)
+    - Same for Tenant B → A"""
+    import asyncio
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
+    import litellm
+
+    from kya import (
+        autoinstrument,
+        deinstrument,
+        ensure_invocations_table,
+        init_evidence_table,
+    )
+    from kya.tenant_budget import ensure_tables as ensure_cost_tables
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        ensure_invocations_table(db)
+        init_evidence_table(db)
+        ensure_cost_tables(db)
+
+    tenant_a = "aaaaaaaa-0000-0000-0000-00000000aaaa"
+    tenant_b = "bbbbbbbb-0000-0000-0000-00000000bbbb"
+
+    async def _agent_task(tenant_id: str, agent_key: str, prompt: str):
+        # Each task runs autoinstrument() in its OWN context; the
+        # ContextVar isolation means each task sees only its own
+        # _CONTEXT, not the sibling's.
+        autoinstrument(
+            db_factory=Session,
+            tenant_id=tenant_id,
+            agent_key=agent_key,
+            sdks=["litellm"],
+        )
+        # asyncio-compatible LiteLLM call
+        return await litellm.acompletion(
+            model="openrouter/openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+        )
+
+    async def _run_both_concurrent():
+        return await asyncio.gather(
+            _agent_task(tenant_a, "agent_alpha", "Reply with the word alpha."),
+            _agent_task(tenant_b, "agent_beta", "Reply with the word beta."),
+        )
+
+    try:
+        results = asyncio.run(_run_both_concurrent())
+        assert len(results) == 2
+        # Both real LLM calls succeeded
+        for r in results:
+            assert r is not None
+            assert getattr(r, "usage", None) is not None
+
+        with engine.begin() as conn:
+            # (1) Each tenant's OWN cost rows
+            rows_a = conn.execute(
+                text(
+                    "SELECT usd_amount, agent_key, invocation_id FROM kya_cost_events "
+                    "WHERE tenant_id = :t"
+                ),
+                {"t": tenant_a},
+            ).mappings().all()
+            rows_b = conn.execute(
+                text(
+                    "SELECT usd_amount, agent_key, invocation_id FROM kya_cost_events "
+                    "WHERE tenant_id = :t"
+                ),
+                {"t": tenant_b},
+            ).mappings().all()
+
+            # (2) Cross-tenant leak probes: assert NO row belonging to
+            # agent_alpha ever landed under tenant_b, and vice versa.
+            leak_alpha_into_b = conn.execute(
+                text(
+                    "SELECT COUNT(*) AS n FROM kya_cost_events "
+                    "WHERE tenant_id = :t AND agent_key = :a"
+                ),
+                {"t": tenant_b, "a": "agent_alpha"},
+            ).scalar_one()
+            leak_beta_into_a = conn.execute(
+                text(
+                    "SELECT COUNT(*) AS n FROM kya_cost_events "
+                    "WHERE tenant_id = :t AND agent_key = :a"
+                ),
+                {"t": tenant_a, "a": "agent_beta"},
+            ).scalar_one()
+
+            # (3) Invocation table isolation — same probe on kya_invocations
+            inv_a = conn.execute(
+                text("SELECT agent_key FROM kya_invocations WHERE tenant_id = :t"),
+                {"t": tenant_a},
+            ).mappings().all()
+            inv_b = conn.execute(
+                text("SELECT agent_key FROM kya_invocations WHERE tenant_id = :t"),
+                {"t": tenant_b},
+            ).mappings().all()
+
+            # (4) Evidence table isolation — prompt evidence rows too
+            ev_a = conn.execute(
+                text(
+                    "SELECT invocation_id FROM kya_evidence "
+                    "WHERE tenant_id = :t AND evidence_kind = 'prompt'"
+                ),
+                {"t": tenant_a},
+            ).mappings().all()
+            ev_b = conn.execute(
+                text(
+                    "SELECT invocation_id FROM kya_evidence "
+                    "WHERE tenant_id = :t AND evidence_kind = 'prompt'"
+                ),
+                {"t": tenant_b},
+            ).mappings().all()
+
+        # ── ISOLATION ASSERTIONS ────────────────────────────────────
+
+        # Positive: each tenant has its own row(s)
+        assert len(rows_a) >= 1, f"tenant_a should have >=1 cost row, got {rows_a}"
+        assert len(rows_b) >= 1, f"tenant_b should have >=1 cost row, got {rows_b}"
+
+        # Positive: agent_key matches within tenant
+        for r in rows_a:
+            assert r["agent_key"] == "agent_alpha", (
+                f"tenant_a cost row wrong agent_key: {dict(r)}"
+            )
+        for r in rows_b:
+            assert r["agent_key"] == "agent_beta", (
+                f"tenant_b cost row wrong agent_key: {dict(r)}"
+            )
+
+        # NEGATIVE (cross-tenant leak probes) — the load-bearing bit
+        assert leak_alpha_into_b == 0, (
+            f"LEAK: {leak_alpha_into_b} agent_alpha cost row(s) written under tenant_b"
+        )
+        assert leak_beta_into_a == 0, (
+            f"LEAK: {leak_beta_into_a} agent_beta cost row(s) written under tenant_a"
+        )
+
+        # Invocation-table isolation (should also hold since ContextVar
+        # is the identity source for record_invocation too)
+        for r in inv_a:
+            assert r["agent_key"] == "agent_alpha", (
+                f"tenant_a invocation wrong agent_key: {dict(r)}"
+            )
+        for r in inv_b:
+            assert r["agent_key"] == "agent_beta", (
+                f"tenant_b invocation wrong agent_key: {dict(r)}"
+            )
+
+        # Evidence-table isolation — prompts must land under the tenant
+        # whose autoinstrument() saw them. If ContextVar was leaking,
+        # both prompts could pile up under one tenant.
+        assert len(ev_a) >= 1, f"tenant_a should have >=1 prompt evidence, got {ev_a}"
+        assert len(ev_b) >= 1, f"tenant_b should have >=1 prompt evidence, got {ev_b}"
+
+        # Referential-integrity: cost row's invocation_id must point at
+        # an invocation belonging to the SAME tenant. If tenant_a's
+        # cost row had a tenant_b invocation_id, that's an isolation
+        # break even if agent_key looks right.
+        with engine.begin() as conn:
+            for r in rows_a:
+                own_inv = conn.execute(
+                    text(
+                        "SELECT tenant_id FROM kya_invocations WHERE id = :i"
+                    ),
+                    {"i": r["invocation_id"]},
+                ).scalar_one_or_none()
+                assert own_inv == tenant_a, (
+                    f"tenant_a cost row invocation_id={r['invocation_id']} "
+                    f"actually belongs to tenant {own_inv!r}"
+                )
+            for r in rows_b:
+                own_inv = conn.execute(
+                    text(
+                        "SELECT tenant_id FROM kya_invocations WHERE id = :i"
+                    ),
+                    {"i": r["invocation_id"]},
+                ).scalar_one_or_none()
+                assert own_inv == tenant_b, (
+                    f"tenant_b cost row invocation_id={r['invocation_id']} "
+                    f"actually belongs to tenant {own_inv!r}"
+                )
+
+    finally:
+        deinstrument()
+        engine.dispose()
+
+
+@pytest.mark.skipif(
+    "OPENROUTER_API_KEY" not in os.environ,
+    reason="Real LLM integration — set OPENROUTER_API_KEY",
+)
+def test_265_llm_error_is_captured_as_evidence_and_reraises():
+    """PROOF #265 fix works. Before try/except wrap:
+    when the LLM call raised (bad API key, unknown model, rate limit),
+    the exception propagated but NO evidence was recorded. Silent tail —
+    ops teams saw failures in prod logs with no matching KYA row.
+
+    After the wrap: an 'error' evidence row lands linked to the
+    invocation, AND the exception still propagates to the caller
+    unchanged.
+
+    We force a real error via a non-existent OpenRouter model and
+    assert both the exception AND the evidence row."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+
+    import litellm
+
+    from kya import (
+        autoinstrument,
+        deinstrument,
+        ensure_invocations_table,
+        init_evidence_table,
+    )
+    from kya.tenant_budget import ensure_tables as ensure_cost_tables
+
+    engine = create_engine("sqlite:///:memory:")
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        ensure_invocations_table(db)
+        init_evidence_table(db)
+        ensure_cost_tables(db)
+
+    tenant = "cccccccc-0000-0000-0000-00000000cccc"
+    exc_type: type[BaseException] | None = None
+    try:
+        autoinstrument(
+            db_factory=Session,
+            tenant_id=tenant,
+            agent_key="failing_agent",
+            sdks=["litellm"],
+        )
+        try:
+            # A model name that OpenRouter will reject → real error path
+            litellm.completion(
+                model="openrouter/nonexistent-provider/no-such-model-xyz",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+            )
+            raise AssertionError("expected LLM call to raise, but it returned normally")
+        except AssertionError:
+            raise
+        except Exception as e:
+            exc_type = type(e)
+
+        # Assertion 1: the exception DID propagate (not swallowed)
+        assert exc_type is not None, "exception should have propagated, got None"
+
+        # Assertion 2: an error evidence row was written by _capture_error.
+        # Filter on payload marker (kya.evidence coerces unknown
+        # evidence_kind → "system_message", so we tag the error inside
+        # the payload as {"kind": "llm_error", ...}).
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT evidence_kind, payload FROM kya_evidence "
+                    "WHERE tenant_id = :t AND evidence_kind = 'system_message'"
+                ),
+                {"t": tenant},
+            ).mappings().all()
+        error_rows = [
+            r for r in rows
+            if isinstance(r.get("payload"), dict)
+            and r["payload"].get("kind") == "llm_error"
+        ]
+        # SQLite may return payload as a JSON string; handle both cases.
+        if not error_rows:
+            import json as _json
+            error_rows = [
+                r for r in rows
+                if isinstance(r.get("payload"), str)
+                and _json.loads(r["payload"]).get("kind") == "llm_error"
+            ]
+        assert len(error_rows) >= 1, (
+            f"expected >=1 llm_error evidence row for tenant {tenant}, got {list(rows)}"
+        )
+
+        # Assertion 3: no cost row written (usd=0 on error → dropped)
+        with engine.begin() as conn:
+            cost_rows = conn.execute(
+                text("SELECT * FROM kya_cost_events WHERE tenant_id = :t"),
+                {"t": tenant},
+            ).mappings().all()
+        assert cost_rows == [], (
+            f"error path should not write cost rows, got {cost_rows}"
+        )
+
+    finally:
+        deinstrument()
+        engine.dispose()
 
 
 def test_no_veldt_runtime_leak():
