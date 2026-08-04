@@ -24,12 +24,26 @@ from __future__ import annotations
 import pytest
 
 
+def _get_autoinstrument_module():
+    """kya/__init__.py imports `autoinstrument` FUNCTION from .autoinstrument
+    MODULE — so `kya.autoinstrument` is the function, shadowing the module.
+    Get the module explicitly via sys.modules (populated by the `from
+    .autoinstrument import ...` inside kya/__init__.py) or importlib."""
+    import importlib
+    import kya  # noqa: F401 — populates sys.modules['kya.autoinstrument']
+    import sys
+    mod = sys.modules.get("kya.autoinstrument")
+    if mod is None:
+        mod = importlib.import_module("kya.autoinstrument")
+    return mod
+
+
 def test_kya_autoinstrument_has_cost_recorder_wiring():
     """Cost + outcome capture landed in autoinstrument. Verify the
     module exposes the primitives the Pro side wires into."""
-    from kya import autoinstrument
+    autoinstrument = _get_autoinstrument_module()
 
-    # The context var + recorder factory landed in #263 Part A.
+    # The context var + recorder factory landed in #263 Part A / #264.
     assert hasattr(autoinstrument, "_CONTEXT"), (
         "expected _CONTEXT ContextVar on kya.autoinstrument (#264 fix)"
     )
@@ -45,13 +59,50 @@ def test_kya_autoinstrument_has_cost_recorder_wiring():
 
 
 def test_kya_autoinstrument_cost_helpers_exist():
-    """The cost capture helpers landed in #263 Part A."""
-    from kya import autoinstrument
+    """The cost capture closures land INSIDE _make_db_recorder. Verify
+    the fix shipped by reading source + asserting the load-bearing
+    markers are present: cost recording, contextvar identity read,
+    tenant_budget wiring."""
+    import inspect
+    autoinstrument = _get_autoinstrument_module()
 
-    for name in ("_capture_cost", "_usage_field", "_capture_error"):
-        assert hasattr(autoinstrument, name), (
-            f"expected {name} in kya.autoinstrument — #263/#265 fix"
+    src = inspect.getsource(autoinstrument._make_db_recorder)
+    # The three closures the recorder returns (#263 Part A).
+    for marker in ("_record_inv", "_record_ev", "_record_cost"):
+        assert marker in src, (
+            f"expected {marker!r} closure inside _make_db_recorder "
+            f"(#263/#265 fix). Source length {len(src)}."
         )
+    # ContextVar identity read (#264 async/thread safety fix).
+    assert "_CONTEXT.get()" in src, (
+        "expected _CONTEXT.get() in _make_db_recorder — the fix "
+        "reads tenant/agent from contextvar at CALL time"
+    )
+    # Cost recording (#263 Part A).
+    assert "record_cost_event" in src, (
+        "expected record_cost_event call inside _make_db_recorder — "
+        "this is the actual cost-write primitive"
+    )
+    # Cost payload fields.
+    for field in ("usd_amount", "model_used", "provider", "input_tokens"):
+        assert field in src, (
+            f"expected cost field {field!r} in _record_cost closure"
+        )
+
+
+def test_kya_autoinstrument_patches_include_async_litellm():
+    """#263 Part A shipped an async litellm.acompletion patch alongside
+    the existing sync patches. Verify by inspecting the module source
+    for the async marker."""
+    import inspect
+    autoinstrument = _get_autoinstrument_module()
+
+    # Verify at least one of the async patch markers is in module source
+    src = inspect.getsource(autoinstrument)
+    assert "acompletion" in src, (
+        "expected 'acompletion' marker in autoinstrument source "
+        "(#263 async litellm patch)"
+    )
 
 
 def test_mapper_extract_gen_ai_cost_openllmetry_span():
