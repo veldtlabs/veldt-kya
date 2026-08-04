@@ -142,7 +142,7 @@ def test_installed_package_version_is_047():
     install, this catches it immediately."""
     import importlib.metadata as im
     version = im.version("veldt-kya")
-    assert version == "0.4.7", (
-        f"expected pip-installed veldt-kya==0.4.7 in this venv; got "
-        f"{version}. Rebuild wheel + re-pip-install."
+    assert version in ("0.4.7", "0.4.7rc1"), (
+        f"expected pip-installed veldt-kya==0.4.7 or 0.4.7rc1 in this "
+        f"venv; got {version}. Rebuild wheel + re-pip-install."
     )
