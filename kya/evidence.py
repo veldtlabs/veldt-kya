@@ -429,6 +429,18 @@ if _HAS_SQLALCHEMY:
         evidence_kind: Mapped[str] = mapped_column(String(40), nullable=False)
         role: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+        # Phase 4 (#S4-1) — evaluator attribution for VERDICT-PRODUCING
+        # evidence rows. Populated from ``Verdict.rich["evaluator_name"]``
+        # by the gateway/ingest evidence writers so audit queries can
+        # answer "which evaluator produced this verdict" without walking
+        # back through the payload. Nullable — non-verdict evidence kinds
+        # (system_message, prompt/response, runtime_*, delegation) leave
+        # this ``None``. Column length matches the ``VerdictResult.
+        # evaluator_name`` bounded string (Phase 2).
+        evaluator_name: Mapped[str | None] = mapped_column(
+            String(64), nullable=True,
+        )
+
         # Payload + integrity
         payload: Mapped[dict] = mapped_column(_JsonType, nullable=False)
         payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -476,6 +488,10 @@ if _HAS_SQLALCHEMY:
             Index("idx_kya_evidence_correlation", "correlation_id"),
             Index("idx_kya_evidence_occurred", "occurred_at"),
             Index("idx_kya_evidence_retention", "retention_until"),
+            # Phase 4 (#S4-1) — audit queries filter by evaluator to
+            # answer "which evaluator produced this verdict slice".
+            # Sparse index — most rows leave evaluator_name NULL.
+            Index("idx_kya_evidence_evaluator", "evaluator_name"),
         )
 
 
@@ -487,11 +503,76 @@ def _bind_schema(bind) -> None:
 
 
 def init_evidence_table(db) -> None:
-    """Create kya_evidence + indexes if absent. Idempotent + dialect-aware."""
+    """Create kya_evidence + indexes if absent. Idempotent + dialect-aware.
+
+    Phase 4 (#S4-1) — additionally ensures the ``evaluator_name`` column
+    exists on pre-existing dev DBs whose original ``CREATE TABLE`` ran
+    before Phase 4. ``create_all`` is idempotent for TABLES but does NOT
+    add COLUMNS to existing tables. Rather than force a schema migration
+    (pre-customer stage — no live data to migrate), we probe the live
+    schema and issue a single additive ``ALTER TABLE`` when the column
+    is missing. Nullable + no default so the ALTER is safe on any dialect.
+    """
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[_EvidenceRow.__table__])
+    _ensure_evaluator_name_column(conn)
+
+
+# Phase 4 (#S4-1) — one-shot per-engine probe cache. init_evidence_table
+# is idempotent + hot; without caching we'd probe information_schema on
+# every write. Keyed by the SQLAlchemy engine URL (immutable within a
+# process) so the probe fires at most once per (URL, dialect) tuple.
+_EVALUATOR_COLUMN_PROBED: set[str] = set()
+
+
+def _ensure_evaluator_name_column(conn) -> None:
+    """Best-effort ``ALTER TABLE`` to add ``evaluator_name`` on pre-Phase-4
+    schemas. Silent no-op when the column is already present. Logs at
+    WARN (never silent) when the probe or ALTER raises so ops sees the
+    signal — Kola directive 2026-08-07 (no silent failures).
+    """
+    try:
+        url_key = str(conn.engine.url)
+    except Exception:
+        url_key = ""
+    if url_key and url_key in _EVALUATOR_COLUMN_PROBED:
+        return
+    try:
+        dialect = conn.dialect.name
+        table_name = _EvidenceRow.__tablename__
+        # SQLAlchemy inspect gives us a portable column list.
+        from sqlalchemy import inspect as _inspect
+        inspector = _inspect(conn)
+        existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+        if "evaluator_name" not in existing_cols:
+            # Additive + nullable — safe on every supported dialect.
+            # Bounded VARCHAR mirrors the ORM column definition; SQLite
+            # treats VARCHAR(n) as TEXT so the length is a no-op there.
+            conn.execute(text(
+                f"ALTER TABLE {table_name} "
+                "ADD COLUMN evaluator_name VARCHAR(64) NULL"
+            ))
+            logger.warning(
+                "[KYA-EVIDENCE] added evaluator_name column to %s on "
+                "dialect=%s (Phase 4 backfill). Pre-existing rows leave "
+                "the value NULL — expected during dev-DB upgrade.",
+                table_name, dialect,
+            )
+    except Exception as exc:
+        # Never fail a write path because a probe failed. Loud WARN so
+        # ops sees the gap; subsequent writes will attempt to insert
+        # None into a missing column and SQLAlchemy will raise there
+        # (surfacing the deployment misconfig at the right site).
+        logger.warning(
+            "[KYA-EVIDENCE] evaluator_name column probe failed: %s "
+            "— audit-slice queries filtering by evaluator_name may "
+            "return incomplete data until the schema is upgraded.", exc,
+        )
+    finally:
+        if url_key:
+            _EVALUATOR_COLUMN_PROBED.add(url_key)
 
 
 # ── Write ───────────────────────────────────────────────────────────
@@ -511,6 +592,7 @@ def record_evidence(
     parent_invocation_id: int | None = None,
     span_id: str | None = None,
     retention_days: int | None = None,
+    evaluator_name: str | None = None,
 ) -> int:
     """Record one evidence row. Returns the row's id.
 
@@ -527,6 +609,14 @@ def record_evidence(
         retention_days: Override the regime-derived default. If None and
             data_classes intersect with a regulated regime, the
             longest applicable retention window applies.
+        evaluator_name: Phase 4 (#S4-1) — the name of the
+            ``kya.PolicyEvaluator`` whose ``VerdictResult`` produced this
+            row. Verdict-producing callers pull this from
+            ``Verdict.rich["evaluator_name"]`` (populated by the Phase 3
+            attribution helpers in ``kya_gateway/policy_pipeline.py``).
+            Non-verdict evidence kinds (system_message, prompt/response,
+            runtime_*, delegation) leave this ``None`` — the row simply
+            won't participate in evaluator-slice audit queries.
     """
     if evidence_kind not in VALID_EVIDENCE_KINDS:
         logger.debug("[KYA-EVIDENCE] unknown kind=%s -> 'system_message'", evidence_kind)
@@ -666,6 +756,11 @@ def record_evidence(
         source=source,
         data_classes=list(data_classes) if data_classes else None,
         retention_until=retention_until,
+        # Phase 4 (#S4-1) — evaluator attribution for VERDICT-PRODUCING
+        # rows. ``None`` for non-verdict evidence kinds (fine — the
+        # column is nullable + the audit-slice query filters
+        # ``WHERE evaluator_name IS NOT NULL``).
+        evaluator_name=evaluator_name,
     )
     try:
         db.add(row)
@@ -708,6 +803,7 @@ def record_evidence(
                     "data_classes": data_classes,
                     "occurred_at": occurred_at,
                     "retention_until": retention_until,
+                    "evaluator_name": evaluator_name,
                 }),
             )
     except Exception:
@@ -746,6 +842,10 @@ def _row_to_dict(row: "_EvidenceRow") -> dict[str, Any]:
         "redaction_reason": row.redaction_reason,
         "retention_until": _to_iso(row.retention_until),
         "ingest_lag_ms": _lag_ms(row.occurred_at, row.ingested_at),
+        # Phase 4 (#S4-1) — evaluator attribution surfaced on read.
+        # ``None`` for pre-Phase-4 rows AND for non-verdict evidence
+        # kinds written post-Phase-4.
+        "evaluator_name": row.evaluator_name,
     }
 
 
