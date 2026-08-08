@@ -28,8 +28,20 @@ def test_require_human_enforce_returns_428_not_403(monkeypatch):
 
     fake_kya = types.ModuleType("kya")
 
+    class _MockDialect:
+        name = "sqlite"
+
+    class _MockCtx:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _MockEngine:
+        dialect = _MockDialect()
+        def begin(self): return _MockCtx()
+
     class _Sess:
         def commit(self): pass
+        def get_bind(self): return _MockEngine()
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
@@ -115,8 +127,20 @@ def test_require_human_deny_still_returns_403(monkeypatch):
 
     fake_kya = types.ModuleType("kya")
 
+    class _MockDialect:
+        name = "sqlite"
+
+    class _MockCtx:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _MockEngine:
+        dialect = _MockDialect()
+        def begin(self): return _MockCtx()
+
     class _Sess:
         def commit(self): pass
+        def get_bind(self): return _MockEngine()
         def __enter__(self): return self
         def __exit__(self, *a): return False
 

@@ -54,10 +54,18 @@ def _patch_kya_core(monkeypatch, *, invocation_id_returned=12345,
         # path succeeds in tests without a live DB.
         name = "sqlite"
 
+    class _MockCtx:
+        # Real Engine.begin() returns a Connection ctx-manager.
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
     class _MockEngine:
-        # Real SQLAlchemy Engine has .dialect. Minimal stub for
-        # kya.pending_invocations.ensure_table + downstream introspection.
+        # Real SQLAlchemy Engine has .dialect + .begin(). Minimal stub
+        # for kya.pending_invocations.ensure_table + downstream
+        # introspection.
         dialect = _MockDialect()
+        def begin(self):
+            return _MockCtx()
 
     class _Session:
         def __init__(self):

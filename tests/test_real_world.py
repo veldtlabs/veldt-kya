@@ -14,10 +14,12 @@ import pytest
 # eagerly re-imports openai during its module init, and if it finds
 # our synthetic stub first it hits `openai._models` missing and enters
 # a circular-import state). Fixed once here for the whole test file.
-try:
-    import litellm  # noqa: F401
-except ImportError:
-    pass
+# CI runs the wheel in a clean venv without litellm; the autoinstrument
+# tests below exercise litellm.cost_per_token via kya.autoinstrument so
+# skip the whole file when the optional dep is absent. See
+# feedback_test_locally_before_push.md.
+pytest.importorskip("litellm")
+import litellm  # noqa: F401
 
 
 def test_pure_scoring_no_storage():
