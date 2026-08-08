@@ -231,6 +231,85 @@ def test_record_cost_event_skips_zero_or_negative():
     assert _Dud.called == 0
 
 
+def test_record_cost_event_silent_coerces_unknown_outcome_to_unknown(
+    monkeypatch,
+):
+    """Contract lock (task #353 / Sabotage-E gap): record_cost_event
+    silently coerces any outcome not in _VALID_OUTCOMES to "unknown"
+    rather than raising. Budget accounting MUST NOT fail the request
+    path — see docstring above _VALID_OUTCOMES in tenant_budget.py.
+
+    Captures the params dict passed to insert_returning_id + asserts
+    ``outcome == "unknown"``. If a future "fix" makes the coerce raise,
+    this test goes RED and blocks the change.
+    """
+    captured: dict = {}
+
+    def _fake_insert_returning_id(db, table, params):
+        captured.update(params)
+        return 42
+
+    class _StubDB:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    monkeypatch.setattr(
+        "kya._dialect_helpers.insert_returning_id",
+        _fake_insert_returning_id,
+    )
+
+    # outcome="banana" is not in _VALID_OUTCOMES → must coerce, not raise
+    event_id = record_cost_event(
+        _StubDB(),
+        tenant_id="t",
+        agent_key="a",
+        usd_amount=1.0,
+        outcome="banana",
+    )
+    assert event_id == 42
+    assert captured.get("outcome") == "unknown", (
+        f"expected outcome coerced to 'unknown', got "
+        f"{captured.get('outcome')!r}"
+    )
+
+
+def test_record_cost_event_preserves_valid_outcome(monkeypatch):
+    """Companion to the coerce test: valid outcomes (from
+    _VALID_OUTCOMES) pass through unchanged. Sabotage-anchor — if
+    someone accidentally makes the coerce fire on valid values, this
+    test goes RED.
+    """
+    captured: dict = {}
+
+    def _fake_insert_returning_id(db, table, params):
+        captured.update(params)
+        return 7
+
+    class _StubDB:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    monkeypatch.setattr(
+        "kya._dialect_helpers.insert_returning_id",
+        _fake_insert_returning_id,
+    )
+
+    record_cost_event(
+        _StubDB(),
+        tenant_id="t",
+        agent_key="a",
+        usd_amount=1.0,
+        outcome="success",
+    )
+    assert captured.get("outcome") == "success"
+
+
 def test_current_spend_fail_soft_without_redis():
     """No Valkey → current_spend returns 0.0, never raises."""
     assert current_spend("any", "tenant", "*", "1h") == 0.0
