@@ -34,7 +34,6 @@ by construction.
 """
 from __future__ import annotations
 
-
 # Task #105 legacy alias mapping — normalize at every boundary.
 # Key is the legacy wire string; value is the paper Figure-4 canonical
 # form. Add new legacy aliases here (do not scatter dicts across files).

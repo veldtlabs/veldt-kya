@@ -303,6 +303,13 @@ register_scope("capability_weights", _CAPABILITY_WEIGHTS)
 register_scope("source_weights", _SOURCE_WEIGHTS)
 register_scope("deployment_weights", _DEPLOYMENT_WEIGHTS)
 from ._inbound_signing import SignatureVerificationError
+
+# Phase 2 — policy evaluator abstraction. `policy_evaluator` is the
+# upstream "produce a verdict" layer; `_native_evaluator` composes the
+# existing OSS primitives (tenant_budget, tenant_weights, policy_hash)
+# into the default ``"native"`` evaluator. See ``policy_verdicts`` for
+# the downstream handler-dispatch layer these results feed into.
+from ._native_evaluator import POLICY_HASH_UNAVAILABLE, NativeEvaluator
 from ._redactor import Redactor as DualWriteRedactor
 from ._session_factory import (
     has_factory as has_session_factory,
@@ -425,6 +432,15 @@ from .policy_config import (
     active_delegation_mode,
     configure_delegation_policy,
 )
+from .policy_evaluator import (
+    EvaluationInput,
+    PolicyEvaluator,
+    VerdictResult,
+    _register_native_default,
+    get_evaluator,
+    register_evaluator,
+    unregister_evaluator,
+)
 from .quality import (
     QualityReport,
     get_quality_signals,
@@ -520,21 +536,6 @@ from .tenant_budget import (
 )
 from .tenant_budget import (
     health_check as budget_health_check,
-)
-# Phase 2 — policy evaluator abstraction. `policy_evaluator` is the
-# upstream "produce a verdict" layer; `_native_evaluator` composes the
-# existing OSS primitives (tenant_budget, tenant_weights, policy_hash)
-# into the default ``"native"`` evaluator. See ``policy_verdicts`` for
-# the downstream handler-dispatch layer these results feed into.
-from ._native_evaluator import NativeEvaluator, POLICY_HASH_UNAVAILABLE
-from .policy_evaluator import (
-    EvaluationInput,
-    PolicyEvaluator,
-    VerdictResult,
-    _register_native_default,
-    get_evaluator,
-    register_evaluator,
-    unregister_evaluator,
 )
 
 # Phase 2 — register the OSS default ("native") after both modules
