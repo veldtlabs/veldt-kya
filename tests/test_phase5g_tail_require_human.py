@@ -92,9 +92,16 @@ def test_require_human_enforce_returns_428_not_403(monkeypatch):
     assert r.status_code == 428, r.text
     body = r.json()
     # Distinct JSON-RPC code so clients can programmatically
-    # distinguish deny (-32001) from require_human (-32007).
+    # distinguish deny (-32001) from flag_for_review (-32007).
     assert body["error"]["code"] == -32007
-    assert body["error"]["data"]["verdict"] == "require_human"
+    # Task #105 alias sunset (FIX-C): downstream code never sees the
+    # legacy string. The RBAC rule was constructed with
+    # verdict="require_human" — the rbac-evaluate boundary normalizes
+    # to canonical, and the 428 body carries the canonical form.
+    # Source-of-truth mapping lives in policy_pipeline.
+    from kya_gateway.policy_pipeline import _LEGACY_VERDICT_ALIASES
+    assert body["error"]["data"]["verdict"] == \
+        _LEGACY_VERDICT_ALIASES["require_human"]
     # Discovery hint for the human-approval flow.
     assert "Human-Approval" in r.headers.get("WWW-Authenticate", "") or \
            "KYA-Human-Approval" in r.headers.get("WWW-Authenticate", "")

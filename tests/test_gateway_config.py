@@ -109,7 +109,13 @@ def test_full_config_with_rbac_and_did(tmp_path):
     assert cfg.policy.rbac is not None
     assert cfg.policy.rbac.default == "deny"
     assert len(cfg.policy.rbac.rules) == 2
-    assert cfg.policy.rbac.rules[1].verdict == "require_human"
+    # Task #105 alias sunset (FIX-C): the YAML input "require_human"
+    # is NORMALIZED to canonical "flag_for_review" at config-parse
+    # time. Source-of-truth constant lives in policy_pipeline; asserted
+    # via that constant so a future rename ripples through.
+    from kya_gateway.policy_pipeline import _LEGACY_VERDICT_ALIASES
+    assert cfg.policy.rbac.rules[1].verdict == \
+        _LEGACY_VERDICT_ALIASES["require_human"]
 
 
 def test_missing_file_raises():

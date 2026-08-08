@@ -215,7 +215,13 @@ def test_enforce_identity_fail_blocks_with_401(monkeypatch):
 
 
 def test_audit_only_require_human_forwards_with_verdict_header(monkeypatch):
-    """An 'allow but needs human' verdict also surfaces via header."""
+    """An 'allow but needs human' verdict also surfaces via header.
+
+    Task #105 alias sunset (FIX-C): the RBAC rule is constructed with
+    the legacy ``verdict="require_human"``; the rbac-evaluate boundary
+    normalizes to canonical form so the wire header carries the
+    canonical value.
+    """
     _patch_minimal(monkeypatch)
     cfg = _build_gateway(mode="audit_only")
     # Build a config with a require_human rule.
@@ -234,7 +240,9 @@ def test_audit_only_require_human_forwards_with_verdict_header(monkeypatch):
     client = TestClient(gw.app)
     r = _post_tools_call(client)
     assert r.status_code == 200, r.text
-    assert r.headers.get("X-KYA-Verdict") == "require_human"
+    from kya_gateway.policy_pipeline import _LEGACY_VERDICT_ALIASES
+    assert r.headers.get("X-KYA-Verdict") == \
+        _LEGACY_VERDICT_ALIASES["require_human"]
 
 
 # ─── 8. config validation: unknown mode rejected ────────────────────

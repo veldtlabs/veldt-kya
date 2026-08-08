@@ -60,7 +60,33 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
+# Task #105 legacy alias constants — single source of truth shared with
+# ``kya_gateway.policy_pipeline`` (boundary normalizer) and
+# ``kya_pro.dashboard_api._models`` (Pydantic wire-input validator).
+# Kola directive 2026-08-07: no hardcoded verdict aliases or sunset
+# versions duplicated across files.
+from kya._verdict_aliases import (
+    _CANONICAL_HUMAN_APPROVAL_VERDICT,
+    _DEPRECATION_SUNSET,
+    _LEGACY_VERDICT_ALIASES,
+)
+
 logger = logging.getLogger(__name__)
+
+
+# Derived constant — the single legacy alias key handled by
+# ``GatewayRequireHumanAliasHandler``. Computed from
+# ``_LEGACY_VERDICT_ALIASES`` at import time so if the mapping ever
+# gains a second entry, we get a clean failure at module load rather
+# than a silent registry key mismatch. If/when a second legacy alias
+# ships, register a second handler per alias and remove this assert.
+_LEGACY_ALIAS_KEYS: list[str] = sorted(_LEGACY_VERDICT_ALIASES.keys())
+assert len(_LEGACY_ALIAS_KEYS) == 1, (
+    "GatewayRequireHumanAliasHandler assumes exactly one legacy alias — "
+    "add a per-alias handler + register call before adding a second entry "
+    "to _LEGACY_VERDICT_ALIASES."
+)
+_LEGACY_REQUIRE_HUMAN_ALIAS: str = _LEGACY_ALIAS_KEYS[0]
 
 
 # Set of mutation keys the shipped OSS handlers emit. Downstream
@@ -552,8 +578,13 @@ class GatewayFlagForReviewHandler:
 
     ``jsonrpc_error_code=-32007`` preserves wire compatibility for
     existing SDK clients pattern-matching on the numeric code.
+
+    FIX-F: both the registry key + the wire-body ``verdict`` field
+    source from the shared ``_CANONICAL_HUMAN_APPROVAL_VERDICT``
+    constant so a single edit in ``kya._verdict_aliases`` ripples
+    everywhere.
     """
-    verdict: str = "flag_for_review"
+    verdict: str = _CANONICAL_HUMAN_APPROVAL_VERDICT
     layer: HandlerLayer = "gateway"
 
     def apply(self, ctx: VerdictContext) -> HandlerResult:
@@ -564,7 +595,7 @@ class GatewayFlagForReviewHandler:
             response_body={
                 "error": "human_approval_required",
                 "reason_codes": list(ctx.reason_codes),
-                "verdict": "flag_for_review",
+                "verdict": _CANONICAL_HUMAN_APPROVAL_VERDICT,
             },
             response_headers={
                 "WWW-Authenticate": 'KYA-Human-Approval realm="kya-gateway"',
@@ -583,18 +614,24 @@ class GatewayRequireHumanAliasHandler:
     sentinel) so operators can migrate at their pace. Ship this
     alongside the canonical handler; when #105 finishes the UI/docs
     sweep and a full deprecation cycle passes, drop it.
+
+    The ``verdict`` field is sourced from ``_LEGACY_REQUIRE_HUMAN_ALIAS``
+    (derived from ``kya._verdict_aliases._LEGACY_VERDICT_ALIASES``) so
+    the registry key + the wire-body override both track a single edit
+    in the shared alias dict. Same pattern for the ``response_body``
+    verdict-string override below.
     """
-    verdict: str = "require_human"
+    verdict: str = _LEGACY_REQUIRE_HUMAN_ALIAS
     layer: HandlerLayer = "gateway"
 
     def apply(self, ctx: VerdictContext) -> HandlerResult:
         _warn_require_human_alias_once()
         # Delegate to the canonical handler so wire shape stays
         # bit-identical — only the ``verdict`` string in the body
-        # differs to match the legacy name.
+        # differs to match the legacy name (for SDK back-compat).
         canonical = GatewayFlagForReviewHandler().apply(ctx)
         canonical_body = dict(canonical.response_body or {})
-        canonical_body["verdict"] = "require_human"
+        canonical_body["verdict"] = _LEGACY_REQUIRE_HUMAN_ALIAS
         return HandlerResult(
             forward=canonical.forward,
             http_status=canonical.http_status,
@@ -609,19 +646,31 @@ _ALIAS_WARNED = False
 
 
 def _warn_require_human_alias_once() -> None:
-    """Emit DeprecationWarning + log exactly once per process."""
+    """Emit DeprecationWarning + log exactly once per process.
+
+    Interpolates the shared ``_LEGACY_REQUIRE_HUMAN_ALIAS``,
+    ``_CANONICAL_HUMAN_APPROVAL_VERDICT``, and ``_DEPRECATION_SUNSET``
+    constants (Kola directive 2026-08-07: no hardcoded alias / sunset
+    literals) so a single edit in ``kya._verdict_aliases`` ripples
+    everywhere — WARN log, DeprecationWarning message, registry key.
+    """
     global _ALIAS_WARNED
     if _ALIAS_WARNED:
         return
     _ALIAS_WARNED = True
     logger.warning(
-        "[policy_verdicts] verdict 'require_human' is deprecated — "
-        "use 'flag_for_review' (paper Figure 4 vocabulary). Existing "
-        "configs continue to work but will be removed after #105."
+        "[policy_verdicts] verdict %r is deprecated — use %r (paper "
+        "Figure 4 vocabulary). Existing configs continue to work but "
+        "will be removed in veldt-kya %s.",
+        _LEGACY_REQUIRE_HUMAN_ALIAS,
+        _CANONICAL_HUMAN_APPROVAL_VERDICT,
+        _DEPRECATION_SUNSET,
     )
     import warnings
     warnings.warn(
-        "verdict='require_human' is deprecated; use 'flag_for_review'",
+        f"verdict={_LEGACY_REQUIRE_HUMAN_ALIAS!r} is deprecated; use "
+        f"{_CANONICAL_HUMAN_APPROVAL_VERDICT!r} (removed in "
+        f"veldt-kya {_DEPRECATION_SUNSET})",
         DeprecationWarning,
         stacklevel=3,
     )

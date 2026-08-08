@@ -4,6 +4,26 @@ All notable changes to **veldt-kya** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Deprecated — verdict alias `require_human` (task #105)
+
+- The legacy verdict string `"require_human"` is now normalized to
+  `"flag_for_review"` (paper Figure 4 canonical) at every internal
+  boundary: config parse (`kya_gateway.config._parse_rbac`),
+  RBAC evaluation (`kya_gateway.policy_pipeline.evaluate`), and the
+  evaluator adapter (`_verdict_result_to_gateway_verdict`). Both
+  boundaries emit a WARN at parse/adapter time.
+- Downstream code no longer sees `"require_human"` as an active
+  verdict — it exists only long enough to warn on and convert. The
+  allowlist (`_VALID_VERDICTS`) no longer accepts it directly;
+  normalization runs before the allowlist check.
+- Alias mapping + sunset version live in a single source-of-truth
+  pair: `_LEGACY_VERDICT_ALIASES` + `_DEPRECATION_SUNSET` in
+  `kya_gateway.policy_pipeline`. The alias will be removed in
+  veldt-kya **0.6.0** (grep `_DEPRECATION_SUNSET` in the source to
+  confirm current target).
+
 ## [0.4.6rc1] — 2026-08-01
 
 ### Fixed — verdict-always-allow (Task #242, breaking-behavior fail-loud)

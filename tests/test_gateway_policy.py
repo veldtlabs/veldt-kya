@@ -146,6 +146,12 @@ def test_evaluate_rbac_deny():
 
 
 def test_evaluate_require_human():
+    """Task #105 alias sunset (FIX-C): a RBAC rule directly constructed
+    with the legacy verdict "require_human" is normalized at the
+    ``_rbac_evaluate`` boundary inside ``evaluate()``. Downstream
+    Verdict carries the canonical form. Source-of-truth alias map
+    lives in ``policy_pipeline`` — asserted through the constant.
+    """
     cfg = PolicyConfig(
         min_trust=0,
         rbac=RBACConfig(default="deny", rules=[
@@ -163,7 +169,8 @@ def test_evaluate_require_human():
         invocation_id=None,
         cfg=cfg,
     )
-    assert v.verdict == "require_human"
+    from kya_gateway.policy_pipeline import _LEGACY_VERDICT_ALIASES
+    assert v.verdict == _LEGACY_VERDICT_ALIASES["require_human"]
     assert "REQUIRES_HUMAN" in v.reason_codes
 
 

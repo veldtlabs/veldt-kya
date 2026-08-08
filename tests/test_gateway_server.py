@@ -230,11 +230,15 @@ def test_deny_returns_403_with_jsonrpc_error(monkeypatch):
 
 
 def test_require_human_returns_428_with_verdict_data(monkeypatch):
-    """Phase 5g-tail — require_human verdict surfaces as HTTP 428
-    Precondition Required (RFC 6585 §3) + JSON-RPC -32007, with the
-    structured `data.verdict='require_human'` for clients.
-    The 5g-tail rename from 403 reflects semantics: the action isn't
-    permanently denied, it needs a precondition (human approval)."""
+    """Phase 5g-tail — flag_for_review verdict (accepting the legacy
+    ``require_human`` alias at rule-construction time) surfaces as
+    HTTP 428 Precondition Required (RFC 6585 §3) + JSON-RPC -32007.
+
+    Task #105 alias sunset (FIX-C): even though the RBAC rule was
+    constructed with verdict="require_human", the rbac-evaluate
+    normalization boundary rewrites to canonical before the response
+    is built. Downstream data.verdict is the canonical form.
+    """
     _patch_kya_core(monkeypatch)
     _patch_identity_to(monkeypatch, _principal())
     _patch_forwarder_to_echo(monkeypatch)
@@ -250,12 +254,14 @@ def test_require_human_returns_428_with_verdict_data(monkeypatch):
         "jsonrpc": "2.0", "id": 7, "method": "tools/call",
         "params": {"name": "filesystem.delete_file", "arguments": {}},
     })
-    # Phase 5g-tail — require_human now returns 428 (RFC 6585 §3) with
+    # Phase 5g-tail — flag_for_review now returns 428 (RFC 6585 §3) with
     # the distinct -32007 JSON-RPC code, NOT 403/-32001.
     assert r.status_code == 428, r.text
     body = r.json()
     assert body["error"]["code"] == -32007
-    assert body["error"]["data"]["verdict"] == "require_human"
+    from kya_gateway.policy_pipeline import _LEGACY_VERDICT_ALIASES
+    assert body["error"]["data"]["verdict"] == \
+        _LEGACY_VERDICT_ALIASES["require_human"]
 
 
 def test_allow_forwards_to_backend(monkeypatch):

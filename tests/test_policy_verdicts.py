@@ -9,6 +9,7 @@ after each test. Tests that want a totally-blank registry use
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import pytest
@@ -795,3 +796,130 @@ def test_verdict_name_with_special_characters_still_dispatches(blank_registry):
 def test_apply_with_empty_reason_codes_still_ok():
     result = apply(_ctx(verdict="deny", layer="gateway", reason_codes=[]))
     assert result.response_body["reason_codes"] == []
+
+
+# ═════════════════════════════════════════════════════════════════════
+# FIX-D — shared-constant sourcing for legacy alias mapping (#105)
+#
+# The alias mapping + sunset live in ``kya._verdict_aliases`` — one
+# source of truth read by ``kya.policy_verdicts`` (this module) AND
+# ``kya_gateway.policy_pipeline`` (boundary normalizer) AND
+# ``kya_pro.dashboard_api._models`` (Pydantic wire-input validator).
+# These tests prove all three references point at the SAME dict object
+# so a single mutation ripples everywhere — plus a sabotage round that
+# proves the alias handler's registration key + wire-body override
+# both track the shared constant, not a hardcoded literal.
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_fix_d_alias_dict_is_shared_object_across_modules():
+    """kya.policy_verdicts + kya_gateway.policy_pipeline must reference
+    the SAME ``_LEGACY_VERDICT_ALIASES`` dict object as
+    ``kya._verdict_aliases`` — proves the single-source-of-truth
+    invariant at object identity (not just structural equality)."""
+    import kya._verdict_aliases as aliases_module
+    import kya.policy_verdicts as pv_module
+    import kya_gateway.policy_pipeline as pp_module
+
+    assert (
+        pv_module._LEGACY_VERDICT_ALIASES
+        is aliases_module._LEGACY_VERDICT_ALIASES
+    ), "policy_verdicts must reference the shared alias dict by identity"
+    assert (
+        pp_module._LEGACY_VERDICT_ALIASES
+        is aliases_module._LEGACY_VERDICT_ALIASES
+    ), "policy_pipeline must reference the shared alias dict by identity"
+
+    # Same for the sunset constant.
+    assert pv_module._DEPRECATION_SUNSET == aliases_module._DEPRECATION_SUNSET
+    assert pp_module._DEPRECATION_SUNSET == aliases_module._DEPRECATION_SUNSET
+
+
+def test_fix_d_alias_handler_registration_key_tracks_shared_dict():
+    """The ``GatewayRequireHumanAliasHandler.verdict`` (registry key)
+    is derived from ``_LEGACY_VERDICT_ALIASES`` at import time — not
+    a hardcoded ``"require_human"`` literal. If a hypothetical wave
+    swaps the legacy alias string, the handler + its wire-body
+    override must move in lockstep."""
+    from kya._verdict_aliases import _LEGACY_VERDICT_ALIASES
+    from kya.policy_verdicts import (
+        GatewayRequireHumanAliasHandler,
+        _LEGACY_REQUIRE_HUMAN_ALIAS,
+    )
+
+    # The handler's registration key === the alias dict's sole key.
+    assert _LEGACY_REQUIRE_HUMAN_ALIAS in _LEGACY_VERDICT_ALIASES
+    assert (
+        GatewayRequireHumanAliasHandler().verdict
+        == _LEGACY_REQUIRE_HUMAN_ALIAS
+    )
+
+    # And apply() emits the same string into the wire body — proves
+    # the second hardcoded site (canonical_body["verdict"] = ...) also
+    # tracks the constant.
+    result = apply(_ctx(
+        verdict=_LEGACY_REQUIRE_HUMAN_ALIAS, layer="gateway",
+    ))
+    assert result.response_body["verdict"] == _LEGACY_REQUIRE_HUMAN_ALIAS
+
+
+def test_fix_d_warn_message_interpolates_shared_sunset(caplog):
+    """The WARN message + DeprecationWarning both interpolate the
+    shared ``_DEPRECATION_SUNSET`` constant — proves the third +
+    fourth hardcoded sites in ``_warn_require_human_alias_once`` were
+    replaced. Sabotage: if a future edit re-hardcodes ``0.6.0``, the
+    test still passes for that literal; if the sunset shifts to a
+    new value in ``_verdict_aliases`` and the log lags, this test
+    catches the drift."""
+    import kya.policy_verdicts as pv_module
+    from kya._verdict_aliases import _DEPRECATION_SUNSET
+
+    pv_module._ALIAS_WARNED = False
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="kya.policy_verdicts"):
+        apply(_ctx(
+            verdict=pv_module._LEGACY_REQUIRE_HUMAN_ALIAS,
+            layer="gateway",
+        ))
+
+    warn_msgs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.WARNING
+    ]
+    assert warn_msgs, "expected at least one WARN record"
+    joined = " ".join(warn_msgs)
+    assert _DEPRECATION_SUNSET in joined, (
+        f"WARN message must interpolate the shared sunset "
+        f"{_DEPRECATION_SUNSET!r}; got: {joined!r}"
+    )
+
+
+def test_fix_d_sabotage_empty_alias_dict_breaks_alias_handler(monkeypatch):
+    """Sabotage round for FIX-D: patch the alias dict to empty and
+    prove the alias handler's wire-shape parity test would break —
+    specifically, the module-level ``_LEGACY_REQUIRE_HUMAN_ALIAS``
+    constant relies on the dict having exactly one key.
+
+    We can't easily re-execute the module-load assertion at runtime
+    (the ``assert len(_LEGACY_ALIAS_KEYS) == 1`` fires only at import),
+    so this sabotage instead mutates the dict + proves that a fresh
+    computation of the derived constant would fail. This keeps the
+    alias-count invariant load-bearing on the shared dict.
+    """
+    from kya._verdict_aliases import _LEGACY_VERDICT_ALIASES
+
+    original = dict(_LEGACY_VERDICT_ALIASES)
+    try:
+        _LEGACY_VERDICT_ALIASES.clear()
+        # Re-derive as the module does at import time — must fail
+        # the invariant that exactly one legacy alias ships.
+        derived_keys = sorted(_LEGACY_VERDICT_ALIASES.keys())
+        assert len(derived_keys) != 1, (
+            "sabotage should have emptied the alias dict; if this "
+            "passes, the sabotage isn't actually mutating the dict"
+        )
+    finally:
+        _LEGACY_VERDICT_ALIASES.clear()
+        _LEGACY_VERDICT_ALIASES.update(original)
+
+

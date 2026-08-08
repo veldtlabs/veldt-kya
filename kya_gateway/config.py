@@ -407,24 +407,35 @@ def _parse_rbac(block: dict | None) -> RBACConfig | None:
     default = block.get("default", "deny")
     if default not in ("allow", "deny"):
         raise GatewayConfigError(f"rbac.default must be 'allow' or 'deny', got {default!r}")
+    # FIX-C (task #105 alias sunset): source-of-truth alias mapping +
+    # sunset version live in ``kya_gateway.policy_pipeline`` so a single
+    # edit ripples across config-parse + adapter boundaries. We import
+    # locally (not at module top) to avoid circular import surface —
+    # ``config.py`` is imported by ``policy_pipeline.py``.
+    from kya_gateway.policy_pipeline import (
+        _DEPRECATION_SUNSET,
+        _LEGACY_VERDICT_ALIASES,
+    )
     rules_raw = block.get("rules") or []
     rules: list[RBACRule] = []
     for r in rules_raw:
         verdict = r.get("verdict", "deny")
         # Accept the paper's canonical ``flag_for_review`` alongside
         # the legacy ``require_human`` alias. When a config uses the
-        # legacy name, normalize to canonical at parse time so
-        # downstream code sees one value; the alias handler in the
-        # registry still emits with the legacy string in the body so
-        # SDK clients pattern-matching on it are unaffected.
-        if verdict == "require_human":
+        # legacy name, WARN referencing the sunset version and
+        # normalize to canonical at parse time so downstream code
+        # sees exactly one value. Constants are the SOURCE OF TRUTH:
+        # no hardcoded alias strings or version numbers here.
+        if verdict in _LEGACY_VERDICT_ALIASES:
             import logging as _log
+            canonical = _LEGACY_VERDICT_ALIASES[verdict]
             _log.getLogger("kya_gateway.config").warning(
-                "[gateway.config] verdict 'require_human' is deprecated "
-                "— use 'flag_for_review' (paper Figure 4). Config still "
-                "loads; alias will be removed after #105."
+                "[gateway.config] verdict %r is a deprecated alias for "
+                "%r (config boundary) — normalizing. Alias removed in "
+                "veldt-kya %s.",
+                verdict, canonical, _DEPRECATION_SUNSET,
             )
-            verdict = "flag_for_review"
+            verdict = canonical
         if verdict not in ("allow", "deny", "flag_for_review"):
             raise GatewayConfigError(
                 "rbac rule verdict must be allow/deny/flag_for_review, "
