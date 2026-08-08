@@ -9,6 +9,12 @@ from __future__ import annotations
 
 import pytest
 
+# CI runs the wheel in a clean venv without optional deps. mapper.py
+# lazy-imports litellm inside extract_gen_ai_cost; these tests exercise
+# that path so skip the whole module cleanly when litellm is absent.
+# See feedback_test_locally_before_push.md.
+pytest.importorskip("litellm")
+
 from kya_otlp_bridge.mapper import SpanMapper
 
 
