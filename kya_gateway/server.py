@@ -1344,7 +1344,7 @@ def _record_invocation_pre_policy(*, gw: Gateway, principal, action: str) -> int
     no-record situation rather than discovering it post-incident.
     """
     try:
-        from kya import default_session, record_invocation
+        from kya import OUTCOME_PENDING, default_session, record_invocation
     except ImportError:
         logger.error(
             "[KYA-GATEWAY] kya.record_invocation unavailable — "
@@ -1354,6 +1354,16 @@ def _record_invocation_pre_policy(*, gw: Gateway, principal, action: str) -> int
         return None
     try:
         with default_session() as db:
+            # Task #349 — ``OUTCOME_PENDING`` was added to
+            # ``kya.invocations.VALID_OUTCOMES`` so this call succeeds
+            # instead of raising ValueError (previously swallowed by the
+            # broad ``except Exception`` below, which silently dropped
+            # the pre-policy audit row for every request). The
+            # try/except is intentionally preserved as defense-in-depth
+            # against unrelated failures (DB errors, delegation-policy
+            # blocks, rate-limit denials) that must not break the request
+            # path — for those cases the audit row is still lost, but
+            # the fail-loud pending path is no longer masked.
             inv = record_invocation(
                 db,
                 tenant_id=gw.cfg.gateway.tenant_id,
@@ -1361,7 +1371,7 @@ def _record_invocation_pre_policy(*, gw: Gateway, principal, action: str) -> int
                 principal_kind=principal.principal_kind,
                 principal_id=principal.principal_id,
                 mode="observed",
-                outcome="pending",
+                outcome=OUTCOME_PENDING,
             )
             db.commit()
             if inv is None:
@@ -1469,6 +1479,21 @@ def _record_verdict_evidence(
             # so audit + policy share the same row. When that step failed,
             # invocation_id is None and record_evidence stores without
             # a linked invocation row.
+            # Phase 4 (#S4-1) — attribute the row to the evaluator that
+            # produced this verdict. The pipeline's attribution helpers
+            # (``_fallback_with_native_attribution`` /
+            # ``_fallback_with_result_attribution`` in
+            # ``kya_gateway.policy_pipeline``) place ``evaluator_name``
+            # onto ``Verdict.rich``. Reading from ``.rich`` (rather than
+            # re-plumbing a parameter) preserves the single-source-of-truth
+            # invariant and keeps this call site additive.
+            _evaluator_name = None
+            try:
+                _rich = getattr(verdict, "rich", None) or {}
+                _evaluator_name = _rich.get("evaluator_name")
+            except Exception:
+                # Never fail evidence write on attribution lookup.
+                pass
             record_evidence(
                 db,
                 tenant_id=gw.cfg.gateway.tenant_id,
@@ -1482,6 +1507,7 @@ def _record_verdict_evidence(
                     "method": principal.method,
                     "external_subject": principal.external_subject,
                 },
+                evaluator_name=_evaluator_name,
             )
             record_principal_signal(
                 db,
