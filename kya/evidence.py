@@ -517,7 +517,20 @@ def init_evidence_table(db) -> None:
     conn = db.connection()
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[_EvidenceRow.__table__])
-    _ensure_evaluator_name_column(conn)
+    # Phase 4 (#S4-1) — dev-DB ALTER probe. Wrapped outer try/except
+    # because test-only session stubs (see test_gateway_server._Session)
+    # don't implement the full SQLAlchemy Connection interface required
+    # by sqlalchemy.inspect(); any AttributeError from the probe on a
+    # test stub is expected — the WARN inside logs it but must not
+    # break init_evidence_table (which is called from live request
+    # paths, not just fresh-DB setup).
+    try:
+        _ensure_evaluator_name_column(conn)
+    except AttributeError as exc:
+        logger.debug(
+            "[KYA-EVIDENCE] evaluator_name column probe skipped on "
+            "test/stub connection: %s", exc,
+        )
 
 
 # Phase 4 (#S4-1) — one-shot per-engine probe cache. init_evidence_table
