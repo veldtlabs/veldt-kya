@@ -519,6 +519,28 @@ from .tenant_budget import (
 from .tenant_budget import (
     health_check as budget_health_check,
 )
+# Phase 2 — policy evaluator abstraction. `policy_evaluator` is the
+# upstream "produce a verdict" layer; `_native_evaluator` composes the
+# existing OSS primitives (tenant_budget, tenant_weights, policy_hash)
+# into the default ``"native"`` evaluator. See ``policy_verdicts`` for
+# the downstream handler-dispatch layer these results feed into.
+from ._native_evaluator import NativeEvaluator, POLICY_HASH_UNAVAILABLE
+from .policy_evaluator import (
+    EvaluationInput,
+    PolicyEvaluator,
+    VerdictResult,
+    _register_native_default,
+    get_evaluator,
+    register_evaluator,
+    unregister_evaluator,
+)
+
+# Phase 2 — register the OSS default ("native") after both modules
+# have finished loading. Done here rather than in
+# ``policy_evaluator._register_native_default()`` at import time to
+# avoid a circular import (policy_evaluator → _native_evaluator →
+# policy_evaluator for the type imports).
+_register_native_default()
 from .versioning import (
     ensure_table,
     get_principal_version,
@@ -927,4 +949,15 @@ __all__ = [
     "ensure_budget_tables",
     "set_forecaster",
     "get_forecaster",
+    # Phase 2 — policy evaluator abstraction. Upstream layer that
+    # produces VerdictResults; feeds into the existing
+    # ``policy_verdicts`` handler-dispatch layer downstream.
+    "EvaluationInput",
+    "VerdictResult",
+    "PolicyEvaluator",
+    "register_evaluator",
+    "get_evaluator",
+    "unregister_evaluator",
+    "NativeEvaluator",
+    "POLICY_HASH_UNAVAILABLE",
 ]
