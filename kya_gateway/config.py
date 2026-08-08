@@ -175,6 +175,16 @@ class PolicyConfig:
     payload_caps: PayloadCapsConfig | None = None
     tenant_budget: BudgetConfig | None = None
     rbac: RBACConfig | None = None
+    # Phase 3 (#S4-1) — name of the ``PolicyEvaluator`` the pipeline
+    # dispatches through for every verdict-producing site. Defaults to
+    # ``"native"`` which resolves to ``kya.NativeEvaluator`` via
+    # ``kya.get_evaluator``. Operators wanting an LLM-judge overlay,
+    # a per-tenant custom evaluator, or a sabotage stub for CI drills
+    # register it via ``kya.register_evaluator(name, evaluator)`` and
+    # set this field. If lookup fails at ``evaluate()`` time the
+    # pipeline falls back to the gateway's inline rule verdicts
+    # (backward compat) so a config typo never opens a fail-open.
+    policy_evaluator_name: str = "native"
 
 
 @dataclass(frozen=True)
@@ -303,6 +313,13 @@ class GatewayConfig:
                     daily_usd=float(pol["tenant_budget"]["daily_usd"])
                 ) if pol.get("tenant_budget") else None,
                 rbac=_parse_rbac(pol.get("rbac")),
+                # Phase 3 (#S4-1) — optional evaluator override. Blank/
+                # missing → ``"native"`` (backward compat with pre-Phase-3
+                # configs). A YAML operator can point at a registered
+                # custom evaluator here without touching Python code.
+                policy_evaluator_name=str(
+                    pol.get("policy_evaluator_name", "native")
+                ),
             )
 
             audit_block = raw.get("audit") or {}
