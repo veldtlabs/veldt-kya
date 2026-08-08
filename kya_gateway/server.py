@@ -1189,11 +1189,7 @@ def _create_pending_row(
 
     try:
         with default_session() as db:
-            # Test-stub sessions (see test_gateway_server._Session) don't
-            # implement the full SQLAlchemy Session interface. Fall back
-            # to the session itself when get_bind() is unavailable —
-            # ensure_table() is idempotent and hasattr-friendly.
-            engine = db.get_bind() if hasattr(db, "get_bind") else db
+            engine = db.get_bind()
             ensure_table(engine)
             # Header names come lowercased from Starlette; a full copy
             # is fine — approver / SDK can filter as needed. Drop
