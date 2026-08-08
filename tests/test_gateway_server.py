@@ -84,6 +84,12 @@ def _patch_kya_core(monkeypatch, *, invocation_id_returned=12345,
     fake_kya.record_principal_signal = record_principal_signal
     fake_kya.AccessDeniedError = AccessDeniedError
     fake_kya.require_action = require_action
+    # Task #349 — server._record_invocation_pre_policy now imports
+    # ``OUTCOME_PENDING`` from ``kya`` (per convert-as-you-touch: no
+    # bare "pending" literal at the call site). The stub kya module
+    # must expose it or the ``from kya import ...`` line raises
+    # ImportError and the whole pre-policy path silently no-ops.
+    fake_kya.OUTCOME_PENDING = "pending"
     monkeypatch.setitem(sys.modules, "kya", fake_kya)
     return {
         "evidence": record_evidence_calls,

@@ -70,6 +70,54 @@ VALID_MODES = {
     "observed",
 }
 
+# Named canonical outcome values — introduced via the convert-as-you-touch
+# pattern (feedback_no_hardcoding: "when shipping a NEW canonical value,
+# also introduce the named constant"). Task #349 added ``pending`` as a
+# canonical value; ``in_progress`` is named opportunistically in the same
+# edit because both are transient (non-terminal) states and clarify the
+# lifecycle when read together. The other 8 outcome literals remain bare
+# for now — inventory task #352 tracks their opportunistic conversion so
+# reviewers do not have to chase them globally.
+OUTCOME_PENDING = "pending"
+OUTCOME_IN_PROGRESS = "in_progress"
+
+# ---------------------------------------------------------------------
+# VALID_OUTCOMES — the full invocation-lifecycle vocabulary.
+#
+# Transient (non-terminal) states — the invocation exists but no final
+# disposition has been recorded:
+#   * ``OUTCOME_PENDING``      — invocation recorded BEFORE policy
+#                                evaluation runs (pre-policy audit trail
+#                                emitted by ``kya_gateway.server.
+#                                _record_invocation_pre_policy``). Also
+#                                used by external approval queue writers
+#                                that reserve an id before the human /
+#                                external system decides. Updated to a
+#                                terminal outcome after the decision.
+#   * ``OUTCOME_IN_PROGRESS``  — agent is actively executing. Surfaced
+#                                by ``active_parallel_invocations``.
+#                                Updated to a terminal outcome when the
+#                                run completes.
+#
+# Terminal outcomes — the invocation reached a final state and will not
+# transition further:
+#   * ``success``    — completed as intended.
+#   * ``failure``    — completed but returned a caller-visible failure.
+#   * ``refused``    — the agent refused the requested action.
+#   * ``denied``     — policy / RBAC / delegation denied the action.
+#   * ``blocked``    — a gate (payload cap, rate limit, replay-detect,
+#                      delegation-policy block) short-circuited the call.
+#   * ``error``      — internal error (agent crash, transport failure).
+#   * ``throttled``  — token bucket / rate limiter refused the call.
+#   * ``partial``    — completed with degraded / incomplete result.
+#
+# XREF: ``kya.tenant_budget._VALID_OUTCOMES`` is a NARROWER billing-
+# scoped subset ``{success, failure, refused, partial, unknown}``. The
+# two vocabularies are intentionally distinct — billing only cares about
+# billable outcomes and defensively coerces the rest to ``"unknown"``;
+# invocation tracking cares about the full lifecycle. See the docstring
+# above ``_VALID_OUTCOMES`` in ``tenant_budget.py`` for the rationale.
+# ---------------------------------------------------------------------
 VALID_OUTCOMES = {
     "success",
     "failure",
@@ -79,7 +127,8 @@ VALID_OUTCOMES = {
     "error",
     "throttled",
     "partial",
-    "in_progress",
+    OUTCOME_IN_PROGRESS,
+    OUTCOME_PENDING,
 }
 
 

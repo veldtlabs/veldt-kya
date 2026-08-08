@@ -180,6 +180,8 @@ from .interactions import (
     interaction_multiplier as compute_interaction_multiplier,
 )
 from .invocations import (
+    OUTCOME_IN_PROGRESS,
+    OUTCOME_PENDING,
     VALID_MODES,
     VALID_OUTCOMES,
     active_parallel_invocations,
@@ -749,6 +751,8 @@ __all__ = [
     # Invocation tracking (event-time vs ingest-time + parallel tree)
     "VALID_MODES",
     "VALID_OUTCOMES",
+    "OUTCOME_PENDING",
+    "OUTCOME_IN_PROGRESS",
     "ensure_invocations_table",
     "record_invocation",
     "list_invocations",

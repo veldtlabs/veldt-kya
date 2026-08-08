@@ -31,6 +31,7 @@ _VALID_OUTCOMES = [
     "throttled",
     "partial",
     "in_progress",
+    "pending",
 ]
 
 
@@ -105,3 +106,56 @@ def test_banana_outcome_is_not_persisted_as_success(sqlite_session) -> None:
             outcome="banana",
         )
     assert list_invocations(sqlite_session, tenant_id="tenant-x") == []
+
+
+# ─── Task #349 — pending as canonical outcome + named constant ───────
+# The OSS gateway's ``_record_invocation_pre_policy`` writes
+# ``outcome="pending"`` for the pre-policy audit row. Before this task,
+# that call raised ``ValueError`` (task #242 fail-loud) which the
+# server's broad try/except swallowed silently — the audit row never
+# landed and replay-protection was effectively off. Adding ``pending``
+# to VALID_OUTCOMES makes the pre-policy row actually persist.
+
+
+def test_outcome_pending_named_constant_is_exported() -> None:
+    """FIX-1 / FIX-4 promise: ``OUTCOME_PENDING`` is importable from
+    both ``kya.invocations`` and ``kya`` top-level so callers do not
+    duplicate the literal ``"pending"`` at call sites."""
+    from kya import OUTCOME_PENDING as OUTCOME_PENDING_TOP
+    from kya.invocations import OUTCOME_PENDING
+    assert OUTCOME_PENDING == "pending"
+    assert OUTCOME_PENDING_TOP is OUTCOME_PENDING
+
+
+def test_record_invocation_accepts_pending_via_named_constant(
+    sqlite_session,
+) -> None:
+    """FIX-4 target: ``record_invocation(..., outcome=OUTCOME_PENDING)``
+    must succeed and round-trip cleanly. Previously raised ValueError
+    (silently caught by the gateway's try/except at server.py:1374)."""
+    from kya.invocations import (
+        OUTCOME_PENDING,
+        list_invocations,
+        record_invocation,
+    )
+    inv_id = record_invocation(
+        db=sqlite_session,
+        tenant_id="tenant-x",
+        agent_key="agent-pending",
+        principal_kind="user",
+        principal_id="user-1",
+        mode="observed",
+        outcome=OUTCOME_PENDING,
+        occurred_at=datetime.now(timezone.utc),
+    )
+    assert inv_id > 0
+    rows = list_invocations(sqlite_session, tenant_id="tenant-x")
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == OUTCOME_PENDING
+
+
+def test_pending_membership_in_valid_outcomes() -> None:
+    """FIX-1 sabotage anchor: remove ``OUTCOME_PENDING`` from
+    ``VALID_OUTCOMES`` and this test goes RED."""
+    from kya.invocations import OUTCOME_PENDING, VALID_OUTCOMES
+    assert OUTCOME_PENDING in VALID_OUTCOMES

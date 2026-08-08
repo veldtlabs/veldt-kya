@@ -489,6 +489,34 @@ _PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
     ("deepseek", "self_hosted"),
 )
 
+# ---------------------------------------------------------------------
+# _VALID_OUTCOMES — the NARROW billing/cost-accounting outcome set.
+#
+# Intentional narrow scope. Cost events care only about billable
+# dispositions: whether the call happened (``success`` / ``failure`` /
+# ``partial``), was billably refused by the model provider (``refused``),
+# or has no attributable status (``unknown``, used as the defensive
+# fallback for anything else). Transient states (``pending``,
+# ``in_progress``) and hard-terminals that indicate the call never
+# reached the LLM (``denied``, ``blocked``, ``error``, ``throttled``)
+# are outside the billing concern and are silently coerced to
+# ``"unknown"`` at the top of ``record_cost_event`` — an unrecognized
+# outcome MUST NOT fail the cost-recording path or the request flow it
+# rides on.
+#
+# XREF: ``kya.invocations.VALID_OUTCOMES`` is the FULL invocation
+# lifecycle set (10 values) — ``{success, failure, refused, denied,
+# blocked, error, throttled, partial, in_progress, pending}``. These
+# two vocabularies are intentionally different, not accidental drift:
+#   * Invocation tracking answers "what happened to this call?" — every
+#     lifecycle state must round-trip cleanly and unknown values MUST
+#     fail loud (task #242) so SDK bugs surface immediately.
+#   * Cost accounting answers "what should we bill?" — the closed
+#     billing set is smaller and unknowns are defensively coerced so
+#     billing never blocks request flow.
+# Any change to this set must document why the new value is billable
+# and update the XREF in ``kya.invocations`` accordingly.
+# ---------------------------------------------------------------------
 _VALID_OUTCOMES = frozenset({
     "success", "failure", "refused", "partial", "unknown",
 })
