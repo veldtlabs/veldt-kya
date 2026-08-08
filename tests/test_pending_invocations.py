@@ -462,10 +462,15 @@ def test_mark_resumed_double_call_only_first_wins(engine):
 
 def test_list_by_tenant_returns_only_that_tenant(engine):
     a = _create(engine, tenant_id="tenant-a", now=NOW)
-    _create(engine, tenant_id="tenant-a", now=NOW)
+    b = _create(engine, tenant_id="tenant-a", now=NOW)
     _create(engine, tenant_id="tenant-b", now=NOW)
     rows = list_by_tenant(engine, tenant_id="tenant-a")
-    assert {r.id for r in rows} == {a, rows[1].id}
+    # Compare as sets — list_by_tenant's ORDER BY tiebreaks on id ASC
+    # when expires_at + submitted_at are identical (burst inserts in
+    # the same tick, as here), so the returned order between a and b
+    # depends on random UUID sort. The tenant-filter contract is what
+    # this test enforces.
+    assert {r.id for r in rows} == {a, b}
     assert all(r.tenant_id == "tenant-a" for r in rows)
 
 

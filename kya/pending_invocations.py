@@ -548,6 +548,13 @@ def list_by_tenant(
 
     ``limit`` is capped at 500 so a runaway backlog can't blow the
     JSON payload — the admin UI surfaces "N of M shown" when hit.
+
+    Ordering: ``expires_at ASC, submitted_at ASC, id ASC``. The two
+    tiebreakers matter because burst inserts frequently produce
+    identical ``expires_at`` (same NOW + same TTL). SQLite happens
+    to return equal-key rows in insertion order; MySQL/InnoDB does
+    not — without the tiebreak the approver UI would reorder rows
+    across page refreshes on MySQL deployments (task #356).
     """
     capped = max(1, min(int(limit), 500))
     with engine.connect() as conn:
@@ -560,7 +567,7 @@ def list_by_tenant(
                        resume_result_evidence_id
                 FROM kya_pending_invocations
                 WHERE tenant_id = :tid
-                ORDER BY expires_at ASC
+                ORDER BY expires_at ASC, submitted_at ASC, id ASC
                 LIMIT :lim
             """), {"tid": tenant_id, "lim": capped}).fetchall()
         else:
@@ -572,7 +579,7 @@ def list_by_tenant(
                        resume_result_evidence_id
                 FROM kya_pending_invocations
                 WHERE tenant_id = :tid AND status = :st
-                ORDER BY expires_at ASC
+                ORDER BY expires_at ASC, submitted_at ASC, id ASC
                 LIMIT :lim
             """), {"tid": tenant_id, "st": status, "lim": capped}).fetchall()
     return [_row_to_view(r) for r in result]
