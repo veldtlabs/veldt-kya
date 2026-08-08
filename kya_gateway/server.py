@@ -953,7 +953,21 @@ def build_app(gw: Gateway) -> FastAPI:
                     ),
                     status_code=403,
                 )
-            if verdict.verdict in ("flag_for_review", "require_human"):
+            # FIX-C (task #105): the legacy alias `require_human` is
+            # normalized at the rbac-evaluate + adapter boundaries in
+            # `policy_pipeline`, so `verdict.verdict` here should be
+            # canonical. We keep the legacy string in the check for
+            # defense-in-depth (belt + suspenders) but read the alias
+            # from the source-of-truth constant instead of hardcoding.
+            from kya_gateway.policy_pipeline import (
+                _CANONICAL_HUMAN_APPROVAL_VERDICT,
+                _LEGACY_VERDICT_ALIASES,
+            )
+            _human_approval_verdicts: frozenset[str] = (
+                frozenset({_CANONICAL_HUMAN_APPROVAL_VERDICT})
+                | frozenset(_LEGACY_VERDICT_ALIASES.keys())
+            )
+            if verdict.verdict in _human_approval_verdicts:
                 # Phase 5g-tail — 428 Precondition Required (RFC 6585 §3)
                 # is the correct semantic: the action isn't denied, it
                 # needs a precondition (human approval) before it can
@@ -984,15 +998,47 @@ def build_app(gw: Gateway) -> FastAPI:
                     make_error(
                         req.request_id,
                         JSONRPC_ERR_HUMAN_APPROVAL_REQUIRED,
-                        "KYA verdict: flag_for_review",
+                        # FIX-F (task #105): interpolate the shared
+                        # canonical-verdict constant so the wire response
+                        # tracks a single edit in ``kya._verdict_aliases``.
+                        f"KYA verdict: {_CANONICAL_HUMAN_APPROVAL_VERDICT}",
                         data={
                             "reason_codes": verdict.reason_codes,
-                            "verdict": "flag_for_review",
+                            "verdict": _CANONICAL_HUMAN_APPROVAL_VERDICT,
                             "pending_id": pending_id,
                         },
                     ),
                     status_code=428,
                     headers=headers_out,
+                )
+            # Task #318 FIX-4: fail-closed trap for unknown verdicts in
+            # enforce mode. Belt-and-suspenders with the allowlist in
+            # ``_verdict_result_to_gateway_verdict`` (FIX-3). If ANY new
+            # vocabulary (`redact`/`throttle`/`block`/`anonymize` from
+            # the Pro L2 verdict matrix) or a typo slips through the
+            # pipeline, treat it as deny in enforce mode rather than
+            # forwarding to the backend silently. Log at WARNING so
+            # operators see the drift.
+            if verdict.verdict != "allow":
+                logger.warning(
+                    "[KYA-GATEWAY] enforce-mode unknown verdict=%r "
+                    "(reason_codes=%r) — treating as deny (fail-closed)",
+                    verdict.verdict, verdict.reason_codes,
+                )
+                return JSONResponse(
+                    make_error(
+                        req.request_id,
+                        -32001,
+                        f"KYA verdict: {verdict.verdict} "
+                        f"({', '.join(verdict.reason_codes)}) — "
+                        "unsupported verdict, treated as deny",
+                        data={
+                            "reason_codes": verdict.reason_codes,
+                            "verdict": "deny",
+                            "original_verdict": verdict.verdict,
+                        },
+                    ),
+                    status_code=403,
                 )
 
         # ─── 6b. Forward to backend (audit_only/advise always; enforce on allow) ─
