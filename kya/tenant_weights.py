@@ -85,6 +85,21 @@ def register_scope(scope: str, default_dict: dict) -> None:
     """Register a weight scope managed by this module. Called by each
     factor module at import time (data_classes, security_caps, etc.)."""
     _SCOPE_REGISTRY[scope] = default_dict
+    # Task #318 FIX-B — defense-in-depth: the scope registry feeds
+    # ``get_effective_policy_hash`` (via ``known_scopes()`` inside
+    # ``get_effective_policy``). If a scope registers AFTER the hash
+    # cache is primed for any tenant, subsequent cached lookups would
+    # return the pre-registration hash and drift silently until TTL.
+    # Nuking the cache on register keeps the hash aligned with the
+    # live registry without hunting for every caller that mutates it.
+    try:
+        from .policy_hash import invalidate_policy_hash_cache
+        invalidate_policy_hash_cache()  # no-arg = nuke all tenants
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "[KYA_WEIGHTS] policy_hash cache invalidation on "
+            "register_scope failed: %s", exc,
+        )
 
 
 def known_scopes() -> list[str]:
@@ -401,6 +416,27 @@ def set_override(
         )
     _audit(db, scope, key, old, value, "set", tenant_id, changed_by, reason)
     db.commit()
+    # Task #318 FIX-2 — invalidate the TTL cache in front of
+    # ``get_effective_policy_hash`` so the next verdict hash reflects
+    # this override immediately. A platform-level write (tenant_id
+    # is None) affects EVERY tenant's effective hash — nuke the whole
+    # cache so no stale per-tenant entry survives.
+    try:
+        from .policy_hash import invalidate_policy_hash_cache
+        if tenant_id is None:
+            invalidate_policy_hash_cache()  # nuke all
+        else:
+            invalidate_policy_hash_cache(tenant_id)
+            # Platform-baseline (None key) is unaffected by a tenant-only
+            # write, so leave it cached.
+    except Exception as exc:  # noqa: BLE001
+        # Never let cache invalidation failure crash the write path.
+        # Worst case: next verdict uses a stale hash for up to
+        # _POLICY_HASH_CACHE_TTL_SECONDS. Loud debug log so drift is
+        # visible in ops logs.
+        logger.debug(
+            "[KYA_WEIGHTS] policy_hash cache invalidation failed: %s", exc,
+        )
     logger.info(
         "[KYA_WEIGHTS] %s.%s tenant=%s %s -> %s by=%s",
         scope,
@@ -446,6 +482,18 @@ def delete_override(
     )
     _audit(db, scope, key, old, None, "delete", tenant_id, changed_by, reason)
     db.commit()
+    # Task #318 FIX-2 — mirror ``set_override``'s cache invalidation.
+    try:
+        from .policy_hash import invalidate_policy_hash_cache
+        if tenant_id is None:
+            invalidate_policy_hash_cache()
+        else:
+            invalidate_policy_hash_cache(tenant_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "[KYA_WEIGHTS] policy_hash cache invalidation on delete "
+            "failed: %s", exc,
+        )
     return True
 
 

@@ -43,8 +43,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import threading
+import time
 import unicodedata
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Version prefix so a future canonicalisation change (unlikely but
 # conceivable — e.g. Unicode normalisation form) can be rolled without
@@ -227,15 +232,108 @@ def get_effective_policy(db, tenant_id: str | None) -> dict[str, dict[str, int]]
     }
 
 
+def _compute_effective_policy_hash_uncached(
+    db, tenant_id: str | None,
+) -> str:
+    """Un-cached implementation of ``get_effective_policy_hash``.
+
+    Exposed as a module-level function (not a nested closure) so tests
+    can monkey-patch it with a call-counter and the cache in front of
+    it will still route through the patched version. Never call this
+    directly on the hot path — use ``get_effective_policy_hash`` so
+    the TTL cache absorbs repeat calls.
+    """
+    return hash_policy(get_effective_policy(db, tenant_id=tenant_id))
+
+
+# ── TTL cache (task #318 FIX-2) ─────────────────────────────────────
+# Hot-path callers (native evaluator, verdict recorder, gateway
+# policy pipeline) hit this on every verdict. Previously every call
+# fanned out to an N-scope DB SELECT via ``get_effective_policy``.
+# The TTL cache eliminates that spam while keeping policy-change
+# propagation bounded to ``_POLICY_HASH_CACHE_TTL_SECONDS``.
+#
+# Concurrency: copy-on-write matches the pattern in
+# ``policy_evaluator._REGISTRY_LOCK`` — readers snapshot the dict
+# reference (GIL-atomic) and lookup against that snapshot; writers
+# take the lock, build a new dict, and swap the reference. No reader
+# ever observes a torn dict.
+#
+# Invalidation: call ``invalidate_policy_hash_cache(tenant_id)`` on
+# policy mutation (tenant_weights change, signed-rec approval, etc.).
+# Passing ``None`` invalidates ALL tenants — used by tests and by the
+# "clear on demand" ops endpoint.
+
+_POLICY_HASH_CACHE_TTL_SECONDS: float = 30.0
+_policy_hash_cache: dict[tuple[str | None], tuple[str, float]] = {}
+_policy_hash_cache_lock = threading.Lock()
+
+
 def get_effective_policy_hash(db, tenant_id: str | None) -> str:
-    """Convenience: assemble + hash in one call.
+    """Convenience: assemble + hash in one call, with a per-tenant
+    TTL cache (default 30 s) in front of the DB fan-out.
 
     Runtime hot-path helper. The verdict recorder calls this on
     every verdict; keeping the composition here means a compromised
     caller can't hash a subset of scopes and pretend it was the
     whole policy.
+
+    Cache semantics:
+        * Keyed by ``tenant_id`` (``None`` — platform default — is a
+          distinct key from any concrete tenant).
+        * TTL = ``_POLICY_HASH_CACHE_TTL_SECONDS`` (30 s default).
+          Short enough for a policy edit to propagate within the SLA
+          the ops team cares about; long enough to eliminate the
+          hot-loop DB fan-out.
+        * Callers that mutate policy MUST call
+          ``invalidate_policy_hash_cache(tenant_id)`` so the next
+          hash reflects the mutation immediately.
+
+    Fail-safe: any exception from the uncached compute propagates —
+    the cache never masks a real error by returning stale data. If
+    an entry is missing OR expired, the compute runs and (on success)
+    the result is stored. On failure, no cache entry is written.
     """
-    return hash_policy(get_effective_policy(db, tenant_id=tenant_id))
+    key = (tenant_id,)
+    snapshot = _policy_hash_cache
+    entry = snapshot.get(key)
+    if entry is not None:
+        cached_hash, expires_at = entry
+        if time.monotonic() < expires_at:
+            return cached_hash
+    # Miss or expired — compute (may raise; that's intentional)
+    fresh = _compute_effective_policy_hash_uncached(db, tenant_id)
+    with _policy_hash_cache_lock:
+        new_cache = dict(_policy_hash_cache)
+        new_cache[key] = (fresh, time.monotonic() + _POLICY_HASH_CACHE_TTL_SECONDS)
+        globals()["_policy_hash_cache"] = new_cache
+    return fresh
+
+
+def invalidate_policy_hash_cache(tenant_id: str | None | object = ...) -> None:
+    """Drop cache entries so the next call re-computes.
+
+    Args:
+        tenant_id: When omitted (default sentinel) OR explicitly
+            ``None``... wait, ``None`` is a legitimate key (platform
+            default). Distinguish via a sentinel: the SENTINEL default
+            means "invalidate all"; a concrete ``str`` or ``None``
+            means "invalidate that specific key".
+
+    Callers that mutate a specific tenant's policy should pass that
+    ``tenant_id``. Callers that mutate the platform-default policy
+    should pass ``None``. Callers that don't know (bulk import,
+    schema migration) should call with no arguments to nuke the
+    whole cache.
+    """
+    with _policy_hash_cache_lock:
+        if tenant_id is ...:
+            globals()["_policy_hash_cache"] = {}
+            return
+        new_cache = dict(_policy_hash_cache)
+        # tenant_id here can be str or None — both are valid keys.
+        new_cache.pop((tenant_id,), None)  # type: ignore[arg-type]
+        globals()["_policy_hash_cache"] = new_cache
 
 
 __all__ = [
@@ -247,4 +345,5 @@ __all__ = [
     "verify_policy_hash",
     "get_effective_policy",
     "get_effective_policy_hash",
+    "invalidate_policy_hash_cache",
 ]
