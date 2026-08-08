@@ -11,8 +11,11 @@ import json
 import os
 import sys
 import types
+from contextlib import contextmanager
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
 
@@ -47,46 +50,24 @@ def _patch_kya_core(monkeypatch, *, invocation_id_returned=12345,
     if record_signal_calls is None:
         record_signal_calls = []
 
-    class _MockDialect:
-        # Phase 4 (#S4-1) — real SQLAlchemy Connection.dialect exposes a
-        # `.name` attribute; kya/pending_invocations.py::ensure_table
-        # branches on it. Stub returns "sqlite" so the ensure_table code
-        # path succeeds in tests without a live DB.
-        name = "sqlite"
+    # Phase 3 FIX-C — require_human → flag_for_review normalization made
+    # _create_pending_row actually run against Session.get_bind().dialect
+    # + engine.begin().execute(). Hand-rolled stubs cascaded missing
+    # methods (`_MockCtx.execute` etc). Per feedback_test_locally_before_push
+    # (Kola directive 2026-08-08), swap to a real sqlite:///:memory: engine
+    # + sessionmaker — the SQLAlchemy contract is fully honored, no stubs
+    # to maintain.
+    engine = create_engine("sqlite:///:memory:")
+    Session = sessionmaker(bind=engine)
 
-    class _MockCtx:
-        # Real Engine.begin() returns a Connection ctx-manager.
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    class _MockEngine:
-        # Real SQLAlchemy Engine has .dialect + .begin(). Minimal stub
-        # for kya.pending_invocations.ensure_table + downstream
-        # introspection.
-        dialect = _MockDialect()
-        def begin(self):
-            return _MockCtx()
-
-    class _Session:
-        def __init__(self):
-            self.committed = False
-        def commit(self):
-            self.committed = True
-        def get_bind(self):
-            # Real Session.get_bind() returns the Engine. Post-Phase 3
-            # normalization made require_human → flag_for_review actually
-            # trigger _create_pending_row which needs a real engine
-            # for ensure_table; a mock engine with .dialect.name is
-            # sufficient because ensure_table becomes a no-op path on
-            # sqlite (table pre-created) in test env.
-            return _MockEngine()
-        def __enter__(self):
-            return self
-        def __exit__(self, *exc):
-            return False
-
+    @contextmanager
     def default_session():
-        return _Session()
+        db = Session()
+        try:
+            yield db
+            db.commit()
+        finally:
+            db.close()
 
     def record_invocation(db, **kw):
         return invocation_id_returned

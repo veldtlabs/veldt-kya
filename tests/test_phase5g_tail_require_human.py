@@ -13,8 +13,56 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 os.environ["KYA_DID_RESOLVERS"] = "key,web,jwk"
+
+
+def _install_fake_kya(monkeypatch):
+    """Install a stub `kya` module using a real sqlite:///:memory: session.
+
+    Phase 3 FIX-C — require_human → flag_for_review normalization made
+    ``_create_pending_row`` actually run against
+    ``Session.get_bind().dialect`` + ``engine.begin().execute(...)``.
+    Hand-rolled stubs (``_Sess`` / ``_MockEngine`` / ``_MockCtx``)
+    cascaded missing methods every time the pending-row path added a
+    call site. Per feedback_test_locally_before_push (Kola 2026-08-08),
+    swap to a real in-memory SQLAlchemy engine — the contract is fully
+    honored and stubs disappear.
+    """
+    import sys
+    import types
+
+    fake_kya = types.ModuleType("kya")
+
+    engine = create_engine("sqlite:///:memory:")
+    Session = sessionmaker(bind=engine)
+
+    @contextmanager
+    def _default_session():
+        db = Session()
+        try:
+            yield db
+            db.commit()
+        finally:
+            db.close()
+
+    fake_kya.default_session = _default_session
+    fake_kya.record_invocation = lambda db, **kw: 1
+    fake_kya.record_evidence = lambda db, **kw: 1
+    fake_kya.record_principal_signal = lambda db, **kw: 1
+    class _ADE(Exception): pass
+    fake_kya.AccessDeniedError = _ADE
+    fake_kya.require_action = lambda *a, **k: True
+    # Task #349 — server._record_invocation_pre_policy imports
+    # ``OUTCOME_PENDING`` from ``kya``. The stub must expose it or the
+    # ``from kya import ...`` line raises ImportError and the pre-policy
+    # path silently no-ops.
+    fake_kya.OUTCOME_PENDING = "pending"
+    monkeypatch.setitem(sys.modules, "kya", fake_kya)
 
 
 def test_require_human_enforce_returns_428_not_403(monkeypatch):
@@ -23,36 +71,7 @@ def test_require_human_enforce_returns_428_not_403(monkeypatch):
     because 403 tells clients "this is permanently denied"; 428 tells
     them "satisfy the precondition (human approval) and retry."
     """
-    import sys
-    import types
-
-    fake_kya = types.ModuleType("kya")
-
-    class _MockDialect:
-        name = "sqlite"
-
-    class _MockCtx:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    class _MockEngine:
-        dialect = _MockDialect()
-        def begin(self): return _MockCtx()
-
-    class _Sess:
-        def commit(self): pass
-        def get_bind(self): return _MockEngine()
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    fake_kya.default_session = lambda: _Sess()
-    fake_kya.record_invocation = lambda db, **kw: 1
-    fake_kya.record_evidence = lambda db, **kw: 1
-    fake_kya.record_principal_signal = lambda db, **kw: 1
-    class _ADE(Exception): pass
-    fake_kya.AccessDeniedError = _ADE
-    fake_kya.require_action = lambda *a, **k: True
-    monkeypatch.setitem(sys.modules, "kya", fake_kya)
+    _install_fake_kya(monkeypatch)
 
     from fastapi.testclient import TestClient
 
@@ -122,36 +141,7 @@ def test_require_human_enforce_returns_428_not_403(monkeypatch):
 def test_require_human_deny_still_returns_403(monkeypatch):
     """Regression: deny verdict must STILL return 403; only
     require_human moved to 428."""
-    import sys
-    import types
-
-    fake_kya = types.ModuleType("kya")
-
-    class _MockDialect:
-        name = "sqlite"
-
-    class _MockCtx:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    class _MockEngine:
-        dialect = _MockDialect()
-        def begin(self): return _MockCtx()
-
-    class _Sess:
-        def commit(self): pass
-        def get_bind(self): return _MockEngine()
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    fake_kya.default_session = lambda: _Sess()
-    fake_kya.record_invocation = lambda db, **kw: 1
-    fake_kya.record_evidence = lambda db, **kw: 1
-    fake_kya.record_principal_signal = lambda db, **kw: 1
-    class _ADE(Exception): pass
-    fake_kya.AccessDeniedError = _ADE
-    fake_kya.require_action = lambda *a, **k: True
-    monkeypatch.setitem(sys.modules, "kya", fake_kya)
+    _install_fake_kya(monkeypatch)
 
     from fastapi.testclient import TestClient
 
