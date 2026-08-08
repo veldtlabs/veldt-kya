@@ -6,6 +6,43 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — `pending` outcome + named lifecycle constants (task #349)
+
+- **Added `pending` to `VALID_OUTCOMES`** — pre-policy invocation
+  recording (`kya_gateway.server._record_invocation_pre_policy`) has
+  been silently failing since task #242's fail-loud fix because it
+  emits `outcome='pending'`, which was not in `VALID_OUTCOMES`. The
+  resulting `ValueError` was swallowed by the helper's defensive
+  `try/except`, dropping every pre-policy audit row on the floor —
+  replay-protection was effectively off for the whole pre-policy
+  window. Adding `pending` as a canonical value restores the
+  pre-policy audit trail. `mode='observed'` on those rows
+  discriminates them cleanly from HITL rows (`mode='in_the_loop'`)
+  so Pro's approval queue is unaffected.
+- **Introduced `OUTCOME_PENDING` and `OUTCOME_IN_PROGRESS` named
+  constants** in `kya.invocations` (also exported at `kya.` top-level
+  and in `__all__`), per `feedback_no_hardcoding` convert-as-you-touch:
+  new canonical values ship with names from day one, and the sibling
+  transient state `in_progress` is opportunistically named in the same
+  edit. Call sites should prefer the named constants; the remaining
+  8 outcome literals stay bare until touched by other work (inventory
+  task #352).
+- **Extended `_VALID_OUTCOMES` docstring** in `kya.tenant_budget` to
+  explain why the billing set is intentionally NARROWER than
+  `VALID_OUTCOMES` (transient states + hard-terminals that never
+  reached the LLM are outside billing concern; defensive coerce-to-
+  `"unknown"` keeps cost-recording non-blocking).
+- **Also mirrored in the Pro ingest boundary** —
+  `kya_pro.dashboard_api._ingest_router.InvocationEventBody.outcome`
+  Literal was widened to accept `"pending"` so pre-policy audit rows
+  forward end-to-end through the ingress endpoint.
+- Downstream readers (`derive_verdict`, `active_parallel_invocations`,
+  Pro HITL queue at `_storage.py::list_approvals` which filters
+  `mode='in_the_loop'`) all handle `pending` correctly — no reader
+  changes required. No DB migration (VARCHAR(20), no CHECK
+  constraint). No SDK release required (clients pass strings through).
+- Semver: minor. Additive only; no breaking behavior.
+
 ### Deprecated — verdict alias `require_human` (task #105)
 
 - The legacy verdict string `"require_human"` is now normalized to
