@@ -75,8 +75,11 @@ VALID_MODES = {
 # both are transient (non-terminal) states and clarify the lifecycle
 # when read together. The remaining outcome literals remain bare for
 # now and will be converted opportunistically as other edits touch them.
-OUTCOME_PENDING = "pending"
-OUTCOME_IN_PROGRESS = "in_progress"
+from .canonicals import (
+    CANONICAL_OUTCOMES as _CANONICAL_OUTCOMES,
+    OUTCOME_IN_PROGRESS,
+    OUTCOME_PENDING,
+)
 
 # ---------------------------------------------------------------------
 # VALID_OUTCOMES — the full invocation-lifecycle vocabulary.
@@ -115,18 +118,7 @@ OUTCOME_IN_PROGRESS = "in_progress"
 # invocation tracking cares about the full lifecycle. See the docstring
 # above ``_VALID_OUTCOMES`` in ``tenant_budget.py`` for the rationale.
 # ---------------------------------------------------------------------
-VALID_OUTCOMES = {
-    "success",
-    "failure",
-    "refused",
-    "denied",
-    "blocked",
-    "error",
-    "throttled",
-    "partial",
-    OUTCOME_IN_PROGRESS,
-    OUTCOME_PENDING,
-}
+VALID_OUTCOMES = _CANONICAL_OUTCOMES
 
 
 def _require_sqlalchemy() -> None:

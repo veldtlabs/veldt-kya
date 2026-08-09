@@ -192,29 +192,9 @@ from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_f
 #: to. No new "operation_id" / "session_id" column is needed —
 #: ``correlation_id`` already covers cross-principal session
 #: grouping.
-PRINCIPAL_KINDS: tuple[str, ...] = (
-    # Existing
-    "user",
-    "agent",
-    "service_account",
-    # Autonomy (v0.1.8)
-    "drone",
-    "robot",
-    "vehicle",
-    "plc",
-    "scada",
-    "controller",
-    "sensor",
-    "actuator",
-    "lakehouse_job",
-    "machine_identity",
-    "autonomous_system",
-    # Issuer-API admins (HMAC + DID-signed token holders).
-    # Registered so the dual-admin approval chain can write
-    # `principal_edges` rows pointing at real principal rows, not
-    # orphan IDs (the 5g-B-03 lesson).
-    "admin",
-)
+from .canonicals import CANONICAL_PRINCIPAL_KINDS as _CANONICAL_PRINCIPAL_KINDS
+
+PRINCIPAL_KINDS: tuple[str, ...] = _CANONICAL_PRINCIPAL_KINDS
 
 # ── Runtime extensibility ───────────────────────────────────────────
 #

@@ -144,63 +144,12 @@ logger = logging.getLogger(__name__)
 _PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
 
 # Valid evidence kinds — closed set so callers don't invent shapes.
-VALID_EVIDENCE_KINDS = {
-    "prompt",  # what the agent received
-    "response",  # what the agent produced
-    "tool_call",  # tool invocation (name + args)
-    "tool_result",  # tool's output
-    "delegation_message",  # agent-to-agent message
-    "hil_decision",  # human approval/rejection
-    "system_message",  # framework/system context
-    "judge_verdict",  # multi-judge orchestrator per-judge verdict
-                      # (kya.scorer_orchestrator). Carries judge_name,
-                      # dimension, verdict, score, latency, detail.
-    # Runtime-security evidence (kya.runtime bridge). One kind per
-    # canonical SourceTool so attack-chain rules can match on the
-    # tool without scanning payload fields.
-    "runtime_falco",
-    "runtime_tetragon",
-    "runtime_tracee",
-    "runtime_sysdig",
-    "runtime_osquery",
-    "runtime_auditd",
-    "runtime_k8s_audit",
-    "runtime_ebpf",
-    # Autonomy evidence (kya.runtime bridge, autonomy family).
-    # Separate namespace so dashboards / rules can filter by family
-    # without enumerating individual tools.
-    "autonomy_mavlink",
-    # DID / VC / issuer-API + identity-layer evidence
-    # kinds. Registered here so callers don't silently fall back to
-    # "system_message" when recording VC issuance / revocation, trust
-    # registry changes, gateway verdicts, or DPoP / revocation /
-    # rotation events.
-    "issuer_vc_issued",
-    "issuer_vc_revoked",
-    # Issuer /revoke called against an already-revoked VC. Distinct
-    # from `issuer_vc_revoked` so dashboards can isolate no-op probes
-    # from real state transitions; serves as the forensic floor for
-    # the dedupe path on /revoke (closes the silent-revocation-status-
-    # oracle attack flagged in review).
-    "issuer_vc_revoke_already_set",
-    "trust_registry_change",
-    "gateway_verdict",
-    "revocation_blocked",
-    "dpop_replay",
-    "dpop_forge_attempt",
-    "dpop_expired",
-    "issuer_rotation_pending",
-    # Per-credential issuance approval workflow.
-    "vc_request_queued",         # mode=queue, request entered the queue
-    "vc_request_approved",       # explicit dual-admin approval
-    "vc_request_auto_approved",  # auto-approve pattern matched
-    "vc_request_denied",         # explicit denial
-    # Verdict-adjacent kinds emitted by Pro action-gate and OSS
-    # fiddler bridge. Declared OSS-side so unregistered writes
-    # from either surface don't silently normalize to system_message.
-    "action_gate_block",
-    "external_alert",
-}
+# Kept as a mutable ``set`` (initialized from ``CANONICAL_EVIDENCE_KINDS``)
+# because downstream Pro modules ``.add()`` domain-specific kinds at
+# import time (e.g. ``cross_tenant_unmask``, ``kill_switch``).
+from .canonicals import CANONICAL_EVIDENCE_KINDS as _CANONICAL_EVIDENCE_KINDS
+
+VALID_EVIDENCE_KINDS: set[str] = set(_CANONICAL_EVIDENCE_KINDS)
 
 # Retention defaults per regime (days). Used when caller doesn't supply
 # `retention_days` and `data_classes` triggers a regulated regime.

@@ -316,15 +316,9 @@ def _verdict_result_to_gateway_verdict(vr, *, fallback: Verdict) -> Verdict:
 # intentionally NOT listed here — an evaluator emitting it lands as
 # ``flag_for_review`` after ``_normalize_legacy_verdict`` fires. The
 # alias sunsets in ``_DEPRECATION_SUNSET``.
-_VALID_VERDICTS: frozenset[str] = frozenset({
-    "allow",
-    "deny",
-    "flag_for_review",
-    "redact",
-    "throttle",
-    "block",
-    "anonymize",
-})
+from kya.canonicals import CANONICAL_VERDICTS as _CANONICAL_VERDICTS
+
+_VALID_VERDICTS: frozenset[str] = _CANONICAL_VERDICTS
 
 
 def _emit_via_evaluator(

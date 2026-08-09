@@ -102,45 +102,9 @@ def _alerts_channel(tenant_id: str) -> str:
 # Whitelist — only these kinds can be written. Prevents caller-controlled
 # strings from spawning unbounded Valkey keys (caller could fire a signal
 # called "...long-string..." per request and DoS the keyspace).
-ALLOWED_SIGNAL_KINDS = frozenset(
-    {
-        "oos_tool",
-        "cross_tenant",
-        "data_leak",
-        "rbac_refusal",
-        "governance_block",
-        "hallucination",
-        "injection_attempt",
-        "definition_drift",
-        "policy_violation",
-        # A previously-unseen agent_key was just snapshotted (v1 written).
-        # Emitted from kya.versioning.snapshot_on_first_sight when the
-        # write is genuinely new — NOT on idempotent re-calls. Lets
-        # operators detect novel agents appearing in production
-        # (rogue dev, supply-chain injection, drift from registration
-        # workflow) without polling agent_versions.
-        "agent_first_sight",
-        # KYA-semantic hardening violations. Each
-        # carries enough detail in the alert payload for operators
-        # to triage: which principal, which primitive, what the limit
-        # was, why it fired. Burst-detection windows surface repeated
-        # violations from the same principal as a stronger signal.
-        "rate_limit_exceeded",
-        "payload_too_large",
-        "replay_detected",
-        # DID / VC identity-layer events. Without these
-        # entries, emit_security_event silently drops the realtime
-        # path and `revocation_blocked` / `dpop_*` events would never
-        # surface on live dashboards.
-        "revocation_blocked",
-        "dpop_replay",
-        "dpop_forge_attempt",
-        "dpop_expired",
-        "issuer_rotation_pending",
-        # Denial-burst signal from issuer-API.
-        "vc_approval_denied",
-    }
-)
+from .canonicals import CANONICAL_SIGNAL_KINDS as _CANONICAL_SIGNAL_KINDS
+
+ALLOWED_SIGNAL_KINDS = _CANONICAL_SIGNAL_KINDS
 
 
 def record_signal(
