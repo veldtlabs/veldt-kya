@@ -1,4 +1,4 @@
-"""Task #42 regression -- record_user_signal must work on DuckDB.
+"""record_user_signal must work on DuckDB.
 
 Pre-fix bug: DuckDB rejected `INSERT ... ON CONFLICT DO UPDATE SET
 trust_score = ...` because trust_score participated in an index. Even

@@ -1,6 +1,6 @@
-"""Phase 5g — regression tests for the review-cycle fixes.
+"""Regression tests for gateway enforcement review-cycle fixes.
 
-Each test pins one finding from the adversarial review (5g-A-01..12).
+Each test pins one finding from the adversarial review.
 A failure here means the corresponding regression has come back.
 """
 from __future__ import annotations

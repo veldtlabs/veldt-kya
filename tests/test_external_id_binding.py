@@ -1,4 +1,4 @@
-"""Phase 4b unit tests — IdP binding for principals + users."""
+"""External-ID binding unit tests — IdP binding for principals + users."""
 
 from __future__ import annotations
 

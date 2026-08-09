@@ -32,7 +32,7 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.4.6rc1] — 2026-08-01
 
-### Fixed — verdict-always-allow (Task #242, breaking-behavior fail-loud)
+### Fixed — verdict-always-allow (breaking-behavior fail-loud)
 
 - **`record_invocation` was silent-coercing unknown outcomes to `"success"`**
   via a debug-level log line. Combined with a `VALID_OUTCOMES` set that
@@ -40,11 +40,10 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `denied`, `throttled`), every SDK / OTLP-bridge call that used the
   documented-but-undeclared vocabulary was stored as `outcome="success"`.
 
-  Downstream in the Pro dashboard-api (`veldt-kya-pro >=0.11.2`):
-    1. `/v1/activity` derived `verdict="allow"` for the whole failure
-       population — the customer-visible "verdict-always-allow" bug.
-    2. The principal-trust ticker gate (`if outcome == "success":`) fired
-       on every failure, ratcheting principal trust UPWARD on broken calls.
+  Downstream consumers derived `verdict="allow"` for the whole failure
+  population — the "verdict-always-allow" bug — and the principal-trust
+  ticker gate (`if outcome == "success":`) fired on every failure,
+  ratcheting principal trust UPWARD on broken calls.
 
   **Fix:**
     * Expanded `VALID_OUTCOMES` to the full canonical set:
@@ -78,8 +77,7 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - **`score_agent` silently dropped tenant weight overrides**
-  (score-flow silent-drop, discovered during a Pro dashboard review
-  2026-07-15). Every operator who tightened a weight via
+  (score-flow silent-drop). Every operator who tightened a weight via
   `kya.tenant_weights.set_override` or a downstream policy console
   saw the new value in `get_effective_weights()` reads but got
   scored + gated at the platform default — a hidden
@@ -117,7 +115,7 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- **`record_principal_signal(allow_create=False)`** (#147). New
+- **`record_principal_signal(allow_create=False)`**. New
   keyword-only parameter that suppresses row creation when no
   existing `(tenant_id, principal_kind, principal_id)` row is found
   and returns the sentinel `-1` instead. Used by the gateway's
@@ -130,9 +128,7 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   callers (issuer-API admin tracking, manual
   `record_oos_tool_attempt`, etc.). The gateway tracks drops in an
   in-process `_METRICS["cross_tenant_signal_dropped"]` counter
-  (inspectable from pro deployments that wire a `/metrics`
-  endpoint; not currently exposed in OSS-only deployments — see
-  follow-up task #153).
+  (inspectable from deployments that wire a `/metrics` endpoint).
 
 ### Changed
 - **README rewritten** around a 30-second tamper-detection demo
@@ -142,19 +138,18 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   full regime list moved out of the README into the docs site.
 
 ### Fixed
-- **In-process lock leak in `record_principal_signal`** (#151).
-  The SQLite/DuckDB per-(tenant, principal_kind, principal_id)
+- **In-process lock leak in `record_principal_signal`**. The
+  SQLite/DuckDB per-(tenant, principal_kind, principal_id)
   lock acquired at the top of the function was NOT released when
   `db.execute(SELECT)` raised — `db.rollback(); raise` leaked
   the lock for the process lifetime, so a noisy DB outage could
   DoS that specific key. Wrapped the entire retry loop in
   `try/finally` so every exit path (success, retry-bailout,
-  `allow_create=False` skip, SELECT failure) releases. Pre-existed
-  the #147 work; flagged during the two-pass review of #147.
+  `allow_create=False` skip, SELECT failure) releases.
 
 ### Operator notes
-- **Phantom-row cleanup for upgrades from 0.3.7** (#150). The
-  cross-tenant attribution gap (#147) was active between 0.3.7
+- **Phantom-row cleanup for upgrades from 0.3.7.** The
+  cross-tenant attribution gap was active between 0.3.7
   and 0.3.8. Operators running federated multi-tenant
   deployments (gateway's `trusted_issuers` includes issuers
   owned by other tenants) may have phantom rows in
@@ -190,14 +185,10 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   phantoms.** A row is a phantom only if the `principal_id` is
   owned by a DIFFERENT tenant in your federation, not by the
   gateway tenant. Inspect manually -- the "known inventory"
-  predicate depends on your onboarding flow:
-  - **kya-pro / issuer-API deployments**: cross-reference
-    `principal_id NOT IN (SELECT subject_did FROM
-    kya_pending_credentials WHERE tenant_id = :gw_tenant)`
-    (pro-only table; the issuer-API maintains it).
-  - **OSS-only deployments**: cross-reference against your
-    admin-registered DID list or VC issuance log (operator
-    knowledge; OSS does not ship a canonical inventory table).
+  predicate depends on your onboarding flow. Cross-reference
+  against your admin-registered DID list or VC issuance log
+  (operator knowledge; the OSS package does not ship a canonical
+  inventory table).
 
   **Step 3 — purge confirmed phantoms in batches.** Do NOT run
   an unbounded `DELETE` on a busy production
@@ -234,9 +225,9 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.3.4] — 2026-06-11
 
 ### Changed
-- **`redis>=5.0` is now part of the `[gateway]` extra** (#89). The
+- **`redis>=5.0` is now part of the `[gateway]` extra.** The
   gateway's policy pipeline calls `kya._valkey.get_valkey()` for
-  the token-bucket rate limiter and the Phase 5g revocation cache.
+  the token-bucket rate limiter and the revocation cache.
   Pre-fix, `veldt-kya[gateway]` did not pull in `redis-py`, so a
   deployment that set `KYA_VALKEY_URL` saw `get_valkey()` return
   None silently and the rate limiter fail-opened. Bundling redis
@@ -253,19 +244,19 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.3.3] — 2026-06-11
 
 ### Added
-- **`kya.rate_limit.check_rate`** (#85). New per-principal rate-limit
+- **`kya.rate_limit.check_rate`.** New per-principal rate-limit
   check called by the gateway's policy pipeline. Returns True/False.
   Previously the gateway imported `check_rate` but the module only
   exposed `maybe_rate_limit` (different signature) -- ImportError was
   caught silently and gateway rate-limiting was effectively disabled.
-- **`kya_redteam.runtime.check_rate_token`** (#85). Non-blocking
+- **`kya_redteam.runtime.check_rate_token`.** Non-blocking
   variant of `acquire_rate_token` for HTTP-synchronous paths (single
   INCR+cap check, no sleep loop).
 - Hashed bucket keys for `check_rate` so DID-shaped principal IDs
   (which contain colons) cannot alias another principal's budget.
 
 ### Fixed
-- **Gateway: principal_id resolution from VC** (#86). The gateway's
+- **Gateway: principal_id resolution from VC.** The gateway's
   `IdentityResolver._try_did` now reads `principal_kind` /
   `principal_id` from `vc.credentialSubject` (W3C VC-JWT §6.1
   location) as well as the JWT top level. Pre-fix, VCs minted by
@@ -278,7 +269,7 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.3.2] — 2026-06-11
 
 ### Added
-- **Dynamic MCP action namespace** (#82). `kya.rbac` now accepts
+- **Dynamic MCP action namespace.** `kya.rbac` now accepts
   `mcp.<backend>.<tool>` action strings (alongside the existing closed
   `ACTIONS` set) so the gateway's policy pipeline can resolve MCP tool
   calls through `require_action` and `min_trust` correctly. A new
@@ -291,7 +282,7 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.3.1] — 2026-06-11
 
 ### Fixed
-- **DuckDB portability** (#78). The `agent_key` widening migration in
+- **DuckDB portability.** The `agent_key` widening migration in
   `kya.invocations` aborted the DuckDB transaction context, breaking
   every subsequent statement on the same connection. DuckDB does not
   enforce VARCHAR length, so the migration is now skipped on that
@@ -303,20 +294,20 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.3.0] — 2026-06-10
 
 ### Added
-- **W3C DID adapter** (Phase 3d) — did:key, did:web, did:jwk
+- **W3C DID adapter** — did:key, did:web, did:jwk
   resolvers + JWT-VC verification. New extras: `pip install
   veldt-kya[did]`.
-- **MCP/JSON-RPC gateway** (Phase 4+6) — identity + policy + audit
+- **MCP/JSON-RPC gateway** — identity + policy + audit
   HTTP proxy for any backend MCP server. DPoP RFC 9449 on
   `/v1/principals/me`, schema-bounded body envelope on `/mcp`.
   New extras: `pip install veldt-kya[gateway]`.
-- **Phase 5g — 9 DID-to-KYA integration points**: revocation +
-  DPoP events fire through `_HARDENING_EVENT_KINDS` + realtime +
-  `SIGNAL_DELTAS`; `link_vc_issuer_to_child` writes
-  `vc_issued` edges; `check_vc_scope_against_issuer` runs VC
-  scope through `delegation_policy`; `issuer_tenant_id_from_did`
-  UUID5 helper (`NAMESPACE_URL`).
-- **Phase 5h OSS primitives** — `admin` principal kind;
+- **DID-to-KYA integration points**: revocation + DPoP events fire
+  through `_HARDENING_EVENT_KINDS` + realtime + `SIGNAL_DELTAS`;
+  `link_vc_issuer_to_child` writes `vc_issued` edges;
+  `check_vc_scope_against_issuer` runs VC scope through
+  `delegation_policy`; `issuer_tenant_id_from_did` UUID5 helper
+  (`NAMESPACE_URL`).
+- **Additional identity primitives** — `admin` principal kind;
   `vc_request_queued / _approved / _auto_approved / _denied`
   evidence kinds; `vc_approval_denied` security event;
   DID-aware segment matcher (`_did_segment_match`,
@@ -360,8 +351,8 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `kya_principal_edges` actually portable on DuckDB so the
     delegation-graph primitive (`walk_ancestors` /
     `walk_descendants`) works end-to-end on all four backends.
-  - Surfaced by a downstream Pro v0.4.0 E2E run that stood up the
-    regulator pack against all four SQL backends in parallel.
+  - Surfaced by a downstream E2E run that stood up the regulator
+    pack against all four SQL backends in parallel.
 
 ### Added — regression coverage
 - `tests/test_principal_edges_duckdb_regression.py` — DDL +
@@ -382,12 +373,10 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   by construction.
 - **`why_codes` parallel array** on `ScoreWithWhy` — stable
   UPPER_SNAKE_CASE identifiers (e.g. `EVIDENCE_VERIFIED`,
-  `FAITHFULNESS_BREACH`) that Pro's `regulator_pack.annotate()`
-  joins on. OSS wording changes never break Pro's compliance
-  mappings because Pro keys on codes, not English.
-
-This release unblocks `veldt-kya-pro >= 0.2.0` which adds the
-regulator pack + compliance-aware annotation layer.
+  `FAITHFULNESS_BREACH`) that downstream annotators (e.g. a
+  compliance-mapping regulator pack) can key on. Wording changes
+  never break annotator mappings because the join is on codes,
+  not English.
 
 ## [0.2.1] — 2026-06-05
 
@@ -625,8 +614,6 @@ regulator pack + compliance-aware annotation layer.
 ### Notes
 - Pure addition; no semantics change at the default. Existing
   `definition_hash` values continue to match.
-- Required by `veldt-kya-pro>=0.1.6` for its `fleet_fingerprint`
-  strict-mode and the `assert_fingerprint_mode` guardrail.
 
 ## [0.1.6]
 

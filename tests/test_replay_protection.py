@@ -1,4 +1,4 @@
-"""Phase 5a — replay protection tests.
+"""Replay protection tests.
 
 Off-by-default is the most important contract: KYA must add zero
 behavior unless KYA_REPLAY_PROTECTION is explicitly enabled. These

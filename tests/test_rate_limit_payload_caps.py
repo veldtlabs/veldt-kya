@@ -1,4 +1,4 @@
-"""Phase 4a.1 — rate-limit + payload-cap tests.
+"""Rate-limit + payload-cap tests.
 
 Off-by-default behavior is the most important contract: KYA must
 add zero latency or rejection unless the operator explicitly

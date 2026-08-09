@@ -1,8 +1,8 @@
-"""Task #318 FIX-1 + FIX-6 — NativeEvaluator short-circuit on gateway
-inputs, and attribution enrichment on the fallback path.
+"""NativeEvaluator short-circuit on gateway inputs, and attribution
+enrichment on the fallback path.
 
 Load-bearing promises:
-    FIX-1:
+    Short-circuit:
         1. For gateway-shape inputs (no ``estimated_cost_usd`` / no
            ``data_classification`` / action not a registered weight
            scope), the default NativeEvaluator's ``evaluate()`` is

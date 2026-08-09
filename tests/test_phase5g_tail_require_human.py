@@ -1,6 +1,6 @@
-"""Phase 5g-tail — require_human verdict returns HTTP 428 (RFC 6585 §3).
+"""require_human verdict returns HTTP 428 (RFC 6585 §3).
 
-Pre-5g-tail behavior was HTTP 403, semantically wrong (Forbidden = "you
+Prior behavior was HTTP 403, semantically wrong (Forbidden = "you
 will never be allowed"). 428 Precondition Required is the correct code
 for "this action needs a precondition (human approval) before it can
 proceed."
@@ -57,7 +57,7 @@ def _install_fake_kya(monkeypatch):
     class _ADE(Exception): pass
     fake_kya.AccessDeniedError = _ADE
     fake_kya.require_action = lambda *a, **k: True
-    # Task #349 — server._record_invocation_pre_policy imports
+    # server._record_invocation_pre_policy imports
     # ``OUTCOME_PENDING`` from ``kya``. The stub must expose it or the
     # ``from kya import ...`` line raises ImportError and the pre-policy
     # path silently no-ops.
@@ -125,7 +125,7 @@ def test_require_human_enforce_returns_428_not_403(monkeypatch):
     # Distinct JSON-RPC code so clients can programmatically
     # distinguish deny (-32001) from flag_for_review (-32007).
     assert body["error"]["code"] == -32007
-    # Task #105 alias sunset (FIX-C): downstream code never sees the
+    # Legacy alias sunset: downstream code never sees the
     # legacy string. The RBAC rule was constructed with
     # verdict="require_human" — the rbac-evaluate boundary normalizes
     # to canonical, and the 428 body carries the canonical form.

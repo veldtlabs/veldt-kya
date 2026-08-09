@@ -1,4 +1,4 @@
-"""Real tests for the policy-hash primitive (task #157 §3).
+"""Real tests for the policy-hash primitive.
 
 Each test proves a specific promise the primitive makes. Where a
 promise is critical to the "policy operators see == policy runtime

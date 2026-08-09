@@ -1,4 +1,4 @@
-"""Phase 5h — OSS-side primitives the pro issuer-API depends on.
+"""OSS-side primitives consumed by downstream issuer-API integrations.
 
 - New evidence kinds registered in VALID_EVIDENCE_KINDS
 - New security event kind in _HARDENING_EVENT_KINDS + realtime + SIGNAL_DELTAS

@@ -1,12 +1,12 @@
-"""Task #242 - VALID_OUTCOMES round-trip + fail-loud regression.
+"""VALID_OUTCOMES round-trip + fail-loud regression.
 
 Pre-fix, ``kya.invocations.record_invocation`` silent-coerced any outcome
 NOT in ``VALID_OUTCOMES`` to ``"success"`` via a debug-level log line. The
 missing ``"failure"`` (and aliases ``"denied"``/``"throttled"`` that the
 API docs advertised) meant every failed call was written as
-``outcome="success"``, which then made the Pro ``_storage.list_activity``
-derive ``verdict="allow"`` for the whole failure population, and the Pro
-ingest router's trust-ticker gate tick trust UPWARD on every failure.
+``outcome="success"``, which then made downstream activity listers derive
+``verdict="allow"`` for the whole failure population, and trust-ticker
+gates tick trust UPWARD on every failure.
 
 Two-part fix on this side:
   1. Expand VALID_OUTCOMES to cover every documented value.
@@ -108,13 +108,14 @@ def test_banana_outcome_is_not_persisted_as_success(sqlite_session) -> None:
     assert list_invocations(sqlite_session, tenant_id="tenant-x") == []
 
 
-# ─── Task #349 — pending as canonical outcome + named constant ───────
-# The OSS gateway's ``_record_invocation_pre_policy`` writes
-# ``outcome="pending"`` for the pre-policy audit row. Before this task,
-# that call raised ``ValueError`` (task #242 fail-loud) which the
-# server's broad try/except swallowed silently — the audit row never
-# landed and replay-protection was effectively off. Adding ``pending``
-# to VALID_OUTCOMES makes the pre-policy row actually persist.
+# ─── ``pending`` as canonical outcome + named constant ────────────────
+# The gateway's ``_record_invocation_pre_policy`` writes
+# ``outcome="pending"`` for the pre-policy audit row. Historically,
+# that call raised ``ValueError`` (fail-loud on unknown outcome) which
+# the server's broad try/except swallowed silently — the audit row
+# never landed and replay-protection was effectively off. Adding
+# ``pending`` to VALID_OUTCOMES makes the pre-policy row actually
+# persist.
 
 
 def test_outcome_pending_named_constant_is_exported() -> None:

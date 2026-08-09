@@ -1,6 +1,5 @@
-"""Phase 3 (#S4-1) — end-to-end wiring tests for
-``kya_gateway.policy_pipeline.evaluate()`` through the
-``kya.PolicyEvaluator`` abstraction.
+"""End-to-end wiring tests for ``kya_gateway.policy_pipeline.evaluate()``
+through the ``kya.PolicyEvaluator`` abstraction.
 
 Three cohorts:
 

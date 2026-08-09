@@ -1,8 +1,8 @@
-"""Task #318 PERF-BENCHMARK — latency + compute-count guardrails for
-the gateway policy pipeline hot path.
+"""Latency + compute-count guardrails for the gateway policy pipeline
+hot path.
 
-Load-bearing promise: after FIX-1 (short-circuit) + FIX-2 (TTL cache)
-+ FIX-6 (attribution enrichment), the pipeline should:
+Load-bearing promise: after short-circuit + TTL cache + attribution
+enrichment, the pipeline should:
 
     1. Absorb 995+ of every 1000 ``get_effective_policy_hash`` calls
        via the TTL cache. The compute-count assertion is the load-

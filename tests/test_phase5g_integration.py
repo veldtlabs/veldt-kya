@@ -1,6 +1,6 @@
-"""Phase 5g Part B — DID-to-KYA integration regression tests.
+"""DID-to-KYA integration regression tests.
 
-Covers integration points #3, #4, #5, #7, #9 from the design doc:
+Covers integration points for:
 
 - #3 / #4 / #7: new event kinds in `_HARDENING_EVENT_KINDS` so the
   gateway / issuer-API can emit revocation_blocked / dpop_* /

@@ -1,9 +1,8 @@
-"""Task #318 FIX-3 + FIX-4 — verdict allowlist in adapter, fail-closed
-else in ``server.py``.
+"""Verdict allowlist in adapter, fail-closed else in ``server.py``.
 
-FIX-3: ``_verdict_result_to_gateway_verdict`` MUST reject any
-``VerdictResult.verdict`` not in the paper Figure-4 canonical vocabulary,
-returning the gateway rule's fallback verdict (and logging WARN)
+Adapter promise: ``_verdict_result_to_gateway_verdict`` MUST reject any
+``VerdictResult.verdict`` not in the canonical vocabulary, returning
+the gateway rule's fallback verdict (and logging WARN)
 instead of silently propagating a typo / new-vocab string that would
 slip past ``server.py``'s explicit verdict branches.
 
@@ -99,9 +98,9 @@ def test_adapter_rejects_typo_verdict_and_returns_fallback(caplog):
 
 
 def test_adapter_accepts_known_vocabulary():
-    """All Figure-4 canonical verdicts pass through unchanged.
+    """All canonical verdicts pass through unchanged.
 
-    Note: after FIX-C (task #105 alias sunset), ``require_human`` is
+    Note: after legacy alias sunset, ``require_human`` is
     NOT in this list — it's normalized to ``flag_for_review`` at the
     adapter boundary (see ``test_require_human_verdict_normalizes_
     to_flag_for_review``). Only strings that pass through with the
@@ -329,7 +328,7 @@ def test_enforce_mode_deny_still_403(monkeypatch):
     assert "original_verdict" not in body["error"]["data"]
 
 
-# ── FIX-C (task #105): legacy `require_human` alias normalization ──
+# ── Legacy `require_human` alias normalization ─────────────────────
 #
 # Load-bearing promise: NO internal code path sees `require_human` as
 # a live verdict. The alias is normalized to `flag_for_review` at

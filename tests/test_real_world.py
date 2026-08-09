@@ -1365,7 +1365,7 @@ def test_autoinstrument_captures_openai_call():
             sys.modules.pop(k, None)
 
 
-# ── autoinstrument cost tracking (task #263, Part A) ────────────────
+# ── autoinstrument cost tracking ────────────────────────────────────
 
 
 # Cross-backend fixture — cost tracking has to work on the real prod

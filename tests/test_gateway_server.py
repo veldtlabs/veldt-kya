@@ -93,11 +93,10 @@ def _patch_kya_core(monkeypatch, *, invocation_id_returned=12345,
     fake_kya.record_principal_signal = record_principal_signal
     fake_kya.AccessDeniedError = AccessDeniedError
     fake_kya.require_action = require_action
-    # Task #349 — server._record_invocation_pre_policy now imports
-    # ``OUTCOME_PENDING`` from ``kya`` (per convert-as-you-touch: no
-    # bare "pending" literal at the call site). The stub kya module
-    # must expose it or the ``from kya import ...`` line raises
-    # ImportError and the whole pre-policy path silently no-ops.
+    # server._record_invocation_pre_policy imports ``OUTCOME_PENDING``
+    # from ``kya`` (no bare "pending" literal at the call site).
+    # The stub kya module must expose it or the ``from kya import ...``
+    # line raises ImportError and the whole pre-policy path silently no-ops.
     fake_kya.OUTCOME_PENDING = "pending"
     monkeypatch.setitem(sys.modules, "kya", fake_kya)
     return {
@@ -249,7 +248,7 @@ def test_require_human_returns_428_with_verdict_data(monkeypatch):
     ``require_human`` alias at rule-construction time) surfaces as
     HTTP 428 Precondition Required (RFC 6585 §3) + JSON-RPC -32007.
 
-    Task #105 alias sunset (FIX-C): even though the RBAC rule was
+    Legacy alias sunset: even though the RBAC rule was
     constructed with verdict="require_human", the rbac-evaluate
     normalization boundary rewrites to canonical before the response
     is built. Downstream data.verdict is the canonical form.

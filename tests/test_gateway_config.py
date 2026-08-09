@@ -42,7 +42,7 @@ def test_minimal_config(tmp_path):
 
 
 def test_dpop_audience_required_when_require_dpop_on_me_is_true(tmp_path):
-    """Phase 6: boot-time validation refuses a DID config that demands
+    """Boot-time validation refuses a DID config that demands
     DPoP without specifying the audience to bind to. WARN-then-fallback
     on every request was a documented operator footgun."""
     from kya_gateway.errors import GatewayConfigError
@@ -109,7 +109,7 @@ def test_full_config_with_rbac_and_did(tmp_path):
     assert cfg.policy.rbac is not None
     assert cfg.policy.rbac.default == "deny"
     assert len(cfg.policy.rbac.rules) == 2
-    # Task #105 alias sunset (FIX-C): the YAML input "require_human"
+    # Legacy alias sunset: the YAML input "require_human"
     # is NORMALIZED to canonical "flag_for_review" at config-parse
     # time. Source-of-truth constant lives in policy_pipeline; asserted
     # via that constant so a future rename ripples through.

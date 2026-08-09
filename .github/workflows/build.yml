@@ -106,7 +106,7 @@ jobs:
           python -m venv /tmp/v
           /tmp/v/bin/pip install --upgrade pip
           # Install the wheel with the [did] + [gateway] extras so
-          # Phase 3d / Phase 4 tests can collect (they import jwt,
+          # DID + gateway tests can collect (they import jwt,
           # yaml, fastapi, httpx, sse-starlette).
           WHEEL=$(ls dist/*.whl)
           /tmp/v/bin/pip install "${WHEEL}[did,gateway]"

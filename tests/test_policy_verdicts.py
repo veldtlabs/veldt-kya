@@ -96,15 +96,14 @@ def test_defaults_are_registered_after_import(blank_registry):
     """A fresh clear() leaves the registry empty until we re-populate.
     Prove that then re-populating restores every OSS-shipped verdict.
 
-    Note: action-gate handlers (redact/throttle/block) live in
-    ``kya_pro.policy.verdict_handlers`` — they are NOT part of the
-    OSS defaults. Pro-side tests verify those.
+    Note: action-gate handlers (redact/throttle/block) are registered
+    by downstream consumers and are NOT part of the shipped defaults.
     """
     assert registered_verdicts() == []
     register_default_handlers()
     # ``require_human`` is registered as a backward-compat alias for
-    # ``flag_for_review`` (paper Figure 4 vocab) — see #105 for the
-    # UI/docs sweep. Alias is dropped after that lands.
+    # ``flag_for_review`` (canonical vocabulary). Alias is dropped
+    # after the deprecation cycle in ``_DEPRECATION_SUNSET``.
     assert set(registered_verdicts()) == {
         "allow", "deny", "flag_for_review", "require_human",
     }
@@ -390,10 +389,8 @@ def test_require_human_signals_pending_row_via_mutations():
     assert result.mutations.get("hitl.needs_pending_row") is True
 
 
-# NOTE: Redact / Throttle / Block handler tests live in
-# ``kya_pro/tests/test_policy_verdicts_action_gate.py``. Those
-# handlers ship in ``kya_pro.policy.verdict_handlers`` because the
-# action gate is a Pro-only surface.
+# NOTE: Redact / Throttle / Block handler tests are maintained by
+# the downstream consumers that register those action-gate handlers.
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -600,8 +597,8 @@ def test_require_human_handler_emits_jsonrpc_error_code_minus_32007():
     assert result.jsonrpc_error_code == -32007
 
 
-# action_gate block error code test lives in
-# ``kya_pro/tests/test_policy_verdicts_action_gate.py``.
+# action_gate block error code test lives with the downstream
+# consumer that registers the action-gate handler.
 
 
 def test_unknown_verdict_at_gateway_emits_jsonrpc_error_code_minus_32099():
@@ -766,8 +763,8 @@ def test_all_default_oss_handler_mutations_are_documented_in_mutation_keys():
 # ═════════════════════════════════════════════════════════════════════
 
 
-# Throttle boundary tests live in
-# ``kya_pro/tests/test_policy_verdicts_action_gate.py``.
+# Throttle boundary tests live with the downstream consumer that
+# registers the action-gate handler.
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -803,9 +800,8 @@ def test_apply_with_empty_reason_codes_still_ok():
 #
 # The alias mapping + sunset live in ``kya._verdict_aliases`` — one
 # source of truth read by ``kya.policy_verdicts`` (this module) AND
-# ``kya_gateway.policy_pipeline`` (boundary normalizer) AND
-# ``kya_pro.dashboard_api._models`` (Pydantic wire-input validator).
-# These tests prove all three references point at the SAME dict object
+# ``kya_gateway.policy_pipeline`` (boundary normalizer).
+# These tests prove both references point at the SAME dict object
 # so a single mutation ripples everywhere — plus a sabotage round that
 # proves the alias handler's registration key + wire-body override
 # both track the shared constant, not a hardcoded literal.

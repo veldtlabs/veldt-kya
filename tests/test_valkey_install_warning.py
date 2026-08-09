@@ -1,4 +1,4 @@
-"""Phase 12 gap #4 regression: when the operator HAS set
+"""Regression: when the operator HAS set
 KYA_VALKEY_URL / REDIS_URL but redis-py is not installed, the loud
 WARNING fires (not the silent DEBUG message).
 

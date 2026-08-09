@@ -1,4 +1,4 @@
-"""Phase 5b — RBAC tests. Off-by-default contract + grant/revoke
+"""RBAC tests. Off-by-default contract + grant/revoke
 CRUD + has_action resolution + require_action enforcement across
 soft/flag/block modes."""
 

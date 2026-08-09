@@ -1,4 +1,4 @@
-"""Phase 5g — Gateway enforcement modes.
+"""Gateway enforcement modes.
 
 Three modes mirroring `kya/rbac.py` semantics:
 
@@ -217,7 +217,7 @@ def test_enforce_identity_fail_blocks_with_401(monkeypatch):
 def test_audit_only_require_human_forwards_with_verdict_header(monkeypatch):
     """An 'allow but needs human' verdict also surfaces via header.
 
-    Task #105 alias sunset (FIX-C): the RBAC rule is constructed with
+    Legacy alias sunset: the RBAC rule is constructed with
     the legacy ``verdict="require_human"``; the rbac-evaluate boundary
     normalizes to canonical form so the wire header carries the
     canonical value.

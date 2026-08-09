@@ -234,7 +234,7 @@ def test_record_cost_event_skips_zero_or_negative():
 def test_record_cost_event_silent_coerces_unknown_outcome_to_unknown(
     monkeypatch,
 ):
-    """Contract lock (task #353 / Sabotage-E gap): record_cost_event
+    """Contract lock: record_cost_event
     silently coerces any outcome not in _VALID_OUTCOMES to "unknown"
     rather than raising. Budget accounting MUST NOT fail the request
     path — see docstring above _VALID_OUTCOMES in tenant_budget.py.

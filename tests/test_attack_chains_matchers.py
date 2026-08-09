@@ -1,4 +1,4 @@
-"""Phase 3c attack-chain matchers -- pure functional tests.
+"""Attack-chain matchers -- pure functional tests.
 
 Tests the match primitives in isolation. No DB, no state, no engine.
 If these regress, the whole rule DSL falls over -- so they're tight.

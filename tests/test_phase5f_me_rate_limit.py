@@ -1,6 +1,6 @@
-"""Phase 5f rewire — /v1/principals/me delegates to kya.rate_limit.
+"""/v1/principals/me delegates to kya.rate_limit.
 
-Originally lived in veldt-kya-pro but the test needs `kya_gateway`
+The test needs `kya_gateway`
 which is OSS-only. Moved here for proper repo placement.
 """
 from __future__ import annotations

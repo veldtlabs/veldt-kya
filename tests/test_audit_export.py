@@ -1,4 +1,4 @@
-"""Phase 5c — signed audit-trail export tests.
+"""Signed audit-trail export tests.
 
 Exercise the export → verify roundtrip with real Ed25519 keys
 plus the negative cases: tampering with manifest / chain_digest /

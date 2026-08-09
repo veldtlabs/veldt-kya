@@ -146,7 +146,7 @@ def test_evaluate_rbac_deny():
 
 
 def test_evaluate_require_human():
-    """Task #105 alias sunset (FIX-C): a RBAC rule directly constructed
+    """Legacy alias sunset: a RBAC rule directly constructed
     with the legacy verdict "require_human" is normalized at the
     ``_rbac_evaluate`` boundary inside ``evaluate()``. Downstream
     Verdict carries the canonical form. Source-of-truth alias map

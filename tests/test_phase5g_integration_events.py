@@ -1,6 +1,6 @@
-"""Phase 5g Part B — security event emission + automatic VC issuer linkage.
+"""Security event emission + automatic VC issuer linkage.
 
-Covers integration points #3 (revocation_blocked), #4 (dpop_* events),
+Covers integration points: revocation_blocked, dpop_* events,
 and #5-wiring (link_vc_issuer_to_child fires from inside
 bind_did_principal automatically).
 """

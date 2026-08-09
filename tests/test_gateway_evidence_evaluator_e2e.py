@@ -1,7 +1,7 @@
-"""Phase 4 (#S4-1) — E2E: evaluator_name flows from ``VerdictResult``
-through ``policy_pipeline.evaluate()`` into ``kya_evidence.evaluator_name``.
+"""E2E: evaluator_name flows from ``VerdictResult`` through
+``policy_pipeline.evaluate()`` into ``kya_evidence.evaluator_name``.
 
-Proves the wire-up end to end on the OSS gateway:
+Proves the wire-up end to end on the gateway:
 
     1. Register a SabotageDenyEvaluator (reused from
        ``tests/test_gateway_policy_pipeline_evaluator.py`` — DO NOT
@@ -345,10 +345,10 @@ def test_sabotage_verify_row_attribution_differs_between_evaluators(db):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Cohort D — REAL gateway HTTP path (Phase 4 residual FIX-M2, 2026-08-08)
+# Cohort D — REAL gateway HTTP path
 # ═══════════════════════════════════════════════════════════════════════
 #
-# Motivation (Round-1 review, task #343 Sabotage-B1):
+# Motivation:
 #   Cohorts A/B/C exercise ``policy_pipeline.evaluate()`` and a private
 #   ``_record_verdict_evidence`` helper that mirrors the shape of the
 #   production ``server.py`` call site. That mirror is a load-bearing
@@ -559,16 +559,15 @@ def _seed_invocation(engine, tenant_id: str) -> int:
     public API and return its id.
 
     Isolates Cohort D from any regression in
-    ``_record_invocation_pre_policy``. Task #349 resolved the specific
-    ``outcome='pending'`` bug (``pending`` is now a canonical
-    ``VALID_OUTCOMES`` member), but this workaround is preserved as
-    defense-in-depth per Kola directive 2026-08-08: the helper decouples
-    Cohort D's evaluator-attribution assertions from any future bugs in
-    pre-policy recording. Cohort D validates the evaluator_name plumbing
-    (FIX-M2); it should not depend on the pre-policy audit-row happy
-    path staying green. Keeping the seed + patch pattern means a
-    regression in the pre-policy helper cannot mask an evaluator
-    attribution regression."""
+    ``_record_invocation_pre_policy``. The ``outcome='pending'`` bug
+    was resolved by adding ``pending`` to canonical ``VALID_OUTCOMES``,
+    but this workaround is preserved as defense-in-depth: the helper
+    decouples Cohort D's evaluator-attribution assertions from any
+    future bugs in pre-policy recording. Cohort D validates the
+    evaluator_name plumbing; it should not depend on the pre-policy
+    audit-row happy path staying green. Keeping the seed + patch
+    pattern means a regression in the pre-policy helper cannot mask
+    an evaluator attribution regression."""
     from kya import record_invocation
     factory = sessionmaker(bind=engine)
     sess = factory()
@@ -587,8 +586,8 @@ def _seed_invocation(engine, tenant_id: str) -> int:
 def _patch_pre_policy_to_return(monkeypatch, invocation_id: int):
     """Patch ``kya_gateway.server._record_invocation_pre_policy`` to
     return ``invocation_id`` unconditionally. Isolates Cohort D from
-    any regression in that helper (see ``_seed_invocation`` — task #349
-    resolved the historical ``outcome='pending'`` bug but the isolation
+    any regression in that helper (see ``_seed_invocation`` — the
+    historical ``outcome='pending'`` bug was resolved but the isolation
     is preserved as defense-in-depth)."""
     from kya_gateway import server as _server_mod
     monkeypatch.setattr(

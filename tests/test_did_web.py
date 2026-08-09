@@ -523,14 +523,14 @@ def test_loopback_allowed_when_env_set(monkeypatch, example_doc):
     assert result.id == "did:web:127.0.0.1"
 
 
-# ─── Phase 13b follow-up: KYA_DID_WEB_ALLOW_PRIVATE flag ───────────
+# ─── KYA_DID_WEB_ALLOW_PRIVATE flag ────────────────────────────────
 
 
 def test_allow_loopback_permits_127_x(monkeypatch, example_doc):
     """### KYA_DID_WEB_ALLOW_LOOPBACK=1 lets loopback through.
 
-    Pin the back-compat behavior: nothing about Phase 13b's new
-    private-IP flag changes the existing loopback contract.
+    Pin the back-compat behavior: nothing about the new private-IP
+    flag changes the existing loopback contract.
     """
     monkeypatch.setenv("KYA_DID_WEB_ALLOW_LOOPBACK", "1")
 
@@ -583,8 +583,8 @@ def test_allow_loopback_alone_still_rejects_rfc1918(monkeypatch):
 
 
 def test_allow_private_permits_rfc1918(monkeypatch, example_doc):
-    """### Phase 13b new: ALLOW_PRIVATE=1 lets docker / k8s
-    private IPs through for in-cluster testing.
+    """### ALLOW_PRIVATE=1 lets docker / k8s private IPs through
+    for in-cluster testing.
     """
     monkeypatch.setenv("KYA_DID_WEB_ALLOW_PRIVATE", "1")
     monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
@@ -662,7 +662,7 @@ def test_no_flag_rejects_with_precise_hint_loopback(monkeypatch):
 
 def test_no_flag_rejects_with_precise_hint_private(monkeypatch):
     """### Precise error: an RFC1918 refusal points at PRIVATE,
-    not LOOPBACK -- the bug Phase 13b surfaced."""
+    not LOOPBACK -- the surfaced bug."""
     monkeypatch.delenv("KYA_DID_WEB_ALLOW_LOOPBACK", raising=False)
     monkeypatch.delenv("KYA_DID_WEB_ALLOW_PRIVATE", raising=False)
     state = _fail_on_http(monkeypatch)
@@ -727,7 +727,7 @@ def test_live_loopback_resolve_against_real_https_server(
     HTTP client refactor (requests -> httpx), ssl.create_default_context
     semantics, REQUESTS_CA_BUNDLE handling.
 
-    Belt-and-braces over the Phase 13b in-container live test;
+    Belt-and-braces over the in-container live test;
     runs in-process without docker so CI catches regressions
     pre-merge.
     """

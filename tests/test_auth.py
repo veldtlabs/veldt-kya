@@ -1,4 +1,4 @@
-"""Phase 4a — JWT introspection + claim extraction tests.
+"""JWT introspection + claim extraction tests.
 
 Mints signed tokens locally using a freshly generated RSA keypair,
 serves the public JWK via an in-process HTTP server, and exercises

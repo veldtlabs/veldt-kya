@@ -1,4 +1,4 @@
-"""Task #318 FIX-2 — TTL cache in front of ``get_effective_policy_hash``.
+"""TTL cache in front of ``get_effective_policy_hash``.
 
 Load-bearing promises:
     1. Repeated calls with the same ``tenant_id`` hit the cache and
@@ -113,7 +113,7 @@ def test_none_and_empty_string_are_distinct_keys(monkeypatch):
 
 
 def test_register_scope_invalidates_cache(monkeypatch):
-    """Task #318 FIX-B — registering a NEW weight scope must invalidate
+    """Registering a NEW weight scope must invalidate
     the policy-hash cache so the next lookup reflects the new registry
     (via ``known_scopes()``).
 

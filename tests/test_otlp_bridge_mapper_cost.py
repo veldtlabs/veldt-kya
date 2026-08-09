@@ -1,9 +1,8 @@
 """Tests for kya_otlp_bridge.mapper.SpanMapper.extract_gen_ai_cost.
 
-Task #263 Part B — GenAI cost extraction from OTel spans emitted by
-LangChain / CrewAI / AutoGen via OpenInference or OpenLLMetry auto-
-instrumentation. Pure extraction (no DB, no network). Writer wiring is
-a follow-up task.
+GenAI cost extraction from OTel spans emitted by LangChain /
+CrewAI / AutoGen via OpenInference or OpenLLMetry auto-instrumentation.
+Pure extraction (no DB, no network). Writer wiring is a follow-up.
 """
 from __future__ import annotations
 

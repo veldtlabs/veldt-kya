@@ -1,4 +1,4 @@
-"""Phase 4c -- SPIFFE/OIDC workload identity tests.
+"""SPIFFE/OIDC workload identity tests.
 
 Exercises:
   - parse_spiffe_id contract (valid + invalid shapes)
