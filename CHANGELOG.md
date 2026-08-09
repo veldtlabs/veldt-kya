@@ -29,15 +29,6 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `_DEPRECATION_SUNSET` in the source to confirm target. Update calls
   or add an alias at your boundary before upgrading past 0.5.x.
 
-### Notes
-- OSS 0.5.0 is the interface freeze point per the OSS/Pro boundary
-  policy. Future features land in `veldt-kya-pro`; OSS ships bug +
-  security fixes only.
-
-<!-- Detailed task-level notes for the entries above (task #349
-     pending-outcome fix + require_human normalization) preserved
-     in commit messages; grep git log for #349 / #327. -->
-
 ### Added (task #349 verbose reference — retained for auditor detail)
 
 - **Extended `_VALID_OUTCOMES` docstring** in `kya.tenant_budget` to
