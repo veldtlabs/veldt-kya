@@ -25,13 +25,9 @@ def _install_fake_kya(monkeypatch):
     """Install a stub `kya` module using a real sqlite:///:memory: session.
 
     Phase 3 FIX-C — require_human → flag_for_review normalization made
-    ``_create_pending_row`` actually run against
-    ``Session.get_bind().dialect`` + ``engine.begin().execute(...)``.
-    Hand-rolled stubs (``_Sess`` / ``_MockEngine`` / ``_MockCtx``)
-    cascaded missing methods every time the pending-row path added a
-    call site. Per feedback_test_locally_before_push (Kola 2026-08-08),
-    swap to a real in-memory SQLAlchemy engine — the contract is fully
-    honored and stubs disappear.
+    ``_create_pending_row`` runs against ``Session.get_bind().dialect``
+    + ``engine.begin().execute(...)``. Uses a real in-memory SQLAlchemy
+    engine so the contract is fully honored without hand-rolled stubs.
     """
     import sys
     import types

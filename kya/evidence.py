@@ -545,10 +545,9 @@ _EVALUATOR_COLUMN_PROBED: set[str] = set()
 
 
 def _ensure_evaluator_name_column(conn) -> None:
-    """Best-effort ``ALTER TABLE`` to add ``evaluator_name`` on pre-Phase-4
+    """Best-effort ``ALTER TABLE`` to add ``evaluator_name`` on older
     schemas. Silent no-op when the column is already present. Logs at
-    WARN (never silent) when the probe or ALTER raises so ops sees the
-    signal — Kola directive 2026-08-07 (no silent failures).
+    WARN when the probe or ALTER raises so ops sees the signal.
     """
     try:
         url_key = str(conn.engine.url)

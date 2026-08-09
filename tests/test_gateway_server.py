@@ -50,13 +50,9 @@ def _patch_kya_core(monkeypatch, *, invocation_id_returned=12345,
     if record_signal_calls is None:
         record_signal_calls = []
 
-    # Phase 3 FIX-C — require_human → flag_for_review normalization made
-    # _create_pending_row actually run against Session.get_bind().dialect
-    # + engine.begin().execute(). Hand-rolled stubs cascaded missing
-    # methods (`_MockCtx.execute` etc). Per feedback_test_locally_before_push
-    # (Kola directive 2026-08-08), swap to a real sqlite:///:memory: engine
-    # + sessionmaker — the SQLAlchemy contract is fully honored, no stubs
-    # to maintain.
+    # _create_pending_row runs against Session.get_bind().dialect +
+    # engine.begin().execute(). Use a real sqlite:///:memory: engine
+    # + sessionmaker so the SQLAlchemy contract is fully honored.
     engine = create_engine("sqlite:///:memory:")
     Session = sessionmaker(bind=engine)
 

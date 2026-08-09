@@ -21,8 +21,7 @@ default NativeEvaluator — assert ``evaluator_name == "native"``
 (populated by the Phase 3 attribution helpers on the short-circuit
 path). If either polarity fails, the wire-up is not real.
 
-Reuse-first (per feedback_reusability_first + Kola directive
-2026-08-08):
+Reuse-first:
 
 * ``SabotageDenyEvaluator`` — imported from
   ``tests/test_gateway_policy_pipeline_evaluator.py``. Its
@@ -359,7 +358,7 @@ def test_sabotage_verify_row_attribution_differs_between_evaluators(db):
 #   ``_record_verdict_evidence`` path and asserting the resulting
 #   ``kya_evidence.evaluator_name`` column carries the attribution.
 #
-# Reuse discipline (per feedback_reusability_first, Kola 2026-08-08):
+# Reuse discipline:
 #   * ``SabotageDenyEvaluator`` — imported at top of file, class-level
 #     reuse.
 #   * ``_SABOTAGE_REGISTERED_NAME`` + ``_NATIVE_EVALUATOR_ATTRIBUTION_NAME``

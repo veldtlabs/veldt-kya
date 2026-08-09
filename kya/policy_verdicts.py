@@ -643,8 +643,7 @@ def _warn_require_human_alias_once() -> None:
 
     Interpolates the shared ``_LEGACY_REQUIRE_HUMAN_ALIAS``,
     ``_CANONICAL_HUMAN_APPROVAL_VERDICT``, and ``_DEPRECATION_SUNSET``
-    constants (Kola directive 2026-08-07: no hardcoded alias / sunset
-    literals) so a single edit in ``kya._verdict_aliases`` ripples
+    constants so a single edit in ``kya._verdict_aliases`` ripples
     everywhere — WARN log, DeprecationWarning message, registry key.
     """
     global _ALIAS_WARNED
