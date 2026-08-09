@@ -40,6 +40,8 @@ from typing import Any
 
 from .canonicals import (
     CANONICAL_OUTCOMES as _CANONICAL_OUTCOMES,
+)
+from .canonicals import (
     OUTCOME_IN_PROGRESS,  # noqa: F401 — re-exported by kya/__init__.py
     OUTCOME_PENDING,  # noqa: F401 — re-exported by kya/__init__.py
 )

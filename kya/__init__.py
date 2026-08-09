@@ -103,6 +103,7 @@ from .blast_radius import (
     blast_radius_breakdown,
     blast_radius_weight,
 )
+from .canonicals import OUTCOME_IN_PROGRESS, OUTCOME_PENDING
 from .compliance import (
     REGIME_BREACH_NOTIFY,
     REGIME_RETENTION_DAYS,
@@ -180,8 +181,6 @@ from .interactions import (
     interaction_multiplier as compute_interaction_multiplier,
 )
 from .invocations import (
-    OUTCOME_IN_PROGRESS,
-    OUTCOME_PENDING,
     VALID_MODES,
     VALID_OUTCOMES,
     active_parallel_invocations,
