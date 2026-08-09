@@ -97,6 +97,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .canonicals import CANONICAL_EVIDENCE_KINDS as _CANONICAL_EVIDENCE_KINDS
+
 # Per-(tenant, invocation) in-process serialization lock for SQLite +
 # DuckDB. PG uses pg_advisory_xact_lock, MySQL uses SELECT FOR UPDATE,
 # both of which work cross-process. SQLite and DuckDB have no
@@ -143,12 +145,9 @@ logger = logging.getLogger(__name__)
 
 _PG_SCHEMA = os.getenv("KYA_VERSIONS_SCHEMA") or None
 
-# Valid evidence kinds — closed set so callers don't invent shapes.
-# Kept as a mutable ``set`` (initialized from ``CANONICAL_EVIDENCE_KINDS``)
-# because downstream Pro modules ``.add()`` domain-specific kinds at
-# import time (e.g. ``cross_tenant_unmask``, ``kill_switch``).
-from .canonicals import CANONICAL_EVIDENCE_KINDS as _CANONICAL_EVIDENCE_KINDS
-
+# Valid evidence kinds — mutable set (initialized from
+# ``CANONICAL_EVIDENCE_KINDS``) so downstream plugins can ``.add()``
+# domain-specific kinds at import time.
 VALID_EVIDENCE_KINDS: set[str] = set(_CANONICAL_EVIDENCE_KINDS)
 
 # Retention defaults per regime (days). Used when caller doesn't supply
