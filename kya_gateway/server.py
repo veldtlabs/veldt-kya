@@ -578,12 +578,18 @@ class Gateway:
         # credential is honored.
         did_cfg = cfg.identity.did
         if did_cfg is not None and did_cfg.revocation_check:
-            try:
-                import kya_pro.revocation  # noqa: F401
-            except ImportError:
+            from kya.optional_hooks import (
+                HOOK_REVOCATION_CHECKER,
+                HOOK_REVOCATION_CHECKER_FACTORY,
+                get_hook,
+            )
+            if (
+                get_hook(HOOK_REVOCATION_CHECKER_FACTORY) is None
+                and get_hook(HOOK_REVOCATION_CHECKER) is None
+            ):
                 logger.warning(
                     "[KYA-GATEWAY] identity.did.revocation_check=true but "
-                    "the optional revocation module is not installed — "
+                    "no revocation checker hook is registered — "
                     "revocation checks will silently no-op. Install the "
                     "revocation add-on or set revocation_check=false.",
                 )
@@ -1228,13 +1234,13 @@ def _create_pending_row(
             # plaintext-at-rest, which is the documented ops-accepted
             # risk when KYA_HITL_MASTER_KEY isn't configured.
             body_to_store = body
-            try:
-                from kya_pro.policy.hitl_encryption import encrypt as _pro_encrypt
-                body_to_store = _pro_encrypt(
+            from kya.optional_hooks import HOOK_HITL_ENCRYPT, get_hook
+            _encrypt_fn = get_hook(HOOK_HITL_ENCRYPT)
+            if _encrypt_fn is not None:
+                body_to_store = _encrypt_fn(
                     body, tenant_id=gw.cfg.gateway.tenant_id,
                 )
-            except ImportError:
-                pass  # No encryption module — plaintext by design.
+            # else: no encryption hook — plaintext by design.
             pending_id = create_pending(
                 engine,
                 tenant_id=gw.cfg.gateway.tenant_id,
