@@ -8,62 +8,27 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - **`PolicyEvaluator` interface** (`kya.policy_evaluator`) + built-in
-  `NativeEvaluator` — the OSS contract Pro's policy engine plugs into.
+  `NativeEvaluator` — pluggable contract for custom policy engines.
 - **`kya_evidence.evaluator_name` column** + `record_evidence(evaluator_name=...)`
-  kwarg — every verdict-bearing evidence row is attributed to the evaluator
-  that produced it (native, Pro rules, custom pluggable).
+  kwarg — every verdict-bearing evidence row is attributed to the
+  evaluator that produced it.
 - **`OUTCOME_PENDING`, `OUTCOME_IN_PROGRESS`** named constants in
   `kya.invocations`; `pending` added to `VALID_OUTCOMES`.
 
 ### Fixed
-- **Pre-policy audit trail was silently dropping every row** — gateway
-  emitted `outcome='pending'` which failed the strict `VALID_OUTCOMES`
-  gate and got swallowed. Fixed at the enum layer.
+- **Pre-policy audit trail was silently dropping every row** — the
+  gateway emitted `outcome='pending'` which failed the strict
+  `VALID_OUTCOMES` gate and was swallowed. Fixed at the enum layer.
 - **`list_by_tenant` ORDER BY was non-deterministic on MySQL** (rows
   with identical `expires_at` reordered across page refreshes). Added
   `submitted_at ASC, id ASC` tiebreak.
 
 ### Deprecated
 - **`verdict='require_human'`** — auto-normalized to `flag_for_review`
-  with a DeprecationWarning. **Removal in 0.6.0.** Grep
-  `_DEPRECATION_SUNSET` in the source to confirm target. Update calls
-  or add an alias at your boundary before upgrading past 0.5.x.
-
-### Added (task #349 verbose reference — retained for auditor detail)
-
-- **Extended `_VALID_OUTCOMES` docstring** in `kya.tenant_budget` to
-  explain why the billing set is intentionally NARROWER than
-  `VALID_OUTCOMES` (transient states + hard-terminals that never
-  reached the LLM are outside billing concern; defensive coerce-to-
-  `"unknown"` keeps cost-recording non-blocking).
-- **Also mirrored in the Pro ingest boundary** —
-  `kya_pro.dashboard_api._ingest_router.InvocationEventBody.outcome`
-  Literal was widened to accept `"pending"` so pre-policy audit rows
-  forward end-to-end through the ingress endpoint.
-- Downstream readers (`derive_verdict`, `active_parallel_invocations`,
-  Pro HITL queue at `_storage.py::list_approvals` which filters
-  `mode='in_the_loop'`) all handle `pending` correctly — no reader
-  changes required. No DB migration (VARCHAR(20), no CHECK
-  constraint). No SDK release required (clients pass strings through).
-- Semver: minor. Additive only; no breaking behavior.
-
-### Deprecated — verdict alias `require_human` (task #105)
-
-- The legacy verdict string `"require_human"` is now normalized to
-  `"flag_for_review"` (paper Figure 4 canonical) at every internal
-  boundary: config parse (`kya_gateway.config._parse_rbac`),
-  RBAC evaluation (`kya_gateway.policy_pipeline.evaluate`), and the
-  evaluator adapter (`_verdict_result_to_gateway_verdict`). Both
-  boundaries emit a WARN at parse/adapter time.
-- Downstream code no longer sees `"require_human"` as an active
-  verdict — it exists only long enough to warn on and convert. The
-  allowlist (`_VALID_VERDICTS`) no longer accepts it directly;
-  normalization runs before the allowlist check.
-- Alias mapping + sunset version live in a single source-of-truth
-  pair: `_LEGACY_VERDICT_ALIASES` + `_DEPRECATION_SUNSET` in
-  `kya_gateway.policy_pipeline`. The alias will be removed in
-  veldt-kya **0.6.0** (grep `_DEPRECATION_SUNSET` in the source to
-  confirm current target).
+  with a `DeprecationWarning`. **Removal in 0.6.0.** Grep
+  `_DEPRECATION_SUNSET` in the source to confirm the target version.
+  Update calls or add an alias at your boundary before upgrading
+  past 0.5.x.
 
 ## [0.4.6rc1] — 2026-08-01
 
