@@ -4,6 +4,16 @@ All notable changes to **veldt-kya** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-08-09
+
+### Changed
+- Internal refactor: optional runtime capabilities are now discovered
+  through a small in-process registry (`kya.optional_hooks`) rather than
+  by trying to import specific extension packages by name at call time.
+  Behavior is unchanged for both standalone and extended deployments —
+  when no capability is registered, the gateway falls back to the same
+  no-op path it used before.
+
 ## [0.5.0] — 2026-08-08
 
 ### Added
