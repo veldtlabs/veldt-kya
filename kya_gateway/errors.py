@@ -13,7 +13,7 @@ JSONRPC_ERR_BACKEND_UNREACHABLE = -32003
 JSONRPC_ERR_REPLAY_DETECTED = -32004
 JSONRPC_ERR_BUDGET_EXCEEDED = -32005
 JSONRPC_ERR_RATE_LIMITED = -32006
-# Phase 5g-tail — distinct code for require_human so clients can
+# Distinct code for require_human so clients can
 # programmatically distinguish "denied" from "needs human approval to
 # proceed." RFC 6585 §3 (HTTP 428 Precondition Required) is the right
 # transport mapping.
@@ -52,14 +52,14 @@ class IdentityCredentialInvalid(IdentityBindingFailed):
 
 
 class RevocationBlocked(IdentityCredentialInvalid):
-    """Phase 5g #3 — the credential's status-list bit is set.
+    """The credential's status-list bit is set.
 
     Distinct from a generic credential-invalid so the gateway can emit
     a `revocation_blocked` security event (and surface the
     `IDENTITY_REVOKED` reason code) when this fires, separate from
     "JWT signature is wrong" or "DID didn't resolve."
 
-    Phase 14a #145 — carry the verified principal info (principal_kind
+    Carry the verified principal info (principal_kind
     + principal_id) on the exception so the gateway's identity-failure
     handler can ALSO write a ``revocation_blocked`` row into
     ``kya_principal_trust.signal_counts``. Without this, the closed

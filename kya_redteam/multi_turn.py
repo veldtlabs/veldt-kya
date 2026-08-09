@@ -34,9 +34,9 @@ Why "native" (no PyRIT dep):
   and bounded — a simple loop with our own memory model fits in this
   module and keeps the install footprint at zero new deps.
 
-A PyRIT-backed wrapper (Phase 3.F) calls these same RedTeaming /
-Crescendo objects but lets PyRIT supply the orchestrator + datasets
-for customers who want the full PyRIT feature set.
+A PyRIT-backed wrapper calls these same RedTeaming / Crescendo
+objects but lets PyRIT supply the orchestrator + datasets for
+customers who want the full PyRIT feature set.
 """
 from __future__ import annotations
 
@@ -679,7 +679,7 @@ def run_multi_turn(
         consume_attacker_tokens as _rt_consume_tokens,
     )
     budget_monthly = int(tenant_policy.get("budget_monthly_prompts") or 10000)
-    # Phase 3.5.A — per-tenant attacker-token cap override
+    # Per-tenant attacker-token cap override
     token_cap = tenant_policy.get("attacker_tokens_monthly_cap")
 
     def _budget_check() -> dict:

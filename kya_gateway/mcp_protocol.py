@@ -21,7 +21,7 @@ from kya_gateway.errors import GatewayError
 PROTOCOL_VERSION = "2024-11-05"
 JSONRPC_VERSION = "2.0"
 
-# Phase 6: strict envelope schema. Rejecting by SHAPE (not just by size)
+# Strict envelope schema. Rejecting by SHAPE (not just by size)
 # is capability-removal — an attacker cannot send arbitrarily structured
 # JSON to the gateway to probe the parser. The 32 MB body cap remains as
 # a belt-and-suspenders ceiling.
@@ -173,7 +173,7 @@ def parse_request(raw_body: bytes) -> MCPRequest:
     if not isinstance(parsed, dict):
         raise GatewayError("JSON-RPC request must be an object")
 
-    # Phase 6: shape-based rejection — refuse any envelope with keys
+    # Shape-based rejection — refuse any envelope with keys
     # outside the JSON-RPC spec set. An attacker cannot smuggle extra
     # top-level fields to probe the parser or policy primitives.
     extra = set(parsed.keys()) - _ALLOWED_ENVELOPE_KEYS
@@ -192,21 +192,21 @@ def parse_request(raw_body: bytes) -> MCPRequest:
     if not isinstance(method, str) or not method:
         raise GatewayError("JSON-RPC method must be a non-empty string")
 
-    # Phase 6: MCP method allowlist — unknown methods get -32601 at the
+    # MCP method allowlist — unknown methods get -32601 at the
     # server boundary instead of passing through to a backend that
     # might error in a less informative way.
     if method not in _ALLOWED_METHODS:
         raise MCPMethodNotFound(method)
 
     params_raw = parsed.get("params")
-    # Phase 6: MCP uses named (object) params only. Reject array form.
+    # MCP uses named (object) params only. Reject array form.
     if params_raw is not None and not isinstance(params_raw, dict):
         raise GatewayError(
             f"JSON-RPC params must be an object (MCP uses named params), "
             f"got {type(params_raw).__name__}"
         )
 
-    # Phase 6: bound the shape of THE WHOLE `params` dict — `params.name`
+    # Bound the shape of THE WHOLE `params` dict — `params.name`
     # and any other params.* fields are equally capability-removing surface.
     if isinstance(params_raw, dict):
         _check_params_shape(params_raw)

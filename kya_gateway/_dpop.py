@@ -29,7 +29,7 @@ from kya_gateway.errors import IdentityCredentialInvalid
 class DPoPError(IdentityCredentialInvalid):
     """A DPoP proof was missing or failed verification.
 
-    Phase 5g-B-01 — carries a typed ``code`` so the security-event
+    Carries a typed ``code`` so the security-event
     dispatcher classifies the failure WITHOUT reading the message
     string (which interpolates attacker-controlled JWS fields like
     ``kid`` and ``htu``). Recognized codes:

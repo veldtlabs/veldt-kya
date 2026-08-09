@@ -18,8 +18,8 @@ This module's job is **orchestration**: order, fail-closed semantics,
 and turning exceptions from the primitives into a single typed return
 value the gateway can act on without try/except scattered everywhere.
 
-Phase 3 (#S4-1) — every verdict-producing site now routes through the
-``kya.PolicyEvaluator`` abstraction. The gateway rule runs its primitive
+Every verdict-producing site routes through the ``kya.PolicyEvaluator``
+abstraction. The gateway rule runs its primitive
 (RBAC match, ``check_rate``, ``should_refuse``, ...) as before, then
 delegates the FINAL verdict emission through ``evaluator.evaluate(inp)``.
 The evaluator gets the last word:
@@ -28,13 +28,13 @@ The evaluator gets the last word:
       pipeline maps it back to a :class:`Verdict` and returns it.
     * If the evaluator returns ``"allow"``, the pipeline falls back to
       the rule's inline candidate :class:`Verdict` — preserving the
-      exact pre-Phase-3 wire behaviour when the default
-      :class:`NativeEvaluator` is used (its default_allow branch fires
-      for gateway-shaped inputs it doesn't recognise).
+      exact wire behaviour when the default :class:`NativeEvaluator` is
+      used (its default_allow branch fires for gateway-shaped inputs it
+      doesn't recognise).
 
-This dispatch pattern lets a Pro build register an LLM-judge evaluator
-that flips a rate-limit "deny" into a "flag_for_review" without editing
-the gateway pipeline. Sabotage-swap tests register a
+This dispatch pattern lets a downstream consumer register an LLM-judge
+evaluator that flips a rate-limit "deny" into a "flag_for_review"
+without editing the gateway pipeline. Sabotage-swap tests register a
 ``SabotageDenyEvaluator`` to prove the wiring is real end-to-end.
 """
 from __future__ import annotations
@@ -49,21 +49,20 @@ from kya_gateway.identity import BoundPrincipal
 logger = logging.getLogger(__name__)
 
 
-# ─── Task #105 legacy verdict alias mapping ────────────────────────
+# ─── Legacy verdict alias mapping ──────────────────────────────────
 #
-# ``require_human`` was renamed to ``flag_for_review`` in the paper's
-# Figure-4 canonical vocabulary. We NORMALIZE the legacy alias at every
-# boundary (config parse + evaluator adapter + rbac evaluate) so no
-# internal code path ever sees the legacy string as a live verdict —
-# it exists only long enough to warn on and convert.
+# ``require_human`` was renamed to ``flag_for_review`` in the canonical
+# Layer-2 vocabulary. We NORMALIZE the legacy alias at every boundary
+# (config parse + evaluator adapter + rbac evaluate) so no internal
+# code path ever sees the legacy string as a live verdict — it exists
+# only long enough to warn on and convert.
 #
-# Kola directive 2026-08-07: no hardcoded verdict strings or sunset
-# versions. The alias mapping + sunset version + canonical target live
-# in ``kya._verdict_aliases`` — a single source of truth shared by OSS
-# (this module + ``kya.policy_verdicts``) and Pro
-# (``kya_pro.dashboard_api._models`` wire-input normalizer). Re-exported
-# here as module-level names so existing test call sites and
-# ``kya_gateway.server`` imports keep working unchanged.
+# No hardcoded verdict strings or sunset versions. The alias mapping +
+# sunset version + canonical target live in ``kya._verdict_aliases`` —
+# a single source of truth shared by this module and
+# ``kya.policy_verdicts``. Re-exported here as module-level names so
+# existing test call sites and ``kya_gateway.server`` imports keep
+# working unchanged.
 from kya._verdict_aliases import (
     _CANONICAL_HUMAN_APPROVAL_VERDICT,
     _DEPRECATION_SUNSET,
@@ -83,8 +82,8 @@ def _normalize_legacy_verdict(
     ``context`` is a short human-readable label (e.g. "adapter",
     "config") that lets operators locate the caller in log output.
 
-    Boundary-normalization pattern (FIX-G doc note)
-    -----------------------------------------------
+    Boundary-normalization pattern
+    ------------------------------
     Every layer that consumes a caller-supplied verdict runs this same
     conversion at its ingress boundary so no internal code path ever
     sees the legacy string as a live value. Current callers:
@@ -93,10 +92,9 @@ def _normalize_legacy_verdict(
     * ``kya_gateway.policy_pipeline._verdict_result_to_gateway_verdict``
       — evaluator adapter boundary
     * ``kya_gateway.policy_pipeline.evaluate`` — RBAC evaluate boundary
-    * ``kya_pro.dashboard_api._models._normalize_verdict_wire_input`` —
-      Pro Pydantic wire-input validator (mirrors this pattern; imports
-      the same shared ``kya._verdict_aliases`` constants). See that
-      module for the Pro-side field_validator installation.
+
+    Downstream wire-input validators mirror this pattern using the same
+    shared ``kya._verdict_aliases`` constants.
     """
     if verdict in _LEGACY_VERDICT_ALIASES:
         canonical = _LEGACY_VERDICT_ALIASES[verdict]
@@ -143,7 +141,7 @@ class Verdict:
 
 # ─── Evaluator dispatch helpers ─────────────────────────────────────
 #
-# Phase 3 (#S4-1). The gateway rules already produce candidate verdicts
+# The gateway rules already produce candidate verdicts
 # via their existing primitive calls; the evaluator either replaces
 # that verdict (non-``"allow"`` response) or defers to it (``"allow"``
 # response). Fail-closed semantics: if the evaluator itself raises or
@@ -261,24 +259,23 @@ def _verdict_result_to_gateway_verdict(vr, *, fallback: Verdict) -> Verdict:
     ``policy_hash`` + ``evaluator_name`` breadcrumb so audit consumers
     can attribute the verdict to the specific evaluator that fired.
 
-    Task #318 FIX-3: verdict allowlist. ``VerdictResult.verdict`` is an
-    unvalidated str — a typo (``"denny"``), a legacy enum spelling, or
-    a new-vocab response from a custom Pro evaluator would silently
-    slip past ``server.py``'s explicit ``deny`` / ``flag_for_review``
-    branches and produce a 200-OK silent allow. Instead: if the
-    verdict string isn't in the paper Figure-4 canonical vocabulary
-    (see ``_VALID_VERDICTS`` above), log a WARNING and return the
-    ``fallback`` unchanged. The gateway's rule verdict is always in-
-    vocab so the fallback path is always safe.
+    Verdict allowlist. ``VerdictResult.verdict`` is an unvalidated
+    str — a typo (``"denny"``), a legacy enum spelling, or a new-vocab
+    response from a custom evaluator would silently slip past
+    ``server.py``'s explicit ``deny`` / ``flag_for_review`` branches
+    and produce a 200-OK silent allow. Instead: if the verdict string
+    isn't in the canonical vocabulary (see ``_VALID_VERDICTS`` above),
+    log a WARNING and return the ``fallback`` unchanged. The gateway's
+    rule verdict is always in-vocab so the fallback path is always safe.
 
-    FIX-C (task #105 alias sunset): legacy alias strings (see
-    ``_LEGACY_VERDICT_ALIASES``) are normalized to the canonical form
-    BEFORE the allowlist check runs, so no downstream code ever sees
-    the legacy verdict as a live value. A WARN is emitted so operators
-    see the drift. Frozen VerdictResult is not mutated — we operate on
-    a local ``canonical_verdict`` and rebuild the gateway Verdict.
+    Legacy alias strings (see ``_LEGACY_VERDICT_ALIASES``) are
+    normalized to the canonical form BEFORE the allowlist check runs,
+    so no downstream code ever sees the legacy verdict as a live
+    value. A WARN is emitted so operators see the drift. Frozen
+    VerdictResult is not mutated — we operate on a local
+    ``canonical_verdict`` and rebuild the gateway Verdict.
     """
-    # FIX-C: normalize legacy alias FIRST so downstream (allowlist +
+    # Normalize legacy alias FIRST so downstream (allowlist +
     # everything after) only ever sees the canonical form.
     canonical_verdict = _normalize_legacy_verdict(
         vr.verdict, context="adapter",
@@ -307,18 +304,16 @@ def _verdict_result_to_gateway_verdict(vr, *, fallback: Verdict) -> Verdict:
     )
 
 
-# Paper Figure-4 canonical verdict vocabulary. Used by
-# ``_verdict_result_to_gateway_verdict`` (task #318 FIX-3) to reject
-# typos and unknown-vocab strings before they slip past the gateway's
+# Canonical verdict vocabulary. Used by
+# ``_verdict_result_to_gateway_verdict`` to reject typos and
+# unknown-vocab strings before they slip past the gateway's
 # verdict-consumption branches. Keep this list in sync with
-# ``policy_verdicts.VerdictContext``'s handler registry vocabulary +
-# ``feedback_policy_verdict_differentiator`` memory (allow/deny/redact/
-# throttle/flag_for_review/block/anonymize).
+# ``policy_verdicts.VerdictContext``'s handler registry vocabulary
+# (allow/deny/redact/throttle/flag_for_review/block/anonymize).
 #
-# FIX-C (task #105 alias sunset): legacy aliases (see
-# ``_LEGACY_VERDICT_ALIASES``) are NORMALIZED to canonical form
-# BEFORE this allowlist runs, so ``require_human`` is intentionally
-# NOT listed here — an evaluator emitting it lands as
+# Legacy aliases (see ``_LEGACY_VERDICT_ALIASES``) are NORMALIZED to
+# canonical form BEFORE this allowlist runs, so ``require_human`` is
+# intentionally NOT listed here — an evaluator emitting it lands as
 # ``flag_for_review`` after ``_normalize_legacy_verdict`` fires. The
 # alias sunsets in ``_DEPRECATION_SUNSET``.
 _VALID_VERDICTS: frozenset[str] = frozenset({
@@ -343,30 +338,29 @@ def _emit_via_evaluator(
 
     Semantic contract:
         * ``evaluator is None``  → return ``fallback`` (registry miss;
-          pre-Phase-3 behaviour).
+          pre-evaluator behaviour).
         * ``inp is None``        → return ``fallback`` (input assembly
           failed — e.g. ``kya.EvaluationInput`` unimportable because a
           test stubbed the ``kya`` module. Fail-closed via the rule's
           own decision.)
         * ``NativeEvaluator.would_short_circuit(inp)`` returns True →
-          skip the ``evaluate()`` call entirely (task #318 FIX-1). We
-          have proven no rule will fire, so the wasted N-scope DB fan-
-          out inside ``_compute_policy_hash`` is avoided. Task #318
-          FIX-6 enriches the returned fallback with a synthesised
-          ``policy_hash`` (from the cached ``get_effective_policy_hash``)
-          + ``evaluator_name="native"`` so ledger attribution is
-          preserved.
+          skip the ``evaluate()`` call entirely. We have proven no rule
+          will fire, so the wasted N-scope DB fan-out inside
+          ``_compute_policy_hash`` is avoided. The returned fallback
+          is enriched with a synthesised ``policy_hash`` (from the
+          cached ``get_effective_policy_hash``) + ``evaluator_name=
+          "native"`` so ledger attribution is preserved.
         * Evaluator raises       → return ``fallback`` (fail-closed
           via the rule's inline verdict, which is itself the safe
           decision the primitive computed).
         * Evaluator returns ``"allow"`` → return ``fallback`` enriched
           with the evaluator's ``policy_hash`` + ``evaluator_name``
-          breadcrumb (task #318 FIX-6) so audit consumers keep
-          attribution even on default-allow paths.
+          breadcrumb so audit consumers keep attribution even on
+          default-allow paths.
         * Evaluator returns non-``"allow"`` → map through the adapter
           and return the evaluator's verdict (overrides the rule).
 
-    ``db`` (Phase-4-P0 FIX-A): the enclosing session, threaded from
+    ``db``: the enclosing session, threaded from
     ``evaluate()`` → ``_dispatch()`` → here so the short-circuit
     attribution path can compute the effective policy hash against a
     live session on a cold cache. Defaults to ``None`` for backward
@@ -380,10 +374,10 @@ def _emit_via_evaluator(
     if evaluator is None or inp is None:
         return fallback
 
-    # FIX-1: short-circuit the default NativeEvaluator on gateway-
+    # Short-circuit the default NativeEvaluator on gateway-
     # shape inputs that carry no attribute the evaluator would inspect.
     # Import lazily to avoid a cross-package import cycle at module
-    # load time. Only NativeEvaluator gets this fast-path — any Pro
+    # load time. Only NativeEvaluator gets this fast-path — a custom
     # evaluator always runs (it may pattern-match on the gateway rule
     # name / candidate verdict that the input carries in `attributes`).
     try:
@@ -393,7 +387,7 @@ def _emit_via_evaluator(
     if NativeEvaluator is not None and isinstance(evaluator, NativeEvaluator):
         try:
             if evaluator.would_short_circuit(inp):
-                # FIX-6: enrich the fallback with a policy_hash +
+                # Enrich the fallback with a policy_hash +
                 # evaluator_name breadcrumb so audit consumers keep
                 # attribution even when we skip evaluate(). Delegates
                 # to the (now cached) get_effective_policy_hash for
@@ -421,7 +415,7 @@ def _emit_via_evaluator(
         # gateway's inline candidate verbatim so backward compat holds
         # for the default NativeEvaluator — but enrich `rich` with
         # the evaluator's `policy_hash` + `evaluator_name` so
-        # attribution is preserved (task #318 FIX-6).
+        # attribution is preserved.
         return _fallback_with_result_attribution(fallback, result)
     return _verdict_result_to_gateway_verdict(result, fallback=fallback)
 
@@ -430,15 +424,15 @@ def _fallback_with_native_attribution(
     fallback: Verdict, inp, *, db=None,
 ) -> Verdict:
     """Enrich ``fallback`` with a policy_hash + evaluator_name breadcrumb
-    when NativeEvaluator was short-circuited (task #318 FIX-6).
+    when NativeEvaluator was short-circuited.
 
     We didn't call ``evaluate()`` so there's no VerdictResult to copy
     from. Synthesise via the (cached) ``get_effective_policy_hash`` so
     ledger attribution still works.
 
-    Phase-4-P0 FIX-A: ``db`` is threaded from the caller so a cold-cache
-    hit on the short-circuit path can still compute a real hash instead
-    of silently degrading. When ``db is None`` (test fakes / caller
+    ``db`` is threaded from the caller so a cold-cache hit on the
+    short-circuit path can still compute a real hash instead of
+    silently degrading. When ``db is None`` (test fakes / caller
     without a session) AND the cache misses AND the compute raises, we
     log at WARNING (not DEBUG) so downstream evidence attribution gaps
     are visible in ops logs — no silent swallow.
@@ -458,7 +452,7 @@ def _fallback_with_native_attribution(
         # regressions surface in ops logs; DEBUG when a session was
         # threaded through and the compute still failed (upstream bug
         # that will surface via its own error path). Either way, never
-        # silent — Kola directive 2026-08-07.
+        # silent.
         if db is None:
             logger.warning(
                 "[KYA-GATEWAY] short-circuit policy_hash synth failed "
@@ -485,7 +479,7 @@ def _fallback_with_result_attribution(
     fallback: Verdict, result,
 ) -> Verdict:
     """Enrich ``fallback`` with the evaluator's ``policy_hash`` +
-    ``evaluator_name`` on the default-allow path (task #318 FIX-6).
+    ``evaluator_name`` on the default-allow path.
 
     The evaluator ran and returned ``"allow"`` — we defer to the rule's
     candidate verdict for the actual decision, but propagate the
@@ -532,7 +526,7 @@ def evaluate(
         A :class:`Verdict`. Always returns — never raises.
     """
     reasons: list[str] = []
-    # Phase 3 (#S4-1) — resolve the evaluator ONCE at the top so the
+    # Resolve the evaluator ONCE at the top so the
     # per-rule dispatch helpers can pass it through. Cheap
     # registry-dict lookup; caching per-call is overkill.
     evaluator = _resolve_evaluator(cfg.policy_evaluator_name)
@@ -750,11 +744,11 @@ def evaluate(
 
     # ─── All checks passed ─────────────────────────────────────
     if "REQUIRES_HUMAN" in reasons:
-        # Paper Figure 4 canonical vocabulary is ``flag_for_review``;
+        # Canonical Layer-2 vocabulary is ``flag_for_review``;
         # ``require_human`` remains accepted at the registry via an
-        # alias handler through #105. Emit canonical going forward,
-        # sourcing the string from ``_CANONICAL_HUMAN_APPROVAL_VERDICT``
-        # so a single edit in ``kya._verdict_aliases`` ripples here.
+        # alias handler. Emit canonical going forward, sourcing the
+        # string from ``_CANONICAL_HUMAN_APPROVAL_VERDICT`` so a
+        # single edit in ``kya._verdict_aliases`` ripples here.
         return _dispatch(
             _CANONICAL_HUMAN_APPROVAL_VERDICT,
             Verdict(

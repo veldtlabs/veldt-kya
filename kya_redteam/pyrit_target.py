@@ -1,7 +1,7 @@
 """Target abstractions — what a red-team campaign attacks.
 
 The MVP ships a generic HTTP target that wraps any agent endpoint. The
-PyRIT-backed runner (Phase 3) will lazily wrap this in a
+PyRIT-backed runner lazily wraps this in a
 `pyrit.prompt_target.PromptTarget` subclass; the HTTP target stays
 framework-agnostic.
 

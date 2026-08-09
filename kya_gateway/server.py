@@ -111,7 +111,7 @@ _IDENTITY_FAIL_CODES: dict[str, str] = {
     "RevocationBlocked": "IDENTITY_REVOKED",
 }
 
-# Phase 5g #3/#4 — map exception types to security-event kinds the
+# Map exception types to security-event kinds the
 # existing `_HARDENING_EVENT_KINDS` whitelist accepts. Anything not in
 # this map fires no event (the identity-failure reason still surfaces
 # in X-KYA-Reason-Codes).
@@ -181,7 +181,7 @@ def _emit_identity_failure_event(
     the function itself; we never let a security-event failure block
     a request.
 
-    Phase 14a #145 — when the failure carries principal info (today:
+    When the failure carries principal info (today:
     ``RevocationBlocked.principal_kind`` / ``principal_id``), ALSO
     record a ``signal_kind=revocation_blocked`` row into
     ``kya_principal_trust.signal_counts``. That's the table
@@ -214,7 +214,7 @@ def _emit_identity_failure_event(
             ev_exc, _METRICS["sec_event_emit_failures"],
         )
 
-    # Phase 14a #145 — bridge from security event to principal_trust
+    # Bridge from security event to principal_trust
     # signal counts. Only when the exception carries verified
     # principal info (currently RevocationBlocked sets these in
     # identity.py:_maybe_check_revocation). Best-effort: failure to
@@ -251,7 +251,7 @@ def _emit_identity_failure_event(
                 window_seconds=_GATEWAY_SIGNAL_DEBOUNCE_S,
             ):
                 return
-            # Phase 14a #147 -- cross-tenant attribution defence.
+            # Cross-tenant attribution defence.
             # The exception's ``principal_id`` came from a VC's
             # credentialSubject (identity.py:_extract_vc_principal_attr).
             # The VC was signed by a trusted issuer, but "trusted" in
@@ -290,7 +290,7 @@ def _emit_identity_failure_event(
         )
 
 
-# Phase 14a #145 — debounce window for gateway-emitted identity-
+# Debounce window for gateway-emitted identity-
 # failure signals (revocation_blocked, dpop_*). 60s suppresses the
 # burst-replay attack on trust scores without losing the first
 # occurrence in a session.
@@ -570,11 +570,12 @@ class Gateway:
                     cfg.enforcement.mode == "enforce",
             },
         )
-        # 5g-B-10 — operator footgun warning at construction time:
-        # revocation_check=true with kya_pro missing means revocation
-        # checks are silent no-ops until first VC arrives. Surface this
-        # at startup so a misconfigured deployment is visible
-        # immediately, not after a revoked credential is honored.
+        # Operator footgun warning at construction time:
+        # revocation_check=true with the optional revocation module
+        # missing means revocation checks are silent no-ops until the
+        # first VC arrives. Surface this at startup so a misconfigured
+        # deployment is visible immediately, not after a revoked
+        # credential is honored.
         did_cfg = cfg.identity.did
         if did_cfg is not None and did_cfg.revocation_check:
             try:
@@ -582,9 +583,9 @@ class Gateway:
             except ImportError:
                 logger.warning(
                     "[KYA-GATEWAY] identity.did.revocation_check=true but "
-                    "kya_pro is not installed — revocation checks will "
-                    "silently no-op. Install veldt-kya-pro or set "
-                    "revocation_check=false.",
+                    "the optional revocation module is not installed — "
+                    "revocation checks will silently no-op. Install the "
+                    "revocation add-on or set revocation_check=false.",
                 )
         self.app = build_app(self)
 
@@ -670,7 +671,7 @@ def build_app(gw: Gateway) -> FastAPI:
 
     @app.get("/v1/principals/me")
     async def me(request: Request) -> JSONResponse:
-        # Phase 5f rewire — delegate to KYA's existing Valkey-backed
+        # Delegate to KYA's existing Valkey-backed
         # rate limiter. Operators configure via:
         #   KYA_RATE_LIMIT_RPS_PRINCIPALS_ME=...
         # When env unset, the limiter returns True immediately (no
@@ -709,7 +710,7 @@ def build_app(gw: Gateway) -> FastAPI:
                 status_code=exc.http_status,
             )
 
-        # Phase 6: DPoP requirement for DID-method principals. Replay-
+        # DPoP requirement for DID-method principals. Replay-
         # grinding the endpoint requires the DID's private key — friction
         # rate limit becomes secondary, not primary defense.
         did_cfg = gw.cfg.identity.did
@@ -810,7 +811,7 @@ def build_app(gw: Gateway) -> FastAPI:
         try:
             principal = gw.identity.resolve(raw_headers)
         except IdentityBindingFailed as exc:
-            # Phase 5g #3/#4 — emit security event for specific failure
+            # Emit security event for specific failure
             # types (revocation_blocked, dpop_* via DPoPError subclass).
             # Fires in ALL modes so the trust-score + attack-chain see
             # the signal regardless of whether the gateway blocked.
@@ -953,7 +954,7 @@ def build_app(gw: Gateway) -> FastAPI:
                     ),
                     status_code=403,
                 )
-            # FIX-C (task #105): the legacy alias `require_human` is
+            # The legacy alias `require_human` is
             # normalized at the rbac-evaluate + adapter boundaries in
             # `policy_pipeline`, so `verdict.verdict` here should be
             # canonical. We keep the legacy string in the check for
@@ -968,7 +969,7 @@ def build_app(gw: Gateway) -> FastAPI:
                 | frozenset(_LEGACY_VERDICT_ALIASES.keys())
             )
             if verdict.verdict in _human_approval_verdicts:
-                # Phase 5g-tail — 428 Precondition Required (RFC 6585 §3)
+                # 428 Precondition Required (RFC 6585 §3)
                 # is the correct semantic: the action isn't denied, it
                 # needs a precondition (human approval) before it can
                 # proceed. The WWW-Authenticate hint advertises the
@@ -998,7 +999,7 @@ def build_app(gw: Gateway) -> FastAPI:
                     make_error(
                         req.request_id,
                         JSONRPC_ERR_HUMAN_APPROVAL_REQUIRED,
-                        # FIX-F (task #105): interpolate the shared
+                        # Interpolate the shared
                         # canonical-verdict constant so the wire response
                         # tracks a single edit in ``kya._verdict_aliases``.
                         f"KYA verdict: {_CANONICAL_HUMAN_APPROVAL_VERDICT}",
@@ -1011,7 +1012,7 @@ def build_app(gw: Gateway) -> FastAPI:
                     status_code=428,
                     headers=headers_out,
                 )
-            # Task #318 FIX-4: fail-closed trap for unknown verdicts in
+            # Fail-closed trap for unknown verdicts in
             # enforce mode. Belt-and-suspenders with the allowlist in
             # ``_verdict_result_to_gateway_verdict`` (FIX-3). If ANY new
             # vocabulary (`redact`/`throttle`/`block`/`anonymize` from
@@ -1221,11 +1222,11 @@ def _create_pending_row(
                     len(body), max_body, gw.cfg.gateway.tenant_id,
                 )
                 return None
-            # B1 fix — Pro deploys wrap the body with per-tenant DEK
-            # AES-GCM before persisting. Soft import so OSS-only
-            # deploys (no kya_pro) fall through to plaintext-at-rest,
-            # which is the documented ops-accepted risk when
-            # KYA_HITL_MASTER_KEY isn't configured.
+            # Optional encryption path: some deploys wrap the body with
+            # a per-tenant DEK (AES-GCM) before persisting. Soft-import
+            # so default deploys (no encryption module) fall through to
+            # plaintext-at-rest, which is the documented ops-accepted
+            # risk when KYA_HITL_MASTER_KEY isn't configured.
             body_to_store = body
             try:
                 from kya_pro.policy.hitl_encryption import encrypt as _pro_encrypt
@@ -1233,7 +1234,7 @@ def _create_pending_row(
                     body, tenant_id=gw.cfg.gateway.tenant_id,
                 )
             except ImportError:
-                pass  # OSS-only deploy — plaintext by design.
+                pass  # No encryption module — plaintext by design.
             pending_id = create_pending(
                 engine,
                 tenant_id=gw.cfg.gateway.tenant_id,
@@ -1354,7 +1355,7 @@ def _record_invocation_pre_policy(*, gw: Gateway, principal, action: str) -> int
         return None
     try:
         with default_session() as db:
-            # Task #349 — ``OUTCOME_PENDING`` was added to
+            # ``OUTCOME_PENDING`` was added to
             # ``kya.invocations.VALID_OUTCOMES`` so this call succeeds
             # instead of raising ValueError (previously swallowed by the
             # broad ``except Exception`` below, which silently dropped
@@ -1479,7 +1480,7 @@ def _record_verdict_evidence(
             # so audit + policy share the same row. When that step failed,
             # invocation_id is None and record_evidence stores without
             # a linked invocation row.
-            # Phase 4 (#S4-1) — attribute the row to the evaluator that
+            # Attribute the row to the evaluator that
             # produced this verdict. The pipeline's attribution helpers
             # (``_fallback_with_native_attribution`` /
             # ``_fallback_with_result_attribution`` in

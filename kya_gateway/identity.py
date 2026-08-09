@@ -57,7 +57,7 @@ def _extract_vc_principal_attr(vc_claims: dict, key: str) -> str | None:
     level instead -- we accept either location, preferring the spec-
     compliant nested form.
 
-    Phase 12 surfaced that the gateway was reading ONLY the top level,
+    Historical bug: the gateway was reading ONLY the top level,
     so a VC issued by KYA's own JWTVCIssuer (which is W3C-correct and
     puts claims under credentialSubject) was never matched. Result:
     the gateway treated every agent's principal_id as the agent's
@@ -233,16 +233,17 @@ class IdentityResolver:
                 raise IdentityCredentialInvalid(
                     f"VC verification failed: {exc}"
                 ) from exc
-            # Optional revocation check via pro. Lazy-imports kya_pro so
-            # OSS-only deployments don't pay the import cost. Failure to
-            # import (pro not installed) is silently a no-op — operators
-            # who set revocation_check=true without pro installed get a
-            # warning at startup but the gateway still serves.
+            # Optional revocation check. Lazy-imports an optional
+            # revocation module so default deployments don't pay the
+            # import cost. Failure to import (module not installed) is
+            # silently a no-op — operators who set revocation_check=true
+            # without the module installed get a warning at startup but
+            # the gateway still serves.
             if did_cfg and did_cfg.revocation_check:
                 self._maybe_check_revocation(verified)
 
         # B13: only trust principal_kind from a VC issued by a trusted DID.
-        # Phase 12 fix: extract via _extract_vc_principal_attr so the
+        # Extract via _extract_vc_principal_attr so the
         # W3C-compliant `vc.credentialSubject.<key>` location is honored
         # (KYA's own JWTVCIssuer puts claims there; pre-fix gateway only
         # looked at top-level and never matched, so principal_id always
@@ -314,11 +315,11 @@ class IdentityResolver:
     # ─── proof-of-possession helper ─────────────────────────────────
 
     def _maybe_check_revocation(self, verified) -> None:
-        """Run kya_pro.revocation.RevocationChecker if available.
+        """Run the optional revocation checker if available.
 
         Constructed lazily on first call and cached on the resolver so we
-        don't rebuild the cache+lock state per request. If kya_pro isn't
-        installed, log once and no-op.
+        don't rebuild the cache+lock state per request. If the optional
+        revocation module isn't installed, log once and no-op.
         """
         if getattr(self, "_revocation_checker_attempted", False):
             checker = getattr(self, "_revocation_checker", None)
@@ -350,8 +351,9 @@ class IdentityResolver:
                 self._RevocationError = RevocationError
             except ImportError:
                 logger.warning(
-                    "[KYA-GATEWAY] revocation_check=true but kya_pro is not "
-                    "installed — revocation checks are no-ops"
+                    "[KYA-GATEWAY] revocation_check=true but the optional "
+                    "revocation module is not installed — revocation "
+                    "checks are no-ops"
                 )
                 self._revocation_checker = None
                 checker = None
@@ -361,13 +363,13 @@ class IdentityResolver:
         try:
             checker.check(verified)
         except self._RevocationError as exc:
-            # Phase 5g #3 — distinct subclass so the gateway can emit a
+            # Distinct subclass so the gateway can emit a
             # `revocation_blocked` security event when this fires,
             # separate from generic credential-invalid failures.
             #
-            # Phase 14a #145 — attach the verified VC's principal
-            # info to the exception so the failure handler can also
-            # record a `revocation_blocked` signal into
+            # Attach the verified VC's principal info to the exception
+            # so the failure handler can also record a
+            # `revocation_blocked` signal into
             # `kya_principal_trust.signal_counts` (the table
             # `kya.rogue.get_rogue_signals` reads). Without this,
             # a detector polling rogue_score cannot observe its own

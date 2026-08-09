@@ -24,7 +24,7 @@ tenant policy:
     set_tenant_policy(db, tenant_id, *, max_auto_incident_mode=...,
                       budget_monthly_prompts=..., redteam_tier=...)
 
-PyRIT integration (Phase 2 — pyrit_target/pyrit_scorer/pyrit_orchestrator)
+PyRIT integration (pyrit_target/pyrit_scorer/pyrit_orchestrator)
 lazily imports `pyrit` so the module stays optional. KYA core remains
 SDK-dep-free; install pyrit only on the kya-redteam sidecar.
 

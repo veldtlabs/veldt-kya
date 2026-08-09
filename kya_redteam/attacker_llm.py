@@ -12,7 +12,7 @@ in campaigns.tier_allows_orchestrator):
             KYA_REDTEAM_ATTACKER_MODEL (defaults to a cheap model).
   premium   Customer-provided OR Veldt-hosted premium. Set via
             KYA_REDTEAM_PREMIUM_ATTACKER_MODEL or per-tenant override
-            in kya_redteam_tenant_policy (Phase 3.5).
+            in kya_redteam_tenant_policy.
 
 Cost tracking
 -------------

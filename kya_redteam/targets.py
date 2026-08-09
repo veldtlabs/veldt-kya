@@ -1,7 +1,7 @@
 """Persistent target registry + encrypted-token vault.
 
-Production hardening over Phase 2's "target_endpoint + token in the
-request body" path. Three problems with the ad-hoc approach:
+Production hardening over the earlier "target_endpoint + token in
+the request body" path. Three problems with the ad-hoc approach:
 
   1. SSRF surface — a tenant admin could POST any URL (including
      internal cluster services) and the redteam runner would happily
@@ -24,7 +24,7 @@ ciphertext + key_id are stored in `kya_redteam_target_secrets`.
 Key rotation: at first read with a non-matching key_id, decrypt with
 the old key (read from env `KYA_REDTEAM_SECRET_KEY_<key_id>`) and
 re-encrypt under the current key. For the MVP we just support a
-single key (key_id='v1') — multi-key rotation is a Phase 3.5 add.
+single key (key_id='v1') — multi-key rotation is planned but not yet shipped.
 
 Fail closed: when KYA_REDTEAM_SECRET_KEY is unset, the helper raises
 `SecretConfigError` from the write path. Better to refuse than to
@@ -35,7 +35,7 @@ Response parsers
 The dict serialization of the target row carries a `response_parser_kind`
 string (one of `standard | openai_chat | anthropic_messages | text_only`).
 HttpAgentTarget materializes this to a real callable at construction
-time. Custom (tenant-defined) parsers come in Phase 3.5.
+time. Custom (tenant-defined) parsers are planned.
 """
 from __future__ import annotations
 

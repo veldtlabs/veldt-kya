@@ -42,15 +42,15 @@ VALID_ORCHESTRATORS = (
 )
 
 VALID_SCORERS = (
-    # Native scorers (Phase 2/3 — no LLM judge needed):
+    # Native scorers (no LLM judge needed):
     "sub_string",
     "regex",
     "data_leak_scanner",
     "refusal_failure",
     "tool_hijack",
-    # LLM-judge scorers (Phase 3 onward — needs attacker LLM):
+    # LLM-judge scorers (needs attacker LLM):
     "self_ask_true_false",
-    # Reserved for PyRIT runtime (Phase 3.5+):
+    # Reserved for the PyRIT runtime:
     "self_ask_likert",
     "azure_content_filter",
 )
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS {prefix}kya_redteam_tenant_policy (
 
 _MIGRATIONS_CAMPAIGNS: list = []
 _MIGRATIONS_FINDINGS: list = []
-# Phase 3.5.A — tenant-level attacker-LLM override + token cap.
+# Tenant-level attacker-LLM override + token cap.
 # Both nullable so missing values fall back to env defaults.
 # Built as templates so the schema qualifier is dialect-aware at call
 # time; materialized via _policy_migrations(db).
@@ -705,7 +705,7 @@ def set_tenant_policy(
 ) -> dict:
     """Upsert the tenant's policy. Only non-None fields are written.
 
-    `attacker_llm_model` (Phase 3.5.A): per-tenant override for the
+    `attacker_llm_model`: per-tenant override for the
     LLM that drives multi-turn campaigns. Format is LiteLLM's
     `provider/model` (e.g. `anthropic/claude-sonnet-4-6`). When set,
     multi_turn.run_multi_turn picks this over the env defaults — letting

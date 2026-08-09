@@ -4,7 +4,7 @@ The native path (multi_turn.py) covers RedTeaming + Crescendo without
 any dependency on PyRIT — it works on a clean install. This module is
 the OPT-IN bridge for customers who:
 
-  - Want PyRIT's full attack catalog + scorer library (Phase 3.5)
+  - Want PyRIT's full attack catalog + scorer library
   - Need TAP (Tree of Attacks with Pruning) or XPIA orchestrators
   - Have a hardened PyRIT install they're integrating into their
     existing red-team pipeline
@@ -155,7 +155,7 @@ class _KyaPyritTarget:
                 self._http = http_target
 
             def _validate_request(self, *, prompt_request):
-                # Single-text-prompt only — multimodal lands in Phase 3.5.
+                # Single-text-prompt only — multimodal support is planned.
                 if not prompt_request or not prompt_request.request_pieces:
                     raise ValueError("empty prompt_request")
                 rp = prompt_request.request_pieces[0]

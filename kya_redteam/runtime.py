@@ -129,8 +129,8 @@ def consume_budget(tenant_id: str, limit: int, n: int = 1) -> dict:
 # Default cap is intentionally generous (10M tokens/month ≈ $100 of
 # Sonnet-4.6 inference) so legitimate Standard-tier customers don't
 # hit it. Premium tenants who actually need higher caps override via
-# kya_redteam_tenant_policy.attacker_tokens_monthly_cap (Phase 3.5
-# adds the column) or the env default.
+# kya_redteam_tenant_policy.attacker_tokens_monthly_cap column or
+# the env default.
 
 _DEFAULT_ATTACKER_TOKEN_CAP = int(os.environ.get(
     "KYA_REDTEAM_ATTACKER_TOKENS_MONTHLY_CAP_DEFAULT", "10000000",

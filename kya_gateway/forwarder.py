@@ -74,9 +74,8 @@ class Forwarder:
         method-not-found) and the body has structured info the client
         needs.
 
-        ``extra_request_headers`` carry KYA signals to the backend
-        (Phase 5g — 5g-A-02). Default-empty so existing call sites
-        don't change behavior.
+        ``extra_request_headers`` carry KYA signals to the backend.
+        Default-empty so existing call sites don't change behavior.
         """
         backend = self.get_backend(backend_name)
         try:

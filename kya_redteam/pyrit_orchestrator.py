@@ -1,13 +1,13 @@
 """Campaign runner — drives a target through a dataset, scores responses,
 records findings, and posts to KYA's /events/rogue ingest.
 
-MVP scope (Phase 2)
--------------------
+MVP scope
+---------
 Ships the "lite path" that runs the Free tier `prompt_sending`
 orchestrator using only stdlib + requests + the scorers in
 `pyrit_scorer.py`. No PyRIT dependency. This makes the demo runnable
-without installing pyrit; the hooks for a PyRIT-backed runner (multi-
-turn, Crescendo, TAP) land in Phase 3 alongside `attacker_llm` config.
+without installing pyrit; the hooks for a PyRIT-backed runner
+(multi-turn, Crescendo, TAP) land alongside `attacker_llm` config.
 
 Public API
 ----------
@@ -147,7 +147,7 @@ def _build_campaign_scorer(campaign: dict) -> Any:
     """Pick a scorer (or compose several) based on the campaign's
     scorer_kind + orchestrator_kind. The MVP picks sensible defaults
     for the built-in datasets; customers can override by adding rows to
-    a `kya_redteam_scorer_configs` table in Phase 3."""
+    a `kya_redteam_scorer_configs` table in a future release."""
     scorer_kind = campaign["scorer_kind"]
 
     # Common case: built-in dataset → tailored compositor.
@@ -274,7 +274,7 @@ def run_campaign(
                         None = create one here.
       initiated_by:     UUID of the human/service-account that fired this
                         run. Stored on the run row + flows into attestation.
-      target_id:        FK to kya_redteam_targets (Phase 3 Commit B). None
+      target_id:        FK to kya_redteam_targets. None
                         when using ad-hoc target_endpoint+token path.
 
     Returns:
@@ -371,7 +371,7 @@ def run_campaign(
             )
         report.errors.append(
             f"orchestrator '{orchestrator_kind}' not yet implemented "
-            "(XPIA / TAP land in Phase 3.5)"
+            "(XPIA / TAP support is planned)"
         )
         _finalize("failed", error_message=report.errors[-1])
         return report

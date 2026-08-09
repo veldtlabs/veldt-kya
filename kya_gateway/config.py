@@ -50,14 +50,15 @@ class DIDConfig:
     pop_audience: str | None = None
     # Clock skew tolerance on the PoP JWT's iat/exp.
     pop_leeway_seconds: int = 30
-    # When True, the gateway lazy-imports kya_pro.revocation and runs
-    # the W3C Status List 2021 check after VC signature verification.
-    # No-op if kya_pro isn't installed (degrades gracefully).
+    # When True, the gateway lazy-imports an optional revocation module
+    # and runs the W3C Status List 2021 check after VC signature
+    # verification. No-op if the module isn't installed (degrades
+    # gracefully).
     revocation_check: bool = False
     # Cache TTL for fetched status list VCs (seconds). 0 = no caching
     # (revocation propagates instantly — useful for tests).
     revocation_cache_ttl_seconds: int = 60
-    # Phase 6: DPoP-bound /v1/principals/me. When True (default), every
+    # DPoP-bound /v1/principals/me. When True (default), every
     # /me call requires a fresh DPoP JWT signed by a key in the DID's
     # authentication set. Replay-grinding requires the private key —
     # the endpoint stops being a free credential-validation oracle.
@@ -175,7 +176,7 @@ class PolicyConfig:
     payload_caps: PayloadCapsConfig | None = None
     tenant_budget: BudgetConfig | None = None
     rbac: RBACConfig | None = None
-    # Phase 3 (#S4-1) — name of the ``PolicyEvaluator`` the pipeline
+    # Name of the ``PolicyEvaluator`` the pipeline
     # dispatches through for every verdict-producing site. Defaults to
     # ``"native"`` which resolves to ``kya.NativeEvaluator`` via
     # ``kya.get_evaluator``. Operators wanting an LLM-judge overlay,
@@ -200,7 +201,7 @@ class GatewayBindConfig:
     tenant_id: str = "default"
 
 
-# Phase 5g — three modes mirroring `kya/rbac.py` off/flag/block. Default
+# Three enforcement modes mirroring `kya/rbac.py` off/flag/block. Default
 # is `audit_only` so the gateway matches the library's "KYA records, the
 # customer enforces" liability-isolation model. Operators who want the
 # gateway to BE the security boundary must opt in to `enforce`.
@@ -313,9 +314,10 @@ class GatewayConfig:
                     daily_usd=float(pol["tenant_budget"]["daily_usd"])
                 ) if pol.get("tenant_budget") else None,
                 rbac=_parse_rbac(pol.get("rbac")),
-                # Phase 3 (#S4-1) — optional evaluator override. Blank/
-                # missing → ``"native"`` (backward compat with pre-Phase-3
-                # configs). A YAML operator can point at a registered
+                # Optional evaluator override. Blank/missing →
+                # ``"native"`` (backward compat with configs written
+                # before the evaluator field existed). A YAML operator
+                # can point at a registered
                 # custom evaluator here without touching Python code.
                 policy_evaluator_name=str(
                     pol.get("policy_evaluator_name", "native")
@@ -337,7 +339,7 @@ class GatewayConfig:
             # `mode:` is missing, fail loudly rather than silently
             # default — the typo would otherwise pin the gateway to
             # audit_only when the operator intended `enforce`. When the
-            # block is ABSENT, default to audit_only (Phase 5g default).
+            # block is ABSENT, default to audit_only.
             enforce_block = raw.get("enforcement")
             if enforce_block is None:
                 enforcement = EnforcementConfig()
@@ -357,7 +359,7 @@ class GatewayConfig:
         except KeyError as exc:
             raise GatewayConfigError(f"missing required config field: {exc}") from exc
 
-        # Phase 6 boot-time validation: capability-removal requires a
+        # Boot-time validation: capability-removal requires a
         # CONFIGURED dpop_audience. A WARN-then-fallback on every request
         # is an operator footgun behind a reverse proxy (cross-gateway
         # replay surface). Refuse to start the gateway rather than
@@ -407,7 +409,7 @@ def _parse_rbac(block: dict | None) -> RBACConfig | None:
     default = block.get("default", "deny")
     if default not in ("allow", "deny"):
         raise GatewayConfigError(f"rbac.default must be 'allow' or 'deny', got {default!r}")
-    # FIX-C (task #105 alias sunset): source-of-truth alias mapping +
+    # Source-of-truth alias mapping +
     # sunset version live in ``kya_gateway.policy_pipeline`` so a single
     # edit ripples across config-parse + adapter boundaries. We import
     # locally (not at module top) to avoid circular import surface —

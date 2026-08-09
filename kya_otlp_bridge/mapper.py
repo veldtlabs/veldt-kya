@@ -470,7 +470,7 @@ class SpanMapper:
 
         return evidence
 
-    # ── GenAI cost extraction (task #263 Part B) ─────────────────────
+    # ── GenAI cost extraction ────────────────────────────────────────
     #
     # LangChain / CrewAI / AutoGen customers use OTel spans emitted by
     # OpenInference or OpenLLMetry auto-instrumentation. Those spans
@@ -671,8 +671,8 @@ class SpanMapper:
         (no usable data — avoid emitting cost=0.0 which would double as
         signal on the dashboard).
 
-        Only populates the 5 fields the Pro-side InvocationEventBody
-        Pydantic model accepts (task #263 Part B-2).
+        Only populates the 5 fields the downstream InvocationEventBody
+        Pydantic model accepts.
         """
         try:
             cost = self.extract_gen_ai_cost(span)
