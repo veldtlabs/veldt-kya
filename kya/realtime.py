@@ -45,6 +45,8 @@ import logging
 import time
 from collections.abc import Callable
 
+from .canonicals import CANONICAL_SIGNAL_KINDS as _CANONICAL_SIGNAL_KINDS
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,10 +102,7 @@ def _alerts_channel(tenant_id: str) -> str:
 
 
 # Whitelist — only these kinds can be written. Prevents caller-controlled
-# strings from spawning unbounded Valkey keys (caller could fire a signal
-# called "...long-string..." per request and DoS the keyspace).
-from .canonicals import CANONICAL_SIGNAL_KINDS as _CANONICAL_SIGNAL_KINDS
-
+# strings from spawning unbounded Valkey keys.
 ALLOWED_SIGNAL_KINDS = _CANONICAL_SIGNAL_KINDS
 
 

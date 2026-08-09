@@ -6,7 +6,6 @@ constants; ``CANONICAL_*`` frozensets/tuples are the whitelists.
 """
 from __future__ import annotations
 
-
 # ── Verdicts ────────────────────────────────────────────────────────
 
 VERDICT_ALLOW: str = "allow"

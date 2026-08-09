@@ -38,6 +38,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .canonicals import (
+    CANONICAL_OUTCOMES as _CANONICAL_OUTCOMES,
+    OUTCOME_IN_PROGRESS,  # noqa: F401 — re-exported by kya/__init__.py
+    OUTCOME_PENDING,  # noqa: F401 — re-exported by kya/__init__.py
+)
+
 try:
     from sqlalchemy import (
         BigInteger,
@@ -69,17 +75,6 @@ VALID_MODES = {
     "autonomous",
     "observed",
 }
-
-# Named canonical outcome values. ``pending`` is a canonical value for
-# pre-policy audit rows; ``in_progress`` is named alongside it because
-# both are transient (non-terminal) states and clarify the lifecycle
-# when read together. The remaining outcome literals remain bare for
-# now and will be converted opportunistically as other edits touch them.
-from .canonicals import (
-    CANONICAL_OUTCOMES as _CANONICAL_OUTCOMES,
-    OUTCOME_IN_PROGRESS,
-    OUTCOME_PENDING,
-)
 
 # ---------------------------------------------------------------------
 # VALID_OUTCOMES — the full invocation-lifecycle vocabulary.

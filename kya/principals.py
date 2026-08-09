@@ -58,6 +58,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .canonicals import CANONICAL_PRINCIPAL_KINDS as _CANONICAL_PRINCIPAL_KINDS
+
 try:
     from sqlalchemy import (
         JSON,
@@ -78,8 +80,6 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-
-from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_for_trust
 
 #: Canonical principal kinds. Additive over time — never remove or
 #: rename a value, because existing rows depend on the literal string.
@@ -192,7 +192,7 @@ from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_f
 #: to. No new "operation_id" / "session_id" column is needed —
 #: ``correlation_id`` already covers cross-principal session
 #: grouping.
-from .canonicals import CANONICAL_PRINCIPAL_KINDS as _CANONICAL_PRINCIPAL_KINDS
+from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_for_trust
 
 PRINCIPAL_KINDS: tuple[str, ...] = _CANONICAL_PRINCIPAL_KINDS
 
