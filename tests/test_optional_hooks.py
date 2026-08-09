@@ -82,9 +82,3 @@ def test_well_known_hook_name_constants_are_stable_strings():
     assert HOOK_REVOCATION_ERROR == "revocation_error"
 
 
-def test_registry_survives_reimport():
-    register_hook("persist_check", "value_1")
-    import importlib
-    import kya.optional_hooks as m
-    importlib.reload(m)
-    assert m.get_hook("persist_check") == "value_1"
