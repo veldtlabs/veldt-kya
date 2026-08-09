@@ -325,13 +325,22 @@ class IdentityResolver:
             checker = getattr(self, "_revocation_checker", None)
         else:
             self._revocation_checker_attempted = True
-            try:
+            from kya.optional_hooks import (
+                HOOK_REVOCATION_CHECKER,
+                HOOK_REVOCATION_CHECKER_FACTORY,
+                HOOK_REVOCATION_ERROR,
+                get_hook,
+            )
+
+            factory = get_hook(HOOK_REVOCATION_CHECKER_FACTORY)
+            pre_built = get_hook(HOOK_REVOCATION_CHECKER)
+            RevocationError = get_hook(HOOK_REVOCATION_ERROR)
+
+            if factory is not None:
                 from urllib.error import URLError
 
                 # Use urllib stdlib so we don't add httpx to the gateway.
                 from urllib.request import urlopen
-
-                from kya_pro.revocation import RevocationChecker, RevocationError
 
                 def _fetch(url: str) -> bytes:
                     try:
@@ -341,7 +350,7 @@ class IdentityResolver:
                         raise ConnectionError(str(exc))
 
                 did_cfg = self.config.did
-                checker = RevocationChecker(
+                checker = factory(
                     http_fetch=_fetch,
                     trusted_issuers=set(did_cfg.trusted_issuers or []),
                     cache_ttl_seconds=did_cfg.revocation_cache_ttl_seconds,
@@ -349,17 +358,34 @@ class IdentityResolver:
                 )
                 self._revocation_checker = checker
                 self._RevocationError = RevocationError
-            except ImportError:
-                logger.warning(
-                    "[KYA-GATEWAY] revocation_check=true but the optional "
-                    "revocation module is not installed — revocation "
-                    "checks are no-ops"
-                )
+            elif pre_built is not None and RevocationError is not None:
+                checker = pre_built
+                self._revocation_checker = checker
+                self._RevocationError = RevocationError
+            else:
+                if pre_built is not None and RevocationError is None:
+                    logger.warning(
+                        "[KYA-GATEWAY] revocation checker hook is "
+                        "registered but its error-class hook is missing "
+                        "— revocation checks are no-ops"
+                    )
+                else:
+                    logger.warning(
+                        "[KYA-GATEWAY] revocation_check=true but no "
+                        "revocation checker hook is registered — "
+                        "revocation checks are no-ops"
+                    )
                 self._revocation_checker = None
+                self._RevocationError = None
                 checker = None
 
         if checker is None:
             return
+        # Catch narrowly on the registered revocation-error class so
+        # the gateway can emit ``revocation_blocked`` for exactly that
+        # failure mode; other exceptions propagate unchanged. Matches
+        # the historical semantics: a plugin that provides a checker
+        # is expected to also register its error class.
         try:
             checker.check(verified)
         except self._RevocationError as exc:
