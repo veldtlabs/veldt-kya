@@ -4,29 +4,42 @@ All notable changes to **veldt-kya** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-08-08
 
-### Added — `pending` outcome + named lifecycle constants (task #349)
+### Added
+- **`PolicyEvaluator` interface** (`kya.policy_evaluator`) + built-in
+  `NativeEvaluator` — the OSS contract Pro's policy engine plugs into.
+- **`kya_evidence.evaluator_name` column** + `record_evidence(evaluator_name=...)`
+  kwarg — every verdict-bearing evidence row is attributed to the evaluator
+  that produced it (native, Pro rules, custom pluggable).
+- **`OUTCOME_PENDING`, `OUTCOME_IN_PROGRESS`** named constants in
+  `kya.invocations`; `pending` added to `VALID_OUTCOMES`.
 
-- **Added `pending` to `VALID_OUTCOMES`** — pre-policy invocation
-  recording (`kya_gateway.server._record_invocation_pre_policy`) has
-  been silently failing since task #242's fail-loud fix because it
-  emits `outcome='pending'`, which was not in `VALID_OUTCOMES`. The
-  resulting `ValueError` was swallowed by the helper's defensive
-  `try/except`, dropping every pre-policy audit row on the floor —
-  replay-protection was effectively off for the whole pre-policy
-  window. Adding `pending` as a canonical value restores the
-  pre-policy audit trail. `mode='observed'` on those rows
-  discriminates them cleanly from HITL rows (`mode='in_the_loop'`)
-  so Pro's approval queue is unaffected.
-- **Introduced `OUTCOME_PENDING` and `OUTCOME_IN_PROGRESS` named
-  constants** in `kya.invocations` (also exported at `kya.` top-level
-  and in `__all__`), per `feedback_no_hardcoding` convert-as-you-touch:
-  new canonical values ship with names from day one, and the sibling
-  transient state `in_progress` is opportunistically named in the same
-  edit. Call sites should prefer the named constants; the remaining
-  8 outcome literals stay bare until touched by other work (inventory
-  task #352).
+### Fixed
+- **Pre-policy audit trail was silently dropping every row** — gateway
+  emitted `outcome='pending'` which failed the strict `VALID_OUTCOMES`
+  gate and got swallowed. Fixed at the enum layer.
+- **`list_by_tenant` ORDER BY was non-deterministic on MySQL** (rows
+  with identical `expires_at` reordered across page refreshes). Added
+  `submitted_at ASC, id ASC` tiebreak.
+
+### Deprecated
+- **`verdict='require_human'`** — auto-normalized to `flag_for_review`
+  with a DeprecationWarning. **Removal in 0.6.0.** Grep
+  `_DEPRECATION_SUNSET` in the source to confirm target. Update calls
+  or add an alias at your boundary before upgrading past 0.5.x.
+
+### Notes
+- OSS 0.5.0 is the interface freeze point per the OSS/Pro boundary
+  policy. Future features land in `veldt-kya-pro`; OSS ships bug +
+  security fixes only.
+
+<!-- Detailed task-level notes for the entries above (task #349
+     pending-outcome fix + require_human normalization) preserved
+     in commit messages; grep git log for #349 / #327. -->
+
+### Added (task #349 verbose reference — retained for auditor detail)
+
 - **Extended `_VALID_OUTCOMES` docstring** in `kya.tenant_budget` to
   explain why the billing set is intentionally NARROWER than
   `VALID_OUTCOMES` (transient states + hard-terminals that never
