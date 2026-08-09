@@ -1,5 +1,5 @@
 """
-Deployment environment (#21) — dev / staging / prod / etc.
+Deployment environment — dev / staging / prod / etc.
 
 Same agent definition in dev vs. prod has very different blast radius.
 This module captures the environment as a first-class risk factor,

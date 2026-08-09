@@ -262,9 +262,8 @@ def _resolve_and_check_host(host: str) -> list[str]:
         if (allow_loopback or allow_private) and normalized.is_loopback:
             safe_ips.append(str(normalized))
             continue
-        # RFC1918 / ULA: covered only by allow_private. Phase 13b
-        # established the need for this -- in-cluster docker /
-        # k8s testing pulls a private IP that allow_loopback
+        # RFC1918 / ULA: covered only by allow_private. In-cluster
+        # docker / k8s testing pulls a private IP that allow_loopback
         # alone would refuse.
         #
         # CRITICAL: Python's ``ipaddress.is_private`` returns True

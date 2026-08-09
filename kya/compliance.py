@@ -81,7 +81,7 @@ REGIMES = {
     "esquema_nacional",  # Spanish national security framework
     "il5",
     "il6",  # DoD Impact Levels (IL5 = NSS, IL6 = SECRET)
-    # AI / model risk + financial-sector regimes (Phase 6 compliance pack)
+    # AI / model risk + financial-sector regimes
     "nydfs_500",  # NYDFS 23 NYCRR Part 500 — cyber + 72-hr notify
     "dora",  # EU Digital Operational Resilience Act (2022/2554)
     "sr_11_7",  # Fed SR 11-7 — Model Risk Management
@@ -120,7 +120,7 @@ REGIME_RETENTION_DAYS = {
     "esquema_nacional": 365 * 6,  # ENS audit log retention
     "il5": 365 * 6,  # DoD CC SRG Impact Level 5
     "il6": 365 * 25,  # IL6 = SECRET — long-term retention
-    # Phase 6 compliance pack
+    # AI / model risk + financial-sector regimes
     "nydfs_500": 365 * 5,  # 23 NYCRR §500.06 — 5 yrs audit retention
     "dora": 365 * 5,  # DORA Art. 16 — ICT records 5 yrs
     "sr_11_7": 365 * 7,  # SR 11-7 model documentation lifecycle

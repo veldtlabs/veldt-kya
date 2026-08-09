@@ -1,4 +1,4 @@
-"""Phase 6 — regulator-grade export formatters.
+"""Regulator-grade export formatters.
 
 Thin format adapters over the existing `_build_regulator_pack`
 (routes/admin_agents.py) — they reshape the same KYA data into the

@@ -1,10 +1,10 @@
 """Canonical policy hashing — the load-bearing primitive for
-task #157 §3 (Policy → outcome integrity).
+policy → outcome integrity.
 
-The goal: give operators, auditors, and Watchtower a cryptographic
-handle on "the policy that was in force when this verdict was made,"
-so the runtime CANNOT diverge from what the /controls page shows
-without turning a hash comparison red.
+The goal: give operators and auditors a cryptographic handle on
+"the policy that was in force when this verdict was made," so the
+runtime CANNOT diverge from what the /controls page shows without
+turning a hash comparison red.
 
 Design invariants
 -----------------
@@ -12,26 +12,24 @@ Design invariants
    policy is byte-equal after canonicalisation. No wall-clock, no
    process-id, no dict-iteration-order surprises.
 2. **Cross-runtime stable.** A Python 3.10 process must produce
-   the same hash as a Python 3.13 process, and dashboard-api must
-   produce the same hash as Watchtower. Canonical JSON with sorted
+   the same hash as a Python 3.13 process, and any consumer must
+   produce the same hash as any other. Canonical JSON with sorted
    keys + tight separators is the well-trodden path here.
-3. **OSS-only.** Every KYA layer (OSS evaluator, Pro dashboard-api,
-   the future Watchtower) computes hashes via THIS module. No
-   layer re-implements canonicalisation — that's how you get
-   "same policy, two hashes" bugs that a compromised layer could
-   exploit.
+3. **Single source of truth.** Every consumer computes hashes via
+   THIS module. No layer re-implements canonicalisation — that's
+   how you get "same policy, two hashes" bugs that a compromised
+   layer could exploit.
 4. **No DB side effects.** ``hash_policy`` is a pure function of
    its input dict. ``get_effective_policy`` reads via the existing
    ``get_effective_weights`` API which is already read-only.
 
 Semantic scope
 --------------
-The "policy" hashed here is the paper §08 effective weight table —
-the 2-channel platform ⊕ tenant merge that ``get_effective_weights``
+The "policy" hashed here is the effective weight table — the
+2-channel platform ⊕ tenant merge that ``get_effective_weights``
 returns, spanning EVERY registered scope. Signed-rec applications
-(3rd channel per §08) are persisted as tenant overrides at approval
-time, so they already appear in the 2-channel result — no separate
-merge needed here.
+are persisted as tenant overrides at approval time, so they already
+appear in the 2-channel result — no separate merge needed here.
 
 If a future release adds runtime-effective policy state that lives
 OUTSIDE the weight table (e.g. per-tenant rule-DSL overlays), that
@@ -79,8 +77,8 @@ def _normalize_for_hash(value: Any) -> Any:
     * Unicode keys → NFC — Windows filesystems emit NFC, macOS emits
       NFD, either can round-trip through Python source. Two hosts
       that both faithfully preserve their input produce different
-      bytes for the SAME logical key. Normalise to NFC so
-      dashboard-api on Windows and Watchtower on Linux agree.
+      bytes for the SAME logical key. Normalise to NFC so consumers
+      on different operating systems agree.
 
     Values inside nested dicts and lists are recursed into so a
     tenant that adds a Unicode scope key deep in a policy sub-tree
@@ -204,15 +202,14 @@ def get_effective_policy(db, tenant_id: str | None) -> dict[str, dict[str, int]]
     quietly returning ``{}``. A caller that hashes an empty policy
     would get a stable "zero-scope hash" that would silently pass
     verification against another caller with the same
-    misconfiguration — exactly the drift #157 §3 exists to prevent.
+    misconfiguration — exactly the drift this module exists to prevent.
 
-    Cross-replica consistency note: when #157 §4's Watchtower reads
+    Cross-replica consistency note: when a downstream verifier reads
     from a Postgres logical replica it may momentarily lag the
     primary. A hash mismatch between "verdict recorder at time T"
-    and "Watchtower at time T+lag" is expected during that window
-    and should be resolved by re-reading at a coherent LSN, not by
-    weakening the comparison. See docs/WHAT_GOVERNS_THE_GOVERNOR.md
-    §4 acceptance criteria.
+    and "verifier at time T+lag" is expected during that window and
+    should be resolved by re-reading at a coherent LSN, not by
+    weakening the comparison.
     """
     from .tenant_weights import get_effective_weights, known_scopes
 
@@ -246,7 +243,7 @@ def _compute_effective_policy_hash_uncached(
     return hash_policy(get_effective_policy(db, tenant_id=tenant_id))
 
 
-# ── TTL cache (task #318 FIX-2) ─────────────────────────────────────
+# ── TTL cache ───────────────────────────────────────────────────────
 # Hot-path callers (native evaluator, verdict recorder, gateway
 # policy pipeline) hit this on every verdict. Previously every call
 # fanned out to an N-scope DB SELECT via ``get_effective_policy``.

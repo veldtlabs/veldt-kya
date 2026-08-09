@@ -1,5 +1,5 @@
 """
-Phase 5c — Signed audit-trail export.
+Signed audit-trail export.
 
 KYA's evidence table is HMAC-chained (kya/evidence.py): each row's
 `signed_hash` depends on the previous row's hash, so any tampering

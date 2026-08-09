@@ -1,5 +1,5 @@
 """
-External-ID binding for principals and users — Phase 4b.
+External-ID binding for principals and users.
 
 KYA tracks principals (users, agents, service_accounts) by an internal
 opaque `principal_id` string. In federated environments, that string
@@ -22,15 +22,15 @@ The columns are NULLABLE — callers who don't need IdP binding (e.g.,
 single-tenant deployments using KYA-internal IDs) leave them empty
 and nothing changes.
 
-Phase 4a (JWT introspection) will provide a path that auto-populates
-these fields from a decoded bearer token. Phase 4b ships the storage
-+ lookup primitive standalone so:
+The JWT introspection module (``kya.auth``) provides a path that
+auto-populates these fields from a decoded bearer token. This module
+ships the storage + lookup primitive standalone so:
 
   - Apps that already decode JWTs at the API gateway can populate
     the fields directly (caller provides the claims).
   - Dashboards can pivot from "trust score" → "Okta user record"
     without parsing the `attributes` JSON blob.
-  - Phase 4c (SPIFFE) reuses the same columns for workload identity.
+  - The SPIFFE workload-identity module reuses the same columns.
 
 NULL fields are NOT enforced. KYA's role is to record what the caller
 declares, not to enforce that every principal has an IdP binding.
@@ -103,8 +103,8 @@ IDP_KINDS: frozenset[str] = frozenset({
     "google",       # Google Workspace / Google Identity
     "microsoft",    # Entra ID (formerly Azure AD)
     "aws_cognito",
-    "spiffe",       # SPIFFE workload identity (Phase 4c)
-    "did",          # W3C Decentralized Identifier (Phase 3d)
+    "spiffe",       # SPIFFE workload identity
+    "did",          # W3C Decentralized Identifier
     "internal",     # KYA-internal / self-hosted; no external IdP
     "custom",       # any other / per-tenant special case
 })
@@ -424,7 +424,7 @@ def lookup_user_by_idp(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Phase 3d — DID-bound principals.
+# DID-bound principals.
 #
 # `bind_did_principal` is a thin wrapper around `bind_principal_to_idp`
 # that uses idp_kind="did" and, optionally, verifies a Verifiable
@@ -435,8 +435,8 @@ def lookup_user_by_idp(
 # ─────────────────────────────────────────────────────────────────────
 
 
-# Phase 5h — DID-aware segment matcher for `auto_approve_patterns`.
-# `fnmatch`'s `*` crosses `:` boundaries (security defect 5h-DOC-02).
+# DID-aware segment matcher for `auto_approve_patterns`.
+# `fnmatch`'s `*` crosses `:` boundaries — unsafe for DID segments.
 # This matcher treats `:` as a path separator: `*` matches exactly
 # one segment, never multiple.
 #
@@ -479,10 +479,9 @@ def _did_segment_match(did: str, pattern: str) -> bool:
     return bool(tail) and ":" not in tail
 
 
-# Phase 5h — DID method-aware admin principal_id normalization
-# (5h-DOC-03; round-3 NEW-3). The dual-admin equality check compares
-# normalized principal_ids; the normalization rule MUST be
-# DID-method-specific to avoid:
+# DID method-aware admin principal_id normalization.
+# The dual-admin equality check compares normalized principal_ids;
+# the normalization rule MUST be DID-method-specific to avoid:
 #   - false equality on byte-different multibase encodings (did:key)
 #   - real self-approval bypass via hostname case (did:web)
 #
@@ -514,7 +513,7 @@ def check_vc_scope_against_issuer(
     parent_def: dict,
     vc_claims: dict,
 ) -> list[dict]:
-    """Phase 5g #6 — run the VC's `credentialSubject` scope claims
+    """Run the VC's `credentialSubject` scope claims
     through KYA's delegation policy as if the subject were a sub-agent
     of the issuer.
 
@@ -570,7 +569,7 @@ def check_vc_scope_against_issuer(
 
 
 def issuer_tenant_id_from_did(issuer_did: str) -> str:
-    """Phase 5g #8 — derive a stable UUID-shaped tenant_id from an
+    """Derive a stable UUID-shaped tenant_id from an
     issuer DID. Same DID → same UUID; different DIDs → different.
 
     Lets multi-issuer pro deployments isolate their audit + invocation
@@ -651,7 +650,7 @@ def link_vc_issuer_to_child(
     child_principal_kind: str,
     child_principal_id: str,
 ) -> bool:
-    """Phase 5g #5 — link a VC's issuer DID to its subject as a
+    """Link a VC's issuer DID to its subject as a
     delegation-graph edge when the issuer is a KYA-known principal.
 
     Called by ``bind_did_principal`` (and the gateway, after a successful
@@ -877,7 +876,7 @@ def bind_did_principal(
                             child_principal_kind=principal_kind,
                             child_principal_id=principal_id,
                         )
-                        # Phase 5g #6 — VC scope check against the
+                        # VC scope check against the
                         # issuer's stored agent_def. Surfaces a
                         # security event + log; never raises.
                         try:

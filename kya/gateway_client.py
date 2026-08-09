@@ -1,12 +1,12 @@
-"""HTTP client for the KYA gateway with HITL resume support (#101 layer 3).
+"""HTTP client for the KYA gateway with HITL resume support.
 
 Two entry points:
 
 * :func:`invoke` — normal POST to the gateway's ``/mcp`` endpoint.
 * :func:`invoke_with_hitl` — same, but on a 428 flag_for_review, polls
-  the Pro dashboard-api's HITL status endpoint and resumes the paused
-  invocation once an approver decides. Blocks until approval, denial,
-  expiry, or a caller-configured timeout.
+  the HITL status endpoint and resumes the paused invocation once an
+  approver decides. Blocks until approval, denial, expiry, or a
+  caller-configured timeout.
 
 Why a dedicated client
 ----------------------
@@ -228,7 +228,7 @@ class KyaGatewayClient:
     def resume(self, pending_id: str) -> GatewayResponse:
         """Replay an approved pending invocation.
 
-        Server-side flow (see kya_pro.dashboard_api._hitl_router):
+        Server-side flow:
           - SELECT the pending row FOR UPDATE
           - Verify status='approved' AND not expired AND not already
             resumed

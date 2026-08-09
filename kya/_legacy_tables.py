@@ -204,7 +204,7 @@ kya_agent_aliases = Table(
 
 
 # 2. kya_user_trust — per-tenant user trust score.
-# Phase 4b adds idp_subject / idp_issuer / idp_kind / federated_id —
+# Adds idp_subject / idp_issuer / idp_kind / federated_id —
 # optional pointers to the upstream Identity Provider's view of the
 # same user. Populated by bind_user_to_idp() or directly via the
 # users.py API. All nullable; existing deployments pick them up via
@@ -228,7 +228,7 @@ kya_user_trust = Table(
     Column("updated_at", DateTime(timezone=True),
            server_default=func.now(), nullable=False),
     UniqueConstraint("tenant_id", "user_id", name="uq_kya_user_trust_tenant_user"),
-    # Phase 4d fix: the idx_kya_user_trust_tenant_score index
+    # The idx_kya_user_trust_tenant_score index
     # (trust_score column) and the idp_subject index are
     # INTENTIONALLY OMITTED from the Table() definition. DuckDB's
     # ART index rejects UPDATE on any indexed column, which would
@@ -753,7 +753,7 @@ kya_delegation_policy_overrides = Table(
 )
 
 
-# kya_role_grants — Phase 5b RBAC. Direct (principal → action)
+# kya_role_grants — RBAC. Direct (principal → action)
 # grants per-tenant. Single-table model intentionally — operators
 # who want role grouping can wrap a "deploy this role" function
 # that fans out to multiple grant rows. Kept simple here; the

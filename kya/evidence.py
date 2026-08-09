@@ -170,19 +170,18 @@ VALID_EVIDENCE_KINDS = {
     # Separate namespace so dashboards / rules can filter by family
     # without enumerating individual tools.
     "autonomy_mavlink",
-    # Phase 5g — DID / VC / issuer-API + identity-layer evidence
+    # DID / VC / issuer-API + identity-layer evidence
     # kinds. Registered here so callers don't silently fall back to
     # "system_message" when recording VC issuance / revocation, trust
     # registry changes, gateway verdicts, or DPoP / revocation /
     # rotation events.
     "issuer_vc_issued",
     "issuer_vc_revoked",
-    # Phase 14a #145 -- issuer /revoke called against an already-
-    # revoked VC. Distinct from `issuer_vc_revoked` so dashboards
-    # can isolate no-op probes from real state transitions; serves
-    # as the forensic floor for the dedupe path on /revoke (closes
-    # the silent-revocation-status-oracle attack flagged in the
-    # double-pass code review).
+    # Issuer /revoke called against an already-revoked VC. Distinct
+    # from `issuer_vc_revoked` so dashboards can isolate no-op probes
+    # from real state transitions; serves as the forensic floor for
+    # the dedupe path on /revoke (closes the silent-revocation-status-
+    # oracle attack flagged in review).
     "issuer_vc_revoke_already_set",
     "trust_registry_change",
     "gateway_verdict",
@@ -191,7 +190,7 @@ VALID_EVIDENCE_KINDS = {
     "dpop_forge_attempt",
     "dpop_expired",
     "issuer_rotation_pending",
-    # Phase 5h — per-credential issuance approval workflow.
+    # Per-credential issuance approval workflow.
     "vc_request_queued",         # mode=queue, request entered the queue
     "vc_request_approved",       # explicit dual-admin approval
     "vc_request_auto_approved",  # auto-approve pattern matched
@@ -294,7 +293,7 @@ def _get_signing_key() -> tuple[bytes, str]:
 
     # Path 3 — dev fallback (process-local random key).
     #
-    # #245 fix — key_id is derived from a fingerprint of the key bytes
+    # key_id is derived from a fingerprint of the key bytes
     # (``dev-local-<sha256-prefix>``) so DIFFERENT worker processes get
     # DIFFERENT key_ids even though both fall through to this path.
     # The handoff-VC (and any other) verify path's key-rotation guard
@@ -307,8 +306,7 @@ def _get_signing_key() -> tuple[bytes, str]:
     # The value STAYS stable within a single process (fingerprint of
     # the cached key bytes), so single-worker dev / test flows verify
     # exactly as before. Downstream callers that used to compare
-    # ``key_id == "dev-local"`` now use ``key_id.startswith("dev-local")``
-    # (see kya_pro.policy.replay._replay_signing_key et al).
+    # ``key_id == "dev-local"`` now use ``key_id.startswith("dev-local")``.
     if not hasattr(_get_signing_key, "_dev_key"):
         _get_signing_key._dev_key = secrets.token_bytes(32)
     if not _DEV_KEY_WARNING_LOGGED:
@@ -390,7 +388,7 @@ if _HAS_SQLALCHEMY:
 
     # MySQL's DATETIME defaults to 0 fractional-seconds precision, which
     # collapses sub-second event ordering — the evidence chain relies on
-    # deterministic time-ordering, and #121 replay's evidence-slice bound
+    # deterministic time-ordering, and the replay evidence-slice bound
     # ``occurred_at <= :ts`` fails when the write time and query time
     # collide on the same second. DATETIME(6) fixes this at the column
     # level. Imported here so the ORM column definition below can request
@@ -429,14 +427,14 @@ if _HAS_SQLALCHEMY:
         evidence_kind: Mapped[str] = mapped_column(String(40), nullable=False)
         role: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
-        # Phase 4 (#S4-1) — evaluator attribution for VERDICT-PRODUCING
-        # evidence rows. Populated from ``Verdict.rich["evaluator_name"]``
+        # Evaluator attribution for VERDICT-PRODUCING evidence rows.
+        # Populated from ``Verdict.rich["evaluator_name"]``
         # by the gateway/ingest evidence writers so audit queries can
         # answer "which evaluator produced this verdict" without walking
         # back through the payload. Nullable — non-verdict evidence kinds
         # (system_message, prompt/response, runtime_*, delegation) leave
         # this ``None``. Column length matches the ``VerdictResult.
-        # evaluator_name`` bounded string (Phase 2).
+        # evaluator_name`` bounded string.
         evaluator_name: Mapped[str | None] = mapped_column(
             String(64), nullable=True,
         )
@@ -455,7 +453,7 @@ if _HAS_SQLALCHEMY:
         # microsecond precision. SQLAlchemy's default DateTime(timezone=True)
         # maps to plain DATETIME (0 µs precision) on MySQL, which causes
         # sub-second boundary rows in the evidence chain to collide on the
-        # same second. #121 replay's evidence-slice query then can't
+        # same second. Replay's evidence-slice query then can't
         # distinguish "row written 5 µs ago" from "row written 1s ago",
         # inflating the slice count on MySQL. Fix: request 6-digit
         # fractional-second precision explicitly, which MySQL 5.6+
@@ -488,7 +486,7 @@ if _HAS_SQLALCHEMY:
             Index("idx_kya_evidence_correlation", "correlation_id"),
             Index("idx_kya_evidence_occurred", "occurred_at"),
             Index("idx_kya_evidence_retention", "retention_until"),
-            # Phase 4 (#S4-1) — audit queries filter by evaluator to
+            # Audit queries filter by evaluator to
             # answer "which evaluator produced this verdict slice".
             # Sparse index — most rows leave evaluator_name NULL.
             Index("idx_kya_evidence_evaluator", "evaluator_name"),
@@ -505,9 +503,9 @@ def _bind_schema(bind) -> None:
 def init_evidence_table(db) -> None:
     """Create kya_evidence + indexes if absent. Idempotent + dialect-aware.
 
-    Phase 4 (#S4-1) — additionally ensures the ``evaluator_name`` column
-    exists on pre-existing dev DBs whose original ``CREATE TABLE`` ran
-    before Phase 4. ``create_all`` is idempotent for TABLES but does NOT
+    Additionally ensures the ``evaluator_name`` column exists on
+    pre-existing dev DBs whose original ``CREATE TABLE`` ran before
+    the column was added. ``create_all`` is idempotent for TABLES but does NOT
     add COLUMNS to existing tables. Rather than force a schema migration
     (pre-customer stage — no live data to migrate), we probe the live
     schema and issue a single additive ``ALTER TABLE`` when the column
@@ -517,7 +515,7 @@ def init_evidence_table(db) -> None:
     conn = db.connection()
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[_EvidenceRow.__table__])
-    # Phase 4 (#S4-1) — dev-DB ALTER probe. Wrapped outer try/except
+    # Dev-DB ALTER probe for the evaluator_name column. Wrapped outer try/except
     # because test-only session stubs (see test_gateway_server._Session)
     # don't implement the full SQLAlchemy Connection interface required
     # by sqlalchemy.inspect(); any AttributeError from the probe on a
@@ -533,7 +531,8 @@ def init_evidence_table(db) -> None:
         )
 
 
-# Phase 4 (#S4-1) — one-shot per-engine probe cache. init_evidence_table
+# One-shot per-engine probe cache for the evaluator_name column ALTER.
+# init_evidence_table
 # is idempotent + hot; without caching we'd probe information_schema on
 # every write. Keyed by the SQLAlchemy engine URL (immutable within a
 # process) so the probe fires at most once per (URL, dialect) tuple.
@@ -569,7 +568,7 @@ def _ensure_evaluator_name_column(conn) -> None:
             ))
             logger.warning(
                 "[KYA-EVIDENCE] added evaluator_name column to %s on "
-                "dialect=%s (Phase 4 backfill). Pre-existing rows leave "
+                "dialect=%s (dev-DB backfill). Pre-existing rows leave "
                 "the value NULL — expected during dev-DB upgrade.",
                 table_name, dialect,
             )
@@ -622,11 +621,11 @@ def record_evidence(
         retention_days: Override the regime-derived default. If None and
             data_classes intersect with a regulated regime, the
             longest applicable retention window applies.
-        evaluator_name: Phase 4 (#S4-1) — the name of the
-            ``kya.PolicyEvaluator`` whose ``VerdictResult`` produced this
-            row. Verdict-producing callers pull this from
-            ``Verdict.rich["evaluator_name"]`` (populated by the Phase 3
-            attribution helpers in ``kya_gateway/policy_pipeline.py``).
+        evaluator_name: the name of the ``kya.PolicyEvaluator`` whose
+            ``VerdictResult`` produced this row. Verdict-producing
+            callers pull this from ``Verdict.rich["evaluator_name"]``
+            (populated by the attribution helpers in
+            ``kya_gateway/policy_pipeline.py``).
             Non-verdict evidence kinds (system_message, prompt/response,
             runtime_*, delegation) leave this ``None`` — the row simply
             won't participate in evaluator-slice audit queries.
@@ -635,7 +634,7 @@ def record_evidence(
         logger.debug("[KYA-EVIDENCE] unknown kind=%s -> 'system_message'", evidence_kind)
         evidence_kind = "system_message"
 
-    # Phase 4a.1 — payload size cap + rate limit. Both off-by-default;
+    # Payload size cap + rate limit. Both off-by-default;
     # only fire when operators have set the corresponding env vars.
     # Cap check is HARD (raises PayloadTooLargeError) because writing
     # an oversize row corrupts dashboards downstream. Rate limit is
@@ -769,8 +768,8 @@ def record_evidence(
         source=source,
         data_classes=list(data_classes) if data_classes else None,
         retention_until=retention_until,
-        # Phase 4 (#S4-1) — evaluator attribution for VERDICT-PRODUCING
-        # rows. ``None`` for non-verdict evidence kinds (fine — the
+        # Evaluator attribution for VERDICT-PRODUCING rows.
+        # ``None`` for non-verdict evidence kinds (fine — the
         # column is nullable + the audit-slice query filters
         # ``WHERE evaluator_name IS NOT NULL``).
         evaluator_name=evaluator_name,
@@ -855,9 +854,9 @@ def _row_to_dict(row: "_EvidenceRow") -> dict[str, Any]:
         "redaction_reason": row.redaction_reason,
         "retention_until": _to_iso(row.retention_until),
         "ingest_lag_ms": _lag_ms(row.occurred_at, row.ingested_at),
-        # Phase 4 (#S4-1) — evaluator attribution surfaced on read.
-        # ``None`` for pre-Phase-4 rows AND for non-verdict evidence
-        # kinds written post-Phase-4.
+        # Evaluator attribution surfaced on read.
+        # ``None`` for rows written before the evaluator_name column
+        # existed AND for non-verdict evidence kinds.
         "evaluator_name": row.evaluator_name,
     }
 

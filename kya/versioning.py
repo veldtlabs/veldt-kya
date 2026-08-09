@@ -184,11 +184,10 @@ def _compose_principal_key(principal_kind: str, principal_id: str) -> str:
     boundary so callers get a clear error message.
 
     Separator safety: ``principal_id`` must NOT contain ``":"`` --
-    otherwise decomposition (``_decompose_principal_key`` in
-    kya_pro) would split at the wrong colon and yield a wrong
-    ``(kind, id)`` pair (e.g. ``"machine_identity:ip6:::1"`` would
-    decompose to ``("machine_identity", ":::1")``). Rejected here
-    rather than silently corrupting the lookup key.
+    otherwise decomposition would split at the wrong colon and yield
+    a wrong ``(kind, id)`` pair (e.g. ``"machine_identity:ip6:::1"``
+    would decompose to ``("machine_identity", ":::1")``). Rejected
+    here rather than silently corrupting the lookup key.
     """
     if principal_kind == "agent":
         # Agent ids keep their bare-key storage location, but a

@@ -91,16 +91,16 @@ SIGNAL_DELTAS = {
     # Severity-between data_leak (-10) and oos_tool (-3); these are real but
     # not always the worst kind of signal.
     "policy_violation": -7,
-    # Phase 4a.1 — rate limit hit. Light penalty: not always abusive
+    # Rate limit hit. Light penalty: not always abusive
     # (legitimate burst from a backed-up queue can trigger), but
     # repeated hits suggest misconfiguration or abuse.
     "rate_limit_exceeded": -2,
-    # Phase 4a.1 — payload over the size cap. Stronger penalty: this
-    # is either a buggy agent emitting unbounded payloads, or an
-    # attacker trying to bloat the audit chain.
+    # Payload over the size cap. Stronger penalty: this is either a
+    # buggy agent emitting unbounded payloads, or an attacker trying
+    # to bloat the audit chain.
     "payload_too_large": -4,
-    # Phase 5a — nonce replay attempt. Strong abuse signal — a legit
-    # client never replays nonces. Trust hit close to data_leak.
+    # Nonce replay attempt. Strong abuse signal — a legit client
+    # never replays nonces. Trust hit close to data_leak.
     "replay_detected": -8,
     # Multi-judge orchestrator signals (kya.scorer_orchestrator). These
     # map from per-dimension consensus BREACHes -- see
@@ -119,7 +119,7 @@ SIGNAL_DELTAS = {
     "hallucination_detected": -5,
     # Synthetic "clean run" — small upward bump for cooperative usage
     "clean_invocation": +1,
-    # Phase 5g — DID / VC identity-layer events. Calibrated relative
+    # DID / VC identity-layer events. Calibrated relative
     # to the existing scale: revocation block and DPoP forge are
     # close to data_leak; expired DPoP is a softer signal because
     # legitimate clients with bad clocks hit it too; issuer rotation
@@ -129,7 +129,7 @@ SIGNAL_DELTAS = {
     "dpop_forge_attempt": -8,
     "dpop_expired": -2,
     "issuer_rotation_pending": 0,
-    # Phase 5h — softer than rbac_refusal; denial is a legitimate
+    # Softer than rbac_refusal; denial is a legitimate
     # operator decision, but a burst from one requester is signal.
     "vc_approval_denied": -3,
 }
@@ -182,7 +182,7 @@ class UserTrust:
 def ensure_user_trust_table(db) -> None:
     """Idempotent — dialect-aware via _legacy_tables.create_legacy_tables.
 
-    Also applies additive Phase 4b migrations (IdP binding columns)
+    Also applies additive migrations (IdP binding columns)
     so existing deployments pick up idp_subject/idp_issuer/idp_kind/
     federated_id columns without dropping the table.
     """
@@ -190,7 +190,7 @@ def ensure_user_trust_table(db) -> None:
     from ._migrations import apply_migrations
     from ._portable import qual_for_raw_sql
     create_legacy_tables(db, [kya_user_trust])
-    # Phase 4b: additive ALTERs for existing deployments. IF NOT
+    # Additive ALTERs for existing deployments. IF NOT
     # EXISTS guards on every statement so re-runs are no-ops.
     dialect = db.get_bind().dialect.name
     qual = qual_for_raw_sql(db)
@@ -215,7 +215,7 @@ def ensure_user_trust_table(db) -> None:
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_user_trust_tenant_score "
             f"ON {table} (tenant_id, trust_score);",
-            # Phase 4b lookup-by-IdP-subject (already conditional before).
+            # Lookup-by-IdP-subject (already conditional before).
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_user_trust_tenant_idp_subject "
             f"ON {table} (tenant_id, idp_subject);",

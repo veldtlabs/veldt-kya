@@ -304,9 +304,9 @@ register_scope("source_weights", _SOURCE_WEIGHTS)
 register_scope("deployment_weights", _DEPLOYMENT_WEIGHTS)
 from ._inbound_signing import SignatureVerificationError
 
-# Phase 2 — policy evaluator abstraction. `policy_evaluator` is the
+# Policy evaluator abstraction. `policy_evaluator` is the
 # upstream "produce a verdict" layer; `_native_evaluator` composes the
-# existing OSS primitives (tenant_budget, tenant_weights, policy_hash)
+# existing primitives (tenant_budget, tenant_weights, policy_hash)
 # into the default ``"native"`` evaluator. See ``policy_verdicts`` for
 # the downstream handler-dispatch layer these results feed into.
 from ._native_evaluator import POLICY_HASH_UNAVAILABLE, NativeEvaluator
@@ -538,7 +538,7 @@ from .tenant_budget import (
     health_check as budget_health_check,
 )
 
-# Phase 2 — register the OSS default ("native") after both modules
+# Register the default ("native") evaluator after both modules
 # have finished loading. Done here rather than in
 # ``policy_evaluator._register_native_default()`` at import time to
 # avoid a circular import (policy_evaluator → _native_evaluator →
@@ -831,7 +831,7 @@ __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "DEFAULT_STABLE_DAYS_TO_PROMOTE",
     "DEFAULT_SPIKE_THRESHOLD",
-    # Phase 2 — per-scope delegation policy overrides. Operators
+    # Per-scope delegation policy overrides. Operators
     # target specific agent pairs / violation kinds with different
     # modes; resolution is specificity-ordered (most-specific wins,
     # ties broken by created_at DESC). Falls back to global env.
@@ -841,11 +841,11 @@ __all__ = [
     "resolve_effective_mode",
     "ensure_delegation_overrides_table",
     "InvalidOverrideError",
-    # Phase 4b — external-ID binding for principals + users. Adds
+    # External-ID binding for principals + users. Adds
     # idp_subject/idp_issuer/idp_kind/federated_id columns + lookup
     # helpers so KYA trust records can be linked back to the
     # upstream IdP user (Okta/Auth0/Keycloak/Google/Entra/Cognito/
-    # SPIFFE). Independent of Phase 4a — caller can supply the
+    # SPIFFE). Independent of ``kya.auth`` — caller can supply the
     # claims from any source.
     "bind_principal_to_idp",
     "bind_user_to_idp",
@@ -854,15 +854,15 @@ __all__ = [
     "list_principals_by_idp_kind",
     "IDP_KINDS",
     "InvalidIdpKindError",
-    # Phase 4a — JWT introspection + claim extraction. Decodes
-    # OIDC/OAuth bearer tokens against a JWKS endpoint, returns
-    # claims dict, can auto-populate Phase 4b's external_id columns
-    # via bind_principal_from_token(). Optional PyJWT dependency.
+    # JWT introspection + claim extraction. Decodes OIDC/OAuth
+    # bearer tokens against a JWKS endpoint, returns claims dict,
+    # can auto-populate external-ID columns via
+    # bind_principal_from_token(). Optional PyJWT dependency.
     "verify_jwt",
     "claims_to_kya_principal",
     "bind_principal_from_token",
     "reset_jwks_cache",
-    # Phase 4a.1 — KYA-semantic rate limiting + payload size caps
+    # KYA-semantic rate limiting + payload size caps
     # on write primitives. Both OFF by default; operators opt in
     # via KYA_RATE_LIMIT_DEFAULT_RPS / KYA_MAX_<PRIM>_PAYLOAD_BYTES.
     # Used internally by record_invocation / record_evidence /
@@ -876,7 +876,7 @@ __all__ = [
     "check_payload_size",
     "PayloadTooLargeError",
     "DEFAULT_MAX_PAYLOAD_BYTES",
-    # Phase 5a — replay protection (Valkey-backed nonce table with
+    # Replay protection (Valkey-backed nonce table with
     # TTL). Off-by-default. Operators opt in via
     # KYA_REPLAY_PROTECTION=on. Each (tenant, principal, nonce)
     # combination is uniquely reserved for KYA_REPLAY_MAX_AGE_SECONDS
@@ -887,7 +887,7 @@ __all__ = [
     "is_valid_nonce",
     "reset_replay_state",
     "ReplayDetectedError",
-    # Phase 5b — RBAC tied to KYA-specific actions. Off by default
+    # RBAC tied to KYA-specific actions. Off by default
     # via KYA_RBAC_ENFORCEMENT=off; flip to "flag" then "block"
     # for staged rollout. ACTIONS is the closed set of valid
     # action strings — extending requires a code change so typos
@@ -905,14 +905,14 @@ __all__ = [
     "AccessDeniedError",
     "InvalidActionError",
     "InvalidRbacModeError",
-    # Phase 5d — SDK-friendly Valkey accessor. Without redis-py
+    # SDK-friendly Valkey accessor. Without redis-py
     # installed and KYA_VALKEY_URL / REDIS_URL set, every hardening
     # feature degrades to fail-open silently. With them, hardening
     # actually works for PyPI-installed standalone deployments.
     "get_valkey",
     "register_valkey_factory",
     "reset_valkey_cache",
-    # Phase 5c — Signed audit-trail export. Composes the existing
+    # Signed audit-trail export. Composes the existing
     # HMAC-chained evidence with a customer-owned Ed25519 signature.
     # Auditors verify OFFLINE with only the export + public key —
     # no live KYA access needed. signed_export() produces, the
@@ -936,9 +936,9 @@ __all__ = [
     "pillar_delegation_analysis",
     "pillar_provenance_assessment",
     "pillar_evidence_chain_review",
-    # Economic Control (tenant_budget primitive — was shipped in
-    # the budget Phase 1 commit but not re-exported at the top
-    # level; users were forced to import from kya.tenant_budget).
+    # Economic Control (tenant_budget primitive — was not originally
+    # re-exported at the top level; users were forced to import from
+    # kya.tenant_budget).
     # Exposed here so the public API is "from kya import X".
     "record_cost_event",
     "set_budget",
@@ -954,7 +954,7 @@ __all__ = [
     "ensure_budget_tables",
     "set_forecaster",
     "get_forecaster",
-    # Phase 2 — policy evaluator abstraction. Upstream layer that
+    # Policy evaluator abstraction. Upstream layer that
     # produces VerdictResults; feeds into the existing
     # ``policy_verdicts`` handler-dispatch layer downstream.
     "EvaluationInput",

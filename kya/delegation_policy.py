@@ -291,7 +291,7 @@ def _persist_violations(
     violations_with_mode: list[tuple[dict, str, bool]],
 ) -> None:
     """Insert one row per violation. Each violation carries its own
-    resolved mode + blocked flag (Phase 2: per-kind overrides can
+    resolved mode + blocked flag (per-kind overrides can
     cause different violations in the same delegation to land in
     different modes). Fail-soft."""
     if not violations_with_mode:
@@ -370,7 +370,7 @@ def enforce_delegation_policy(
     if not violations:
         return []
 
-    # Phase 2 — resolve mode per violation_kind so per-kind overrides
+    # Resolve mode per violation_kind so per-kind overrides
     # can land different rows in different modes. If force_mode was
     # given, use it for all rows (test / explicit-override path).
     try:

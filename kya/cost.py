@@ -1,5 +1,5 @@
 """
-Cost burn / token budget (#25) — operational risk dimension.
+Cost burn / token budget — operational risk dimension.
 
 An autonomous agent burning $1k/hr unattended is a real risk — both
 financial (runaway cost) and behavioral (something is wrong, it's

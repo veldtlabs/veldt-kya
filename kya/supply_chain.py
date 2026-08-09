@@ -1,5 +1,5 @@
 """
-Supply-chain dependencies (#20) — external APIs, MCP servers, plugins,
+Supply-chain dependencies — external APIs, MCP servers, plugins,
 package dependencies.
 
 Each external dependency an agent consumes is a supply-chain risk vector.

@@ -16,7 +16,7 @@ Two integration points share the same registry:
         whether to short-circuit (403 deny, 428 require_human) or
         forward the call.
 
-    Action gate (``kya_pro.dashboard_api``)
+    Action gate
         Post-invocation. Uses ``layer="action_gate"`` handlers to
         mutate the response before shipping (redact fields, tighten
         throttles, swap out blocked results).
@@ -60,11 +60,9 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
-# Task #105 legacy alias constants — single source of truth shared with
-# ``kya_gateway.policy_pipeline`` (boundary normalizer) and
-# ``kya_pro.dashboard_api._models`` (Pydantic wire-input validator).
-# Kola directive 2026-08-07: no hardcoded verdict aliases or sunset
-# versions duplicated across files.
+# Legacy alias constants — single source of truth shared with
+# ``kya_gateway.policy_pipeline`` (boundary normalizer). No hardcoded
+# verdict aliases or sunset versions duplicated across files.
 from kya._verdict_aliases import (
     _CANONICAL_HUMAN_APPROVAL_VERDICT,
     _DEPRECATION_SUNSET,
@@ -89,16 +87,15 @@ assert len(_LEGACY_ALIAS_KEYS) == 1, (
 _LEGACY_REQUIRE_HUMAN_ALIAS: str = _LEGACY_ALIAS_KEYS[0]
 
 
-# Set of mutation keys the shipped OSS handlers emit. Downstream
-# consumers (#101 gateway integration) grep against this set to
-# enforce no typo drift ships silently. Handlers are still allowed to
-# emit arbitrary keys — this is a convention, not a schema — but
-# shipped OSS keys must be listed here.
+# Set of mutation keys the shipped handlers emit. Downstream consumers
+# (gateway integration) grep against this set to enforce no typo drift
+# ships silently. Handlers are still allowed to emit arbitrary keys —
+# this is a convention, not a schema — but shipped keys must be listed
+# here.
 #
-# Pro-side handlers (action-gate redact/throttle/block) live in
-# ``kya_pro.policy.verdict_handlers`` and maintain their own
-# ``MUTATION_KEYS_ACTION_GATE`` set. The full system-wide set is the
-# union of the two.
+# Action-gate handlers (redact/throttle/block) maintain their own
+# ``MUTATION_KEYS_ACTION_GATE`` set when registered by downstream
+# consumers. The full system-wide set is the union of the two.
 MUTATION_KEYS: frozenset[str] = frozenset({
     "hitl.needs_pending_row",
 })
@@ -504,10 +501,8 @@ def resolves(verdict: str, layer: ContextLayer) -> bool:
 
 
 # ── Default handlers ────────────────────────────────────────────────
-# Each verdict from the site copy gets a default. Tasks #101 and #102
-# replace the stub bodies with real behavior; these ship today so
-# integration tests can prove the dispatch path independently of
-# per-verdict implementation.
+# Each verdict gets a default handler so integration tests can prove
+# the dispatch path independently of per-verdict implementation.
 
 
 @dataclass(frozen=True)
@@ -524,10 +519,10 @@ class AllowHandler:
 # constants so the gateway integration layer + tests reference one
 # source of truth. Values match kya_gateway.errors.
 #
-# Note: -32008 (action-gate block) lives in
-# ``kya_pro.policy.verdict_handlers`` where the action-gate handler
-# ships. Kept out of this module so an OSS-only deploy can't
-# accidentally register an ActionGateBlockHandler.
+# Note: -32008 (action-gate block) is reserved for downstream
+# action-gate handlers registered by consumers. Kept out of this module
+# so a default deploy can't accidentally register an
+# ActionGateBlockHandler.
 _JSONRPC_ERR_POLICY_DENY = -32001
 _JSONRPC_ERR_HUMAN_APPROVAL_REQUIRED = -32007
 _JSONRPC_ERR_UNKNOWN_VERDICT = -32099
@@ -563,26 +558,24 @@ class GatewayDenyHandler:
 class GatewayFlagForReviewHandler:
     """Gateway-layer flag_for_review — HTTP 428 Precondition Required.
 
-    Paper alignment: the KYA whitepaper (main.pdf, Figure 4) canonical
-    Layer 2 vocabulary uses ``flag_for_review``. Prior code shipped
-    with the alias ``require_human``; the alias is still accepted at
-    dispatch (see ``GatewayRequireHumanAliasHandler`` below) so
-    existing customer configs continue to work.
+    The canonical Layer-2 vocabulary uses ``flag_for_review``. Prior
+    code shipped with the alias ``require_human``; the alias is still
+    accepted at dispatch (see ``GatewayRequireHumanAliasHandler``
+    below) so existing customer configs continue to work.
 
     RFC 6585 §3: the action is not denied, it needs a precondition
     (human approval) before it can proceed. Sets a
-    ``hitl.needs_pending_row`` mutation flag so #101's persistence
-    layer knows to write a ``kya_pending_invocations`` row before the
+    ``hitl.needs_pending_row`` mutation flag so the persistence layer
+    knows to write a ``kya_pending_invocations`` row before the
     response goes out — the gateway can then stamp
     ``X-Kya-Pending-Id`` on the outgoing headers so the SDK can poll.
 
     ``jsonrpc_error_code=-32007`` preserves wire compatibility for
     existing SDK clients pattern-matching on the numeric code.
 
-    FIX-F: both the registry key + the wire-body ``verdict`` field
-    source from the shared ``_CANONICAL_HUMAN_APPROVAL_VERDICT``
-    constant so a single edit in ``kya._verdict_aliases`` ripples
-    everywhere.
+    Both the registry key + the wire-body ``verdict`` field source
+    from the shared ``_CANONICAL_HUMAN_APPROVAL_VERDICT`` constant so
+    a single edit in ``kya._verdict_aliases`` ripples everywhere.
     """
     verdict: str = _CANONICAL_HUMAN_APPROVAL_VERDICT
     layer: HandlerLayer = "gateway"
@@ -612,8 +605,8 @@ class GatewayRequireHumanAliasHandler:
     ``verdict: require_human`` continue to work. On the first apply()
     a DeprecationWarning is logged (once per process via a module
     sentinel) so operators can migrate at their pace. Ship this
-    alongside the canonical handler; when #105 finishes the UI/docs
-    sweep and a full deprecation cycle passes, drop it.
+    alongside the canonical handler; drop after the deprecation
+    cycle in ``_DEPRECATION_SUNSET`` completes.
 
     The ``verdict`` field is sourced from ``_LEGACY_REQUIRE_HUMAN_ALIAS``
     (derived from ``kya._verdict_aliases._LEGACY_VERDICT_ALIASES``) so
@@ -659,8 +652,8 @@ def _warn_require_human_alias_once() -> None:
         return
     _ALIAS_WARNED = True
     logger.warning(
-        "[policy_verdicts] verdict %r is deprecated — use %r (paper "
-        "Figure 4 vocabulary). Existing configs continue to work but "
+        "[policy_verdicts] verdict %r is deprecated — use %r "
+        "(canonical vocabulary). Existing configs continue to work but "
         "will be removed in veldt-kya %s.",
         _LEGACY_REQUIRE_HUMAN_ALIAS,
         _CANONICAL_HUMAN_APPROVAL_VERDICT,
@@ -676,22 +669,20 @@ def _warn_require_human_alias_once() -> None:
     )
 
 
-# Action-gate handlers (redact, throttle, block) live in
-# ``kya_pro.policy.verdict_handlers`` — see that file for the full
-# rationale. Short version: the action gate is a Pro-only surface,
-# its enforcement primitives (dynamic-throttle table, JSONPath
-# response filter, evidence-chain block-record ordering) are Pro
-# code, and shipping stub versions here would either duplicate that
-# logic or ship permanent no-ops in OSS. Pro calls
-# ``register_default_action_gate_handlers()`` at startup to bind
-# them into this same registry.
+# Action-gate handlers (redact, throttle, block) are registered by
+# downstream consumers. Their enforcement primitives (dynamic-throttle
+# table, JSONPath response filter, evidence-chain block-record
+# ordering) live outside this package. Shipping stub versions here
+# would either duplicate that logic or ship permanent no-ops. Consumers
+# call their own ``register_default_action_gate_handlers()`` at startup
+# to bind them into this same registry.
 
 
 # ── Bootstrap ────────────────────────────────────────────────────────
 
 
 def register_default_handlers() -> None:
-    """Register the shipped-with-kya (OSS) handlers.
+    """Register the shipped default handlers.
 
     Registers the gateway-side handlers (allow / deny / require_human)
     that the OSS ``kya_gateway.server`` emits. Idempotent — safe to
@@ -699,28 +690,27 @@ def register_default_handlers() -> None:
     their own handler under the same key after this returns to swap
     the shipped default.
 
-    Action-gate handlers (redact / throttle / block) ship in the Pro
-    package. Import + call
-    ``kya_pro.policy.register_default_action_gate_handlers()`` at Pro
-    startup to bind them into this same registry.
+    Action-gate handlers (redact / throttle / block) are registered by
+    downstream consumers via their own bootstrap call into this same
+    registry.
     """
     for handler in (
         AllowHandler(),
         GatewayDenyHandler(),
         GatewayFlagForReviewHandler(),
-        # Alias for backward compat during the paper-alignment
-        # rename. Drop after #105 finishes the sweep.
+        # Alias for backward compat during the canonical-vocabulary
+        # rename. Drop after the deprecation cycle completes.
         GatewayRequireHumanAliasHandler(),
     ):
         register(handler)
 
 
-# M1 fix — DO NOT register on import. Auto-registration at import
-# time meant any test importing this module got the defaults whether
-# it wanted them or not, and cross-test leakage was possible when
-# other test files transitively imported us. Callers explicitly opt
-# in: gateway server calls register_default_handlers() at startup;
-# the tests/conftest.py autouse fixture calls it per-test.
+# DO NOT register on import. Auto-registration at import time meant
+# any test importing this module got the defaults whether it wanted
+# them or not, and cross-test leakage was possible when other test
+# files transitively imported us. Callers explicitly opt in: gateway
+# server calls register_default_handlers() at startup; the
+# tests/conftest.py autouse fixture calls it per-test.
 
 
 __all__ = [

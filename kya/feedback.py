@@ -228,7 +228,7 @@ def propose_from_incident(db, incident_row: dict) -> list[dict]:
         # DEFAULT nextval() in the CREATE TABLE DDL when Sequence is
         # only a positional Column arg — the sequence value is supplied
         # by SA at insert time when using table.insert(). The text()
-        # path bypassed that. (PYPI task #12, May 2026.)
+        # path bypassed that.
         from ._legacy_tables import kya_weight_suggestions
         result = db.execute(
             kya_weight_suggestions.insert().values(

@@ -202,7 +202,7 @@ class AgentRiskScore:
     delegation_trust_evidence: list[dict] = field(
         default_factory=list
     )  # risky delegates (Round 13.3)
-    # Two-axis view (PYPI task #9, "Option E" minimum-blast-radius):
+    # Two-axis view ("Option E" minimum-blast-radius):
     # surface concentration + overrun alongside the existing single
     # 0-100 score so consumers can distinguish "additive at ceiling
     # with strong concentration" from "additive at ceiling, no

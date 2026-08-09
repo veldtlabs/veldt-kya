@@ -378,7 +378,7 @@ class NativeEvaluator:
             evaluator_name=self.name,
         )
 
-    # ── Fast-path check (task #318 FIX-1) ───────────────────────────
+    # ── Fast-path check ─────────────────────────────────────────────
 
     def would_short_circuit(self, inp: EvaluationInput) -> bool:
         """Return True when NativeEvaluator can prove no rule will fire.

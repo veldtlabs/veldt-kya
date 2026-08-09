@@ -75,13 +75,12 @@ def default_signal_emitter(
             "[KYA-CHAINS] record_principal_signal unavailable: %s", exc)
         return
     try:
-        # #152 audit (Phase 14a follow-up): allow_create=True is
-        # safe here. principal_id comes from per-(tenant,
-        # principal_id) state in the chain matcher, which itself
-        # is fed by evidence rows the system wrote earlier --
-        # downstream of any upstream cross-tenant pollution. The
-        # only known upstream injection point (gateway identity
-        # failures) is closed by #147.
+        # allow_create=True is safe here. principal_id comes from
+        # per-(tenant, principal_id) state in the chain matcher,
+        # which itself is fed by evidence rows the system wrote
+        # earlier -- downstream of any upstream cross-tenant
+        # pollution. The gateway identity-failure injection point
+        # is closed by the cross-tenant attribution guard.
         record_principal_signal(
             db,
             tenant_id=tenant_id,

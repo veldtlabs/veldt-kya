@@ -1,4 +1,4 @@
-"""Phase 6 — Compliance breach-notification shim.
+"""Compliance breach-notification shim.
 
 Periodic job that closes the regulatory loop on `governance_incidents`:
 

@@ -20,7 +20,7 @@ Integration pattern (corrected per Fiddler's docs 2026-05-26):
     1. Writes the full Fiddler verdict to kya_evidence (HMAC-chained
        audit trail captures the source of every trust decision)
     2. If a threshold is breached, calls record_principal_signal so
-       Phase 5b RBAC can block the next call
+       RBAC can block the next call
     3. Returns the verdict + trust score so the caller can make
        inline allow/deny decisions
 
@@ -45,8 +45,7 @@ synchronous and inline; this client supports that pattern.
 Free-tier rate limits (per Fiddler's API key docs)
 --------------------------------------------------
   2 req/sec/model, 70 req/hour/model, 200 req/day/model.
-KYA's existing rate_limit.py module (Phase 4a.1) gates these for
-free.
+KYA's existing rate_limit.py module gates these for free.
 """
 
 from __future__ import annotations
@@ -599,9 +598,8 @@ def _maybe_record(
     if result.get("breached"):
         try:
             from kya.principals import record_principal_signal
-            # #152 audit (Phase 14a follow-up): allow_create=True
-            # is safe -- principal_id comes from a Fiddler webhook
-            # the operator deployed (operator-trusted source).
+            # allow_create=True is safe -- principal_id comes from a
+            # Fiddler webhook the operator deployed (operator-trusted source).
             new_score = record_principal_signal(
                 db,
                 tenant_id=tenant_id,

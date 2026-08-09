@@ -22,7 +22,7 @@ JSON in env `KYA_OUTBOUND_WEBHOOK_URLS`:
        "events": ["*"]}
     ]
 
-Per-tenant config (Phase 6.5):
+Per-tenant config:
     JSON at env KYA_OUTBOUND_WEBHOOK_URLS_<tenant_id>
     (UUID hyphens replaced with underscores)
 Tenant-specific config takes precedence; global is the fallback.
@@ -201,7 +201,7 @@ def _format_payload(fmt: str, event_type: str, payload: dict) -> dict:
             "occurred_at": timestamp,
             "evidence_source": payload.get("evidence_source"),
         }
-    # Regulator-grade breach-notify formats (Phase 6 compliance pack).
+    # Regulator-grade breach-notify formats.
     # These mirror the field names regulators use on their intake forms /
     # APIs. None of them are an official wire format (regulators don't
     # publish one), but they're the canonical field set you'd attach to
@@ -354,7 +354,7 @@ def emit_event(
         rbac_refusal         — Layer 3 blocked
         governance_block     — Layer 2 blocked
         incident_opened      — governance_incidents insert
-        compliance_breach_notification — Phase 6 shim, fired by
+        compliance_breach_notification — compliance shim, fired by
             kya.compliance_shim when an incident under a regulated
             regime crosses the breach-notify SLA.
     """

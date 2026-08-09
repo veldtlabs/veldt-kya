@@ -45,7 +45,7 @@ _engine = None  # SQLAlchemy Engine (set on first call)
 _session_factory = None
 _warned = False
 _storage_initialized = False
-# Phase 14a #146 — serialize the lazy first-call engine init. Without
+# Serialize the lazy first-call engine init. Without
 # this, two concurrent first-callers (e.g., a burst of identity
 # failures hitting the gateway's new revocation-signal-record path)
 # can both pass the `_engine is not None` check, both call

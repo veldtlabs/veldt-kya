@@ -4,15 +4,15 @@ change cadence.
 
 These are HUMAN-process signals that materially affect risk:
 
-- **Ownership / on-call** (#18). Orphan agents are the #1 governance
+- **Ownership / on-call**. Orphan agents are the top governance
   failure mode. When something misbehaves at 3 AM, somebody needs to be
   pageable. No owner = high risk by definition.
 
-- **Approval / review status** (#19). SOC 2 CC1.4, ISO 27001 A.5.34,
+- **Approval / review status**. SOC 2 CC1.4, ISO 27001 A.5.34,
   EU AI Act Art. 9 all require evidence that a human reviewed the agent.
   An unreviewed agent in production is a finding, not a deployment.
 
-- **Time-in-production / change cadence** (#22). Brand-new agents are
+- **Time-in-production / change cadence**. Brand-new agents are
   unknown-quality. Agents changing weekly are unstable. Both are risk
   premiums; the steady middle is the safe zone.
 
@@ -30,7 +30,7 @@ Public API
 
 from datetime import datetime, timezone
 
-# ── Ownership / on-call (#18) ────────────────────────────────────────────
+# ── Ownership / on-call ──────────────────────────────────────────────────
 
 
 def _has_owner(agent_def: dict) -> bool:
@@ -49,7 +49,7 @@ def ownership_weight(agent_def: dict) -> tuple[int, str]:
     return 15, "no_owner: orphan agent (no owner/on_call/escalation declared)"
 
 
-# ── Approval / review status (#19) ───────────────────────────────────────
+# ── Approval / review status ─────────────────────────────────────────────
 
 # Review states:
 #   "approved"       — explicit approval recorded
@@ -95,7 +95,7 @@ def approval_weight(agent_def: dict) -> tuple[int, str]:
     return delta, f"review_status={status}"
 
 
-# ── Time-in-production + change cadence (#22) ────────────────────────────
+# ── Time-in-production + change cadence ──────────────────────────────────
 
 # Brand-new agents (<7 days in prod) carry an "unknown quality" premium.
 # Agents changing very frequently (>10 changes in last 30 days) are

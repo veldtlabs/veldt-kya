@@ -209,7 +209,7 @@ PRINCIPAL_KINDS: tuple[str, ...] = (
     "lakehouse_job",
     "machine_identity",
     "autonomous_system",
-    # Phase 5h — issuer-API admins (HMAC + DID-signed token holders).
+    # Issuer-API admins (HMAC + DID-signed token holders).
     # Registered so the dual-admin approval chain can write
     # `principal_edges` rows pointing at real principal rows, not
     # orphan IDs (the 5g-B-03 lesson).
@@ -351,9 +351,8 @@ class PrincipalFingerprintBatch:
     fire 3000+ queries -- the classic N+1.
 
     This dataclass holds the bulk-fetched inputs so a downstream
-    consumer (typically ``kya_pro.reproducibility.fleet_fingerprint``)
-    can compose principal fingerprints in O(1) per principal after
-    one bulk load.
+    fleet-fingerprint consumer can compose principal fingerprints in
+    O(1) per principal after one bulk load.
 
     Attributes:
         tenant_id: Tenant the batch covers.
@@ -554,9 +553,8 @@ def principal_fingerprint(
     ``tenant_id`` scopes the DB queries but is INTENTIONALLY NOT
     in the hash. Two tenants running identical principals (same
     definition + same lineage + same edges) will produce the SAME
-    principal_fingerprint -- this matches the
-    :func:`kya_pro.reproducibility.fleet_fingerprint` policy and
-    enables cross-tenant similarity detection (e.g. "the same
+    principal_fingerprint -- this matches the fleet-fingerprint
+    policy and enables cross-tenant similarity detection (e.g. "the same
     drone configuration is deployed across these N customers").
     A regulator who needs tenant-distinct fingerprints must
     compose ``(tenant_id, principal_fingerprint)`` themselves.
@@ -941,7 +939,7 @@ if _HAS_SQLALCHEMY:
         actor_human_id: Mapped[str | None] = mapped_column(Text, nullable=True)
         attributes: Mapped[dict] = mapped_column(_JsonType, nullable=False, default=dict)
 
-        # Phase 4b — IdP binding fields. Optional structured pointers
+        # IdP binding fields. Optional structured pointers
         # from KYA's internal principal_id to the upstream Identity
         # Provider's view of the same principal. Lets dashboards link
         # a KYA trust score back to the Okta/Auth0/Keycloak/SPIFFE
@@ -982,7 +980,7 @@ if _HAS_SQLALCHEMY:
         )
 
         __table_args__ = (
-            # Phase 4d fix: the trust_score index and the
+            # The trust_score index and the
             # idp_subject index are INTENTIONALLY OMITTED from
             # __table_args__. DuckDB rejects UPDATE on any indexed
             # column, which would break the ON CONFLICT DO UPDATE
@@ -1008,7 +1006,7 @@ def ensure_principal_table(db) -> None:
     Schema selection is dialect-aware. Uses the session's own connection
     so DDL participates in the same transaction (DuckDB compat).
 
-    Also applies additive migrations (Phase 4b — IdP binding columns)
+    Also applies additive migrations (IdP binding columns)
     so deployments upgrading from older KYA pick up the new columns
     without dropping the table.
     """
@@ -1020,7 +1018,7 @@ def ensure_principal_table(db) -> None:
 
 
 def _apply_idp_binding_migrations(db) -> None:
-    """Phase 4b additive ALTER for existing deployments. Idempotent
+    """Additive ALTER for existing deployments. Idempotent
     via IF NOT EXISTS guards. SQLite >= 3.35 supports ADD COLUMN IF
     NOT EXISTS natively; older versions raise UndefinedColumn which
     apply_migrations swallows + logs."""
@@ -1052,12 +1050,12 @@ def _apply_idp_binding_migrations(db) -> None:
     if dialect != "duckdb":
         migrations.extend([
             # Tenant trust-distribution queries (rank principals
-            # by score). Phase 4d: lives here (conditional ALTER)
+            # by score). Lives here (conditional ALTER)
             # instead of __table_args__ so DuckDB skips it.
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_principal_trust_tenant_kind_score "
             f"ON {table} (tenant_id, principal_kind, trust_score);",
-            # Phase 4b lookup-by-IdP-subject.
+            # Lookup-by-IdP-subject.
             f"CREATE INDEX IF NOT EXISTS "
             f"idx_kya_principal_trust_tenant_idp_subject "
             f"ON {table} (tenant_id, idp_subject);",
@@ -1203,8 +1201,8 @@ def record_principal_signal(
     Supply when replaying signals from a log to keep `last_signal_at`
     semantically correct.
 
-    `allow_create` (Phase 14a #147) — when False, only update an
-    existing row; never create one. Callers that resolve
+    `allow_create` — when False, only update an existing row; never
+    create one. Callers that resolve
     ``principal_id`` from an untrusted carrier (e.g. a VC signed by a
     cross-tenant federated issuer) MUST set this to False, otherwise
     they'll silently provision a phantom row for a principal that
@@ -1263,13 +1261,10 @@ def record_principal_signal(
     except Exception:
         _inproc_lock = None
 
-    # #151 -- wrap the entire retry-loop in try/finally so every exit
-    # path releases the lock. The pre-#151 code only released on the
-    # success path (final unconditional release outside the loop), the
-    # `attempt == 9` retry bailout, and the new #147 ``allow_create=False``
-    # skip path -- but the SELECT-execution-failure path
+    # Wrap the entire retry-loop in try/finally so every exit path
+    # releases the lock. Previously the SELECT-execution-failure path
     # (``db.rollback(); raise`` below) leaked the per-(tenant, kind, id)
-    # lock for the process lifetime. A noisy DB outage could DoS that
+    # lock for the process lifetime; a noisy DB outage could DoS that
     # specific lock key under sustained pressure.
     try:
         # 10 retries handle the worst contention observed in the load
@@ -1300,7 +1295,7 @@ def record_principal_signal(
                 raise
 
             if row is None:
-                # #147 -- caller refuses to create rows. Used by the
+                # Caller refuses to create rows. Used by the
                 # gateway identity-failure path so that a VC signed by
                 # a cross-tenant federated trusted issuer can't create
                 # a phantom

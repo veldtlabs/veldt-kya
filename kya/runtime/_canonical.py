@@ -35,8 +35,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 # ── Source-of-truth enums ──────────────────────────────────────────
 
 #: Runtime-security tools. Each maps to a parser in
-#: ``kya.runtime.parsers.<name>`` (open SDK) or
-#: ``kya_pro.parsers.<name>`` (commercial overlay).
+#: ``kya.runtime.parsers.<name>``.
 RuntimeSecurityTool = Literal[
     "falco",       # CNCF runtime security
     "tetragon",    # Isovalent eBPF

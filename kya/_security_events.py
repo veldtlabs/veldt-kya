@@ -48,11 +48,11 @@ _HARDENING_EVENT_KINDS = frozenset({
     "rate_limit_exceeded",
     "payload_too_large",
     "replay_detected",
-    # Phase 5b — RBAC denial. Already exists in realtime
+    # RBAC denial. Already exists in realtime
     # ALLOWED_SIGNAL_KINDS + users.SIGNAL_DELTAS so the realtime
     # + DB paths fire correctly once whitelisted here too.
     "rbac_refusal",
-    # Phase 5g — runtime identity-layer events. Gateway + issuer-API
+    # Runtime identity-layer events. Gateway + issuer-API
     # call emit_security_event() with these to debit principal trust
     # + feed attack-chain windows via the existing paths. Operators
     # may need to add matching entries in `kya/realtime.py:
@@ -64,7 +64,7 @@ _HARDENING_EVENT_KINDS = frozenset({
     "dpop_forge_attempt",
     "dpop_expired",
     "issuer_rotation_pending",
-    # Phase 5h — burst of denials from same requester suggests
+    # Burst of denials from same requester suggests
     # attempted misuse of the issuance approval flow.
     "vc_approval_denied",
 })
@@ -158,8 +158,8 @@ def emit_security_event(
         return
     try:
         from .principals import record_principal_signal
-        # #152 audit (Phase 14a follow-up): allow_create=True (default)
-        # is safe here. The gateway's identity-failure path
+        # allow_create=True (default) is safe here. The gateway's
+        # identity-failure path
         # (server.py:_emit_identity_failure_event) calls
         # ``emit_security_event`` WITHOUT principal_kind/principal_id
         # so the guard at lines ~157-158 returns before this point.

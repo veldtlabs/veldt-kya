@@ -255,7 +255,7 @@ def _resolve_current_mode(
 ) -> str:
     """Resolve the effective mode for a specific pair × kind.
 
-    Phase 2: consults kya_delegation_policy_overrides via
+    Consults kya_delegation_policy_overrides via
     specificity-ordered lookup (most-specific override wins; ties
     broken by created_at DESC). Falls back to the global env var
     when no override matches. Fail-soft on any DB / module error —

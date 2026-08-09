@@ -70,14 +70,11 @@ VALID_MODES = {
     "observed",
 }
 
-# Named canonical outcome values — introduced via the convert-as-you-touch
-# pattern (feedback_no_hardcoding: "when shipping a NEW canonical value,
-# also introduce the named constant"). Task #349 added ``pending`` as a
-# canonical value; ``in_progress`` is named opportunistically in the same
-# edit because both are transient (non-terminal) states and clarify the
-# lifecycle when read together. The other 8 outcome literals remain bare
-# for now — inventory task #352 tracks their opportunistic conversion so
-# reviewers do not have to chase them globally.
+# Named canonical outcome values. ``pending`` is a canonical value for
+# pre-policy audit rows; ``in_progress`` is named alongside it because
+# both are transient (non-terminal) states and clarify the lifecycle
+# when read together. The remaining outcome literals remain bare for
+# now and will be converted opportunistically as other edits touch them.
 OUTCOME_PENDING = "pending"
 OUTCOME_IN_PROGRESS = "in_progress"
 
@@ -394,16 +391,16 @@ def record_invocation(
         logger.debug("[KYA-INV] unknown mode=%s -> 'observed'", mode)
         mode = "observed"
     if outcome not in VALID_OUTCOMES:
-        # Task #242 — was silent-coerce to "success". That cascaded into
-        # Pro deriving verdict="allow" for every failure AND ticking
-        # principal trust upward on every failure. Fail-loud so callers
-        # (SDKs, bridges) surface the bug immediately.
+        # Was silent-coerce to "success". That cascaded into downstream
+        # consumers deriving verdict="allow" for every failure AND
+        # ticking principal trust upward on every failure. Fail-loud so
+        # callers (SDKs, bridges) surface the bug immediately.
         raise ValueError(
             f"invalid outcome: {outcome!r} - must be one of "
             f"{sorted(VALID_OUTCOMES)}"
         )
 
-    # Phase 4a.1 — rate limit on KYA's write primitive. Off-by-default;
+    # Rate limit on KYA's write primitive. Off-by-default;
     # operators opt in via KYA_RATE_LIMIT_DEFAULT_RPS or per-primitive
     # env. Soft mode: blocks up to 5s waiting for token, then proceeds.
     # Threads principal info through so security events on denial
@@ -464,7 +461,7 @@ def record_invocation(
                 enforce_delegation_policy,
             )
             # Don't pass mode= — let enforce_delegation_policy resolve
-            # per-violation through the overrides table (Phase 2).
+            # per-violation through the overrides table.
             # Caller can still inject `mode=` via the
             # enforce_delegation_policy direct API for tests / explicit
             # overrides, but the record_invocation path picks up

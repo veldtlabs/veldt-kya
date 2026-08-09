@@ -1,10 +1,11 @@
 """
-Phase 4c -- SPIFFE/OIDC workload identity for service_accounts.
+SPIFFE/OIDC workload identity for service_accounts.
 
 SPIFFE (Secure Production Identity Framework For Everyone) is the
-emerging cross-platform standard for workload identity. Where Phase
-4a/4b cover human-identity federation (Okta, Auth0, Keycloak, etc.),
-Phase 4c covers SERVICE-to-service identity:
+emerging cross-platform standard for workload identity. Where the
+JWT introspection + external-ID binding modules cover human-identity
+federation (Okta, Auth0, Keycloak, etc.), this module covers
+SERVICE-to-service identity:
 
     spiffe://<trust-domain>/<workload-path>
 
@@ -12,10 +13,10 @@ Examples (real SPIFFE IDs):
     spiffe://example.org/ns/prod/sa/inference-service
     spiffe://acme.aws/eks/cluster-1/ns/payments/sa/billing
 
-What Phase 4c provides
-----------------------
+What this module provides
+-------------------------
   - parse_spiffe_id()           - validate + split spiffe://td/path
-  - verify_jwt_svid()           - verify a JWT-SVID using Phase 4a's
+  - verify_jwt_svid()           - verify a JWT-SVID via ``kya.auth``'s
                                    verify_jwt; checks the embedded
                                    SPIFFE ID is well-formed and (if
                                    configured) in the trust-domain
@@ -35,12 +36,12 @@ What this is NOT
     the JWT-SVID API.
   - NOT a trust-bundle manager. Caller provides the JWKS endpoint or
     URL; KYA does not fetch/cache trust bundles separately from the
-    Phase 4a JWKS cache.
+    ``kya.auth`` JWKS cache.
 
 Design contract
 ---------------
-  - Reuses Phase 4a verify_jwt() entirely. No duplicate JWT logic.
-  - Stores bindings via Phase 4b bind_principal_to_idp with
+  - Reuses ``kya.auth.verify_jwt()`` entirely. No duplicate JWT logic.
+  - Stores bindings via ``bind_principal_to_idp`` with
     idp_kind="spiffe". One canonical column set, two consumers.
   - Off-by-default: no verification or binding happens unless the
     caller explicitly invokes these functions.
@@ -55,7 +56,7 @@ Design contract
 
 Optional dependency
 -------------------
-Same as Phase 4a: PyJWT >= 2.0 + requests (for JWKS fetch). No
+Same as ``kya.auth``: PyJWT >= 2.0 + requests (for JWKS fetch). No
 additional packages required.
 """
 
@@ -251,7 +252,7 @@ def _reset_spiffe_warned_state() -> None:
     _UNRESTRICTED_WARNED = False
 
 
-# ── JWT-SVID verification (reuses Phase 4a) ────────────────────────
+# ── JWT-SVID verification (reuses ``kya.auth.verify_jwt``) ─────────
 
 
 def verify_jwt_svid(
@@ -275,7 +276,7 @@ def verify_jwt_svid(
       - The signature is verifiable via the trust domain's JWKS
 
     This function:
-      1. Verifies the JWT via Phase 4a verify_jwt (signature, exp,
+      1. Verifies the JWT via ``kya.auth.verify_jwt`` (signature, exp,
          nbf, aud, iss, alg whitelist)
       2. Extracts `sub` and validates it as a SPIFFE ID
       3. Cross-checks `iss` trust domain against `sub` trust domain
@@ -302,9 +303,9 @@ def verify_jwt_svid(
     allowed_trust_domains : list[str] | None
         Trust-domain allowlist override. Defaults to env.
     algorithms : list[str] | None
-        Override JWT alg whitelist. Defaults to Phase 4a default.
+        Override JWT alg whitelist. Defaults to ``kya.auth`` default.
     leeway_seconds : int | None
-        Clock-skew leeway. Defaults to Phase 4a default.
+        Clock-skew leeway. Defaults to ``kya.auth`` default.
 
     Returns
     -------
@@ -335,7 +336,7 @@ def verify_jwt_svid(
             "[KYA-SPIFFE] no JWKS URL configured -- cannot verify SVID")
         return None
 
-    # Delegate JWT verification to Phase 4a -- DRY.
+    # Delegate JWT verification to ``kya.auth`` -- DRY.
     # Lazy import is REQUIRED for test mocking — tests patch
     # `kya.auth.verify_jwt` at the module attribute and rely on
     # this call-site lookup to hit the patched object. Do NOT
@@ -348,7 +349,7 @@ def verify_jwt_svid(
         return None
 
     # Defensive fail-soft: any exception in the JWT layer (programmer
-    # errors, new failure modes added to Phase 4a) is converted to a
+    # errors, new failure modes added to ``kya.auth``) is converted to a
     # soft None so the SPIFFE-level "fail-soft" contract holds.
     try:
         claims = verify_jwt(
@@ -363,7 +364,7 @@ def verify_jwt_svid(
             type(exc).__name__, exc)
         return None
     if claims is None:
-        return None  # signature/exp/aud/iss already failed in Phase 4a
+        return None  # signature/exp/aud/iss already failed in ``kya.auth``
 
     sub = claims.get("sub")
     if not sub:
@@ -416,7 +417,7 @@ def verify_jwt_svid(
     }
 
 
-# ── Binding helpers (delegate to Phase 4b) ─────────────────────────
+# ── Binding helpers (delegate to bind_principal_to_idp) ────────────
 
 
 def bind_spiffe_id_to_principal(
@@ -432,7 +433,7 @@ def bind_spiffe_id_to_principal(
 
     Validates the SPIFFE ID format and trust-domain allowlist before
     writing. Returns False if the principal row doesn't exist (same
-    semantics as Phase 4b bind_principal_to_idp).
+    semantics as bind_principal_to_idp).
 
     This is the "I already verified the SVID elsewhere" entry point.
     For the one-call verify+bind path, use bind_principal_from_svid.
@@ -446,7 +447,7 @@ def bind_spiffe_id_to_principal(
     **Re-binding semantics**: last-write-wins. Calling this twice for
     the same (tenant_id, principal_kind, principal_id) with different
     spiffe_ids will replace the prior binding -- the old SPIFFE ID
-    becomes unfindable via lookup. This matches Phase 4b's
+    becomes unfindable via lookup. This matches the
     bind_principal_to_idp contract and is the right behavior when a
     workload moves trust domains, but callers depending on
     stable bindings should bind once and use a different principal_id
@@ -467,9 +468,9 @@ def bind_spiffe_id_to_principal(
             "allowlist", trust_domain)
         return False
 
-    # Delegate storage to Phase 4b -- single canonical column set.
-    # `federated_id` is intentionally NOT passed: Phase 4b's
-    # _canonical_federated_id produces "{idp_kind}|{idp_issuer}|
+    # Delegate storage to bind_principal_to_idp -- single canonical
+    # column set. `federated_id` is intentionally NOT passed: the
+    # _canonical_federated_id helper produces "{idp_kind}|{idp_issuer}|
     # {idp_subject}" -> "spiffe|spiffe://<td>|<spiffe_id>", and we
     # want that exact shape so cross-tenant pivots match what other
     # callers of bind_principal_to_idp emit.

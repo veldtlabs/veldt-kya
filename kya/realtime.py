@@ -120,7 +120,7 @@ ALLOWED_SIGNAL_KINDS = frozenset(
         # (rogue dev, supply-chain injection, drift from registration
         # workflow) without polling agent_versions.
         "agent_first_sight",
-        # Phase 4a.1 + 5a — KYA-semantic hardening violations. Each
+        # KYA-semantic hardening violations. Each
         # carries enough detail in the alert payload for operators
         # to triage: which principal, which primitive, what the limit
         # was, why it fired. Burst-detection windows surface repeated
@@ -128,7 +128,7 @@ ALLOWED_SIGNAL_KINDS = frozenset(
         "rate_limit_exceeded",
         "payload_too_large",
         "replay_detected",
-        # Phase 5g — DID / VC identity-layer events. Without these
+        # DID / VC identity-layer events. Without these
         # entries, emit_security_event silently drops the realtime
         # path and `revocation_blocked` / `dpop_*` events would never
         # surface on live dashboards.
@@ -137,7 +137,7 @@ ALLOWED_SIGNAL_KINDS = frozenset(
         "dpop_forge_attempt",
         "dpop_expired",
         "issuer_rotation_pending",
-        # Phase 5h — denial-burst signal from issuer-API.
+        # Denial-burst signal from issuer-API.
         "vc_approval_denied",
     }
 )

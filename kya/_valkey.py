@@ -133,10 +133,9 @@ def get_valkey() -> Any | None:
             except ImportError:
                 # Loud WARNING (not debug) when an operator HAS set
                 # KYA_VALKEY_URL but redis-py isn't installed.
-                # Pre-fix this was a silent debug message and Phase 12
-                # gap #4 surfaced: gateway rate-limiting silently
-                # degraded to fail-open. Operators should see this in
-                # their startup logs.
+                # Pre-fix this was a silent debug message and gateway
+                # rate-limiting silently degraded to fail-open.
+                # Operators should see this in their startup logs.
                 url_env_set = (
                     os.environ.get("KYA_VALKEY_URL")
                     or os.environ.get("REDIS_URL")

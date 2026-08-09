@@ -1,5 +1,5 @@
 """
-Phase 4a — JWT introspection + claim extraction.
+JWT introspection + claim extraction.
 
 Decodes and verifies an OIDC/OAuth bearer token against a JWKS
 endpoint, then exposes the standard claims (sub, iss, aud, email,
@@ -9,7 +9,7 @@ groups, roles, scope) for downstream KYA use:
     from claims via claims_to_kya_principal()
   - record_principal_signal / record_invocation can be wrapped by
     bind_principal_from_token() — one call instead of decode + bind
-  - Phase 4c (SPIFFE) reuses verify_jwt for OIDC workload-identity
+  - The SPIFFE module reuses verify_jwt for OIDC workload-identity
     tokens
 
 Design contract
@@ -70,7 +70,7 @@ _DEFAULT_ALGS = ("RS256", "ES256", "RS384", "ES384", "RS512", "ES512")
 
 
 # IdP kind inference from the iss claim. Used by claims_to_kya_principal
-# to populate Phase 4b's idp_kind column with a sensible default.
+# to populate the external-ID binding idp_kind column with a sensible default.
 def _infer_idp_kind(iss: str | None) -> str:
     if not iss:
         return "custom"
@@ -343,7 +343,7 @@ def bind_principal_from_token(
     issuer: str | None = None,
 ) -> dict[str, Any] | None:
     """Convenience: verify a token, extract claims, bind the principal
-    via Phase 4b's bind_principal_to_idp().
+    via bind_principal_to_idp().
 
     Returns the claims dict on success. Returns None on ANY failure —
     token rejected, missing principal row, DB error during bind, token

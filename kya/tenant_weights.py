@@ -85,7 +85,7 @@ def register_scope(scope: str, default_dict: dict) -> None:
     """Register a weight scope managed by this module. Called by each
     factor module at import time (data_classes, security_caps, etc.)."""
     _SCOPE_REGISTRY[scope] = default_dict
-    # Task #318 FIX-B — defense-in-depth: the scope registry feeds
+    # Defense-in-depth: the scope registry feeds
     # ``get_effective_policy_hash`` (via ``known_scopes()`` inside
     # ``get_effective_policy``). If a scope registers AFTER the hash
     # cache is primed for any tenant, subsequent cached lookups would
@@ -416,7 +416,7 @@ def set_override(
         )
     _audit(db, scope, key, old, value, "set", tenant_id, changed_by, reason)
     db.commit()
-    # Task #318 FIX-2 — invalidate the TTL cache in front of
+    # Invalidate the TTL cache in front of
     # ``get_effective_policy_hash`` so the next verdict hash reflects
     # this override immediately. A platform-level write (tenant_id
     # is None) affects EVERY tenant's effective hash — nuke the whole
@@ -482,7 +482,7 @@ def delete_override(
     )
     _audit(db, scope, key, old, None, "delete", tenant_id, changed_by, reason)
     db.commit()
-    # Task #318 FIX-2 — mirror ``set_override``'s cache invalidation.
+    # Mirror ``set_override``'s cache invalidation.
     try:
         from .policy_hash import invalidate_policy_hash_cache
         if tenant_id is None:

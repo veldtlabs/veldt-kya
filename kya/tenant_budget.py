@@ -510,7 +510,7 @@ _PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
 # two vocabularies are intentionally different, not accidental drift:
 #   * Invocation tracking answers "what happened to this call?" — every
 #     lifecycle state must round-trip cleanly and unknown values MUST
-#     fail loud (task #242) so SDK bugs surface immediately.
+#     fail loud so SDK bugs surface immediately.
 #   * Cost accounting answers "what should we bill?" — the closed
 #     billing set is smaller and unknowns are defensively coerced so
 #     billing never blocks request flow.
@@ -581,7 +581,7 @@ def record_cost_event(
     """
     if usd_amount <= 0:
         return 0
-    # Phase 4a.1 — rate limit. Off-by-default; opt in via
+    # Rate limit. Off-by-default; opt in via
     # KYA_RATE_LIMIT_RPS_RECORD_COST_EVENT etc.
     try:
         from .rate_limit import maybe_rate_limit

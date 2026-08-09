@@ -1,7 +1,7 @@
-"""kya_pending_invocations — persistence for the HITL resume loop (#101).
+"""kya_pending_invocations — persistence for the HITL resume loop.
 
 The KYA gateway emits HTTP 428 when a policy verdict is
-``flag_for_review`` (paper Figure 4 canonical vocab — see
+``flag_for_review`` (canonical Layer-2 vocab — see
 ``kya.policy_verdicts.GatewayFlagForReviewHandler`` and the emission
 point in ``kya_gateway.server``). Legacy configs using ``require_human``
 still route through the alias handler; both flow through this module
@@ -12,22 +12,22 @@ route.
 
 This module fills that gap. On 428, the gateway writes a row here with
 the raw request body + headers + the exact policy config hash active
-at emission time. When an approver decides, Pro's dashboard-api reads
+at emission time. When an approver decides, an approval workflow reads
 this row and replays the paused request through the same ingest path
 as a fresh invocation — closing the loop.
 
-Why the gateway (OSS) owns this table
--------------------------------------
+Why the gateway owns this table
+-------------------------------
 The gateway is the only component holding the raw request bytes at the
-moment of 428. Pro's dashboard-api ingests TELEMETRY post-hoc; it never
-sees the invocation payload. Putting the table in OSS + calling
+moment of 428. Downstream approval consumers ingest TELEMETRY post-hoc;
+they never see the invocation payload. Putting the table here + calling
 ``create_pending()`` from ``kya_gateway.server`` means the pending row
-exists before the 428 response ships. Pro reads the row (same
-Postgres, different schema neighbor) via SQLAlchemy in the resume
+exists before the 428 response ships. Approval consumers read the row
+(same database, different schema neighbor) via SQLAlchemy in the resume
 router — no cross-service handoff needed.
 
-Replay policy versioning (M5)
------------------------------
+Replay policy versioning
+------------------------
 ``policy_config_hash`` stores a stable hash of the policy config active
 at emission. The resume endpoint MUST replay the ORIGINAL policy — a
 config change between pause and approve should not retroactively
@@ -35,15 +35,14 @@ invalidate the approver's decision. If the current policy would deny
 what the approver approved, that's an audit finding for the operator
 to reconcile, not a runtime error.
 
-At-rest encryption (M7)
------------------------
+At-rest encryption
+------------------
 Request bodies routinely contain PII (agent tool inputs, user prompts,
 credentials). 24h retention of raw bytes is a Day-1 SOC2 problem.
 ``request_body_ciphertext`` stores AES-256-GCM-encrypted bytes keyed
-by a per-tenant DEK. The DEK envelope lives in Pro
-(``kya_pro.dashboard_api._hitl_encryption``) so OSS-only deploys that
-lack KMS still function: ``create_pending()`` accepts pre-encrypted
-bytes, so OSS just writes what it's given.
+by a per-tenant DEK. Deploys without a KMS-backed DEK envelope still
+function: ``create_pending()`` accepts pre-encrypted bytes, so this
+layer just writes what it's given.
 """
 from __future__ import annotations
 
@@ -554,7 +553,7 @@ def list_by_tenant(
     identical ``expires_at`` (same NOW + same TTL). SQLite happens
     to return equal-key rows in insertion order; MySQL/InnoDB does
     not — without the tiebreak the approver UI would reorder rows
-    across page refreshes on MySQL deployments (task #356).
+    across page refreshes on MySQL deployments.
     """
     capped = max(1, min(int(limit), 500))
     with engine.connect() as conn:

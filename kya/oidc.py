@@ -54,12 +54,8 @@ in ``kya.auth`` and ``kya.external_id`` to create a durable binding:
                               "idp_kind", "federated_id",
                           )})
 
-Consumers in this repo
-----------------------
-- ``kya_pro.issuer_api`` (proprietary issuer-API) wires this verifier
-  into its admin-auth dispatcher as the OIDC token path, alongside
-  HMAC bearer + DID-signed JWT paths.
-
+Consumers
+---------
 - (Reserved) ``kya_gateway`` may consume this for workload-identity
   tokens that need strict verification (e.g., when an AI agent / NHI
   presents an IdP-issued token and the gateway must 401 rather than

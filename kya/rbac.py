@@ -1,5 +1,5 @@
 """
-Phase 5b — KYA-semantic RBAC.
+KYA-semantic RBAC.
 
 The reverse proxy can do coarse routing (can this caller hit
 /admin or not). It cannot decide "can principal X call set_budget

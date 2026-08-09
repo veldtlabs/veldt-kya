@@ -1,5 +1,5 @@
 """
-Phase 3c -- Declarative attack-chain rule DSL.
+Declarative attack-chain rule DSL.
 
 KYA's existing detection is single-event: each signal (rogue_pattern,
 oos_tool, etc.) is independent. But many real attacks are multi-step
@@ -12,10 +12,10 @@ This package adds:
   - Partial-match state machine per (tenant, principal_id)
   - Engine hook into record_evidence() -- when a chain fully matches,
     emit record_principal_signal(signal_kind="rogue_*"), which feeds
-    Phase 5b RBAC's block surface
+    the RBAC block surface
 
 Off-by-default. Activated when KYA_ATTACK_CHAIN_RULES_DIR is set
-(env-driven, same pattern as KYA_SPIFFE_TRUST_DOMAINS in Phase 4c).
+(env-driven, same pattern as KYA_SPIFFE_TRUST_DOMAINS).
 
 Design contract
 ---------------

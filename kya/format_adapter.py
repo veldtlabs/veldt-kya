@@ -89,38 +89,38 @@ _DEFAULTS = {
     # Input sources (Round 6) — where the agent INGESTS from.
     "input_sources": [],
     # ── Round 8 fields ─────────────────────────────────────────────
-    # Ownership (#18)
+    # Ownership
     "owner_user_id": None,
     "owner_team": None,
     "on_call": None,
     "escalation_chain": None,
-    # Approval status (#19)
+    # Approval status
     "review_status": None,
     "review_expires_at": None,
     "reviewed_by": None,
     "reviewed_at": None,
-    # Lifecycle (#22)
+    # Lifecycle
     "first_deployed_at": None,
     "created_at": None,
     "changes_last_30d": None,
-    # Supply chain (#20)
+    # Supply chain
     "external_dependencies": None,
     "mcp_servers": None,
     "external_apis": None,
     "plugins": None,
-    # Deployment environment (#21)
+    # Deployment environment
     "environment": None,
     "deployment_env": None,
-    # Output provenance / citation (#23)
+    # Output provenance / citation
     "cites_sources": None,
     "citation_score": None,
     "reproducibility": None,
-    # Trust audits (#24)
+    # Trust audits
     "red_team_score": None,
     "bias_score": None,
     "fairness_score": None,
     "last_audit_at": None,
-    # Cost burn (#25)
+    # Cost burn
     "monthly_budget_usd": None,
     "cost_last_24h_usd": None,
     "cost_last_1h_usd": None,
