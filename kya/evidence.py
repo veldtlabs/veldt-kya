@@ -195,6 +195,11 @@ VALID_EVIDENCE_KINDS = {
     "vc_request_approved",       # explicit dual-admin approval
     "vc_request_auto_approved",  # auto-approve pattern matched
     "vc_request_denied",         # explicit denial
+    # Verdict-adjacent kinds emitted by Pro action-gate and OSS
+    # fiddler bridge. Declared OSS-side so unregistered writes
+    # from either surface don't silently normalize to system_message.
+    "action_gate_block",
+    "external_alert",
 }
 
 # Retention defaults per regime (days). Used when caller doesn't supply

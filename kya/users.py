@@ -132,6 +132,11 @@ SIGNAL_DELTAS = {
     # Softer than rbac_refusal; denial is a legitimate
     # operator decision, but a burst from one requester is signal.
     "vc_approval_denied": -3,
+    # Budget-family signals. `budget_exceeded` matches quota-family
+    # magnitude (rate_limit_exceeded); `budget_error` is an internal
+    # check failure, not the agent's fault.
+    "budget_exceeded": -2,
+    "budget_error": 0,
 }
 
 
