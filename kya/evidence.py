@@ -98,6 +98,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .canonicals import CANONICAL_EVIDENCE_KINDS as _CANONICAL_EVIDENCE_KINDS
+from .canonicals import EVIDENCE_KIND_CHAIN_GENESIS
 
 # Per-(tenant, invocation) in-process serialization lock for SQLite +
 # DuckDB. PG uses pg_advisory_xact_lock, MySQL uses SELECT FOR UPDATE,
@@ -683,6 +684,68 @@ def record_evidence(
     prev_hash = db.execute(prev_stmt).scalar() or ""
 
     key, key_id = _get_signing_key()
+
+    # Auto-insert the genesis anchor row on first write to any
+    # (tenant, invocation) chain. The genesis row lets verify_chain
+    # detect head-truncation: an attacker who deletes rows starting
+    # from position 0 leaves a chain whose first surviving row is no
+    # longer a genesis, which verify_chain flags. Skipped when the
+    # caller is explicitly writing a genesis row itself (e.g. tests
+    # or an ingest path that constructs its own anchor).
+    if prev_hash == "" and evidence_kind != EVIDENCE_KIND_CHAIN_GENESIS:
+        genesis_payload = {
+            "tenant_id": tenant_id,
+            "invocation_id": invocation_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "chain_version": 1,
+        }
+        genesis_payload_bytes = _canonicalize(genesis_payload)
+        genesis_payload_hash = hashlib.sha256(genesis_payload_bytes).hexdigest()
+        genesis_signed = _hmac_sign(key, "", genesis_payload_hash)
+        genesis_row = _EvidenceRow(
+            tenant_id=tenant_id,
+            invocation_id=invocation_id,
+            correlation_id=correlation_id,
+            parent_invocation_id=parent_invocation_id,
+            span_id=span_id,
+            evidence_kind=EVIDENCE_KIND_CHAIN_GENESIS,
+            role=None,
+            payload=genesis_payload,
+            payload_hash=genesis_payload_hash,
+            payload_size_bytes=len(genesis_payload_bytes),
+            prev_hash=None,
+            signed_hash=genesis_signed,
+            signing_key_id=key_id,
+            occurred_at=datetime.now(timezone.utc),
+            source=None,
+            data_classes=None,
+            retention_until=None,
+            evaluator_name=None,
+        )
+        db.add(genesis_row)
+        # Best-effort counter bump for the genesis row. The UPDATE lives
+        # inside a SAVEPOINT so a missing kya_invocations table or a
+        # legacy schema without evidence_row_count rolls back only the
+        # counter bump, not the row insert. Missing parent invocation
+        # row is expected in some ingest paths — degrades to legacy
+        # verify semantics via the NULL counter path.
+        try:
+            with db.begin_nested():
+                db.execute(text(
+                    "UPDATE kya_invocations "
+                    "SET evidence_row_count = COALESCE(evidence_row_count, 0) + 1 "
+                    "WHERE tenant_id = :t AND id = :i"
+                ), {"t": tenant_id, "i": invocation_id})
+        except Exception as exc:
+            logger.debug("[KYA-EVIDENCE] genesis counter bump skipped: %s", exc)
+        # Single commit publishes the genesis row AND the counter bump
+        # atomically — a concurrent verify_chain reader can never see
+        # rows-without-counter (false-positive tamper).
+        db.commit()
+        db.refresh(genesis_row)
+        # The caller's row now chains off the just-inserted genesis.
+        prev_hash = genesis_signed
+
     signed_hash = _hmac_sign(key, prev_hash, payload_hash)
 
     # Retention computation
@@ -728,6 +791,20 @@ def record_evidence(
     )
     try:
         db.add(row)
+        # Counter bump lives inside a SAVEPOINT so it can fail-soft
+        # (missing table, legacy schema, missing parent row) without
+        # rolling back the row insert. The single outer commit
+        # publishes row + counter atomically — a concurrent verify_chain
+        # reader never sees a rows-without-counter false-positive.
+        try:
+            with db.begin_nested():
+                db.execute(text(
+                    "UPDATE kya_invocations "
+                    "SET evidence_row_count = COALESCE(evidence_row_count, 0) + 1 "
+                    "WHERE tenant_id = :t AND id = :i"
+                ), {"t": tenant_id, "i": invocation_id})
+        except Exception as exc:
+            logger.debug("[KYA-EVIDENCE] counter bump skipped: %s", exc)
         db.commit()
         db.refresh(row)
     finally:
@@ -878,16 +955,57 @@ def get_evidence(db, tenant_id: str, evidence_id: int) -> dict | None:
 def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
     """Walk the (tenant, invocation) chain and recompute every signed_hash.
 
+    Two independent tamper anchors guard the chain:
+
+    1. **Row-count anchor** — ``kya_invocations.evidence_row_count`` is
+       incremented on every successful ``record_evidence`` call.
+       verify_chain compares that counter against the number of rows
+       actually present. A mismatch means rows were deleted from the
+       tail (or the entire chain wiped) even though the surviving rows
+       still HMAC-verify against each other.
+    2. **Genesis anchor** — ``record_evidence`` auto-inserts a
+       ``chain_genesis`` row on first write. verify_chain requires it
+       to still be at position 0. An attacker who deletes rows starting
+       from the head (including the genesis) leaves a chain whose
+       first surviving row is no longer ``chain_genesis``.
+
+    Legacy chains (rows written before either anchor existed) leave
+    ``evidence_row_count`` NULL and have no genesis row. verify_chain
+    detects this and falls back to the original HMAC-only semantics so
+    upgraded deployments don't spuriously flag pre-existing chains.
+
     Returns:
         {
             "valid": bool,            # True iff every row's hash recomputes
             "broken_at": id | None,   # the first row where chain breaks
             "checked": int,           # rows verified
             "reason": str | None,     # human-readable explanation
+            "expected_count": int | None,  # value from evidence_row_count
+                                           # (None for legacy chains)
         }
     """
     _require_sqlalchemy()
     init_evidence_table(db)
+
+    # Load the row-count anchor. Missing invocation row OR NULL column
+    # both resolve to ``expected_count = None`` (legacy chain — fall
+    # back to hash-walk-only semantics).
+    expected_count: int | None = None
+    try:
+        anchor = db.execute(
+            text(
+                "SELECT evidence_row_count FROM kya_invocations "
+                "WHERE tenant_id = :t AND id = :i"
+            ),
+            {"t": tenant_id, "i": invocation_id},
+        ).scalar()
+        if anchor is not None:
+            expected_count = int(anchor)
+    except Exception as exc:
+        # Column missing on a very old schema, or invocations table
+        # absent (evidence-only fixtures). Silent fall-through to
+        # legacy semantics.
+        logger.debug("[KYA-EVIDENCE] row-count anchor unavailable: %s", exc)
 
     stmt = (
         select(_EvidenceRow)
@@ -898,7 +1016,54 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
     rows = db.execute(stmt).scalars().all()
 
     if not rows:
-        return {"valid": True, "broken_at": None, "checked": 0, "reason": "empty chain"}
+        if expected_count is None or expected_count == 0:
+            # Truly empty (never written) OR legacy chain that was
+            # legitimately pruned to zero. Cannot distinguish from
+            # a wipe without the anchor — preserve legacy semantics.
+            return {
+                "valid": True,
+                "broken_at": None,
+                "checked": 0,
+                "reason": "empty chain",
+                "expected_count": expected_count,
+            }
+        return {
+            "valid": False,
+            "broken_at": None,
+            "checked": 0,
+            "reason": (
+                f"row count mismatch: expected {expected_count}, "
+                f"found 0 — full chain wipe detected"
+            ),
+            "expected_count": expected_count,
+        }
+
+    # Row-count check — only meaningful for post-anchor chains.
+    if expected_count is not None and len(rows) != expected_count:
+        return {
+            "valid": False,
+            "broken_at": None,
+            "checked": len(rows),
+            "reason": (
+                f"row count mismatch: expected {expected_count}, "
+                f"found {len(rows)} — evidence rows deleted"
+            ),
+            "expected_count": expected_count,
+        }
+
+    # Genesis check — only meaningful for post-anchor chains
+    # (legacy chains never had a genesis row).
+    if (
+        expected_count is not None
+        and rows[0].evidence_kind != EVIDENCE_KIND_CHAIN_GENESIS
+    ):
+        return {
+            "valid": False,
+            "broken_at": int(rows[0].id),
+            "checked": 0,
+            "reason": "chain missing genesis anchor — head row was deleted",
+            "expected_count": expected_count,
+        }
 
     key, _ = _get_signing_key()
     expected_prev = ""
@@ -912,6 +1077,7 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 "broken_at": int(row.id),
                 "checked": int(row.id),
                 "reason": "payload_hash mismatch — payload was modified",
+                "expected_count": expected_count,
             }
 
         # Verify chain link
@@ -921,6 +1087,7 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 "broken_at": int(row.id),
                 "checked": int(row.id),
                 "reason": "prev_hash break — earlier row was inserted, deleted, or modified",
+                "expected_count": expected_count,
             }
 
         recomputed_signed = _hmac_sign(key, expected_prev, row.payload_hash)
@@ -930,6 +1097,7 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 "broken_at": int(row.id),
                 "checked": int(row.id),
                 "reason": "signed_hash mismatch — row was forged or signing key changed",
+                "expected_count": expected_count,
             }
 
         expected_prev = row.signed_hash
@@ -939,6 +1107,7 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
         "broken_at": None,
         "checked": len(rows),
         "reason": None,
+        "expected_count": expected_count,
     }
 
 

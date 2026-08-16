@@ -60,6 +60,14 @@ CANONICAL_OUTCOMES: frozenset[str] = frozenset({
 
 # ── Evidence kinds ──────────────────────────────────────────────────
 
+# Anchor row auto-inserted as the first row of every new (tenant,
+# invocation) evidence chain. Its presence lets ``verify_chain`` detect
+# head-truncation (the row is signed like any other, so an attacker who
+# deletes it leaves a chain whose first row is no longer a genesis).
+# Paired with the ``evidence_row_count`` anchor on ``kya_invocations``
+# to also detect tail-truncation and full-wipe.
+EVIDENCE_KIND_CHAIN_GENESIS: str = "chain_genesis"
+
 EVIDENCE_KIND_PROMPT: str = "prompt"
 EVIDENCE_KIND_RESPONSE: str = "response"
 EVIDENCE_KIND_TOOL_CALL: str = "tool_call"
@@ -106,6 +114,7 @@ EVIDENCE_KIND_ABAC_SHADOW_EVAL: str = "abac_shadow_eval"
 EVIDENCE_KIND_ABAC_NATIVE_OVERRIDE: str = "abac_native_override"
 
 CANONICAL_EVIDENCE_KINDS: frozenset[str] = frozenset({
+    EVIDENCE_KIND_CHAIN_GENESIS,
     EVIDENCE_KIND_PROMPT,
     EVIDENCE_KIND_RESPONSE,
     EVIDENCE_KIND_TOOL_CALL,
@@ -294,6 +303,7 @@ __all__ = [
     "OUTCOME_PENDING",
     "CANONICAL_OUTCOMES",
     # Evidence kinds
+    "EVIDENCE_KIND_CHAIN_GENESIS",
     "EVIDENCE_KIND_PROMPT",
     "EVIDENCE_KIND_RESPONSE",
     "EVIDENCE_KIND_TOOL_CALL",

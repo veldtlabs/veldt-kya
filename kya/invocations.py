@@ -188,6 +188,17 @@ if _HAS_SQLALCHEMY:
         started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
         ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+        # Tamper-detection anchor: monotonically incremented by
+        # record_evidence for each row written on this invocation's
+        # chain. verify_chain compares len(rows) against this value —
+        # a mismatch means rows were deleted from the tail (or the
+        # entire chain wiped) even though the surviving rows still
+        # HMAC-verify against each other. Nullable so legacy
+        # invocations (rows written before this column existed) and
+        # ingest paths that write evidence WITHOUT a parent
+        # invocation row still verify with the pre-anchor semantics.
+        evidence_row_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+
         __table_args__ = (
             Index(
                 "idx_kya_inv_tenant_agent_occurred",
@@ -226,6 +237,7 @@ def ensure_invocations_table(db) -> None:
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[Invocation.__table__])
     _migrate_agent_key_width(conn)
+    _reconcile_evidence_row_count_column(conn)
 
 
 # Tables + columns whose `agent_key`-shaped field was originally
@@ -342,6 +354,91 @@ def _migrate_agent_key_width(conn) -> None:
                 "DID-shaped principals may be rejected on next insert: %s",
                 table, column, exc,
             )
+
+
+def _reconcile_evidence_row_count_column(conn) -> None:
+    """Idempotently add the ``evidence_row_count`` column to
+    ``kya_invocations`` on pre-existing databases.
+
+    The column is a tamper-detection anchor incremented by
+    ``kya.evidence.record_evidence``. On a fresh install, ``create_all``
+    creates it. On an upgraded install whose ``kya_invocations`` was
+    created before this column existed, ``create_all`` is a no-op for
+    columns — we probe the live schema and ALTER when missing. Nullable
+    with no default so the ALTER is safe on any dialect and existing
+    rows fall through to the legacy verify semantics.
+    """
+    import logging as _logging
+
+    from sqlalchemy import inspect as _inspect
+    log = _logging.getLogger(__name__)
+    try:
+        dialect = conn.engine.dialect.name
+        insp = _inspect(conn)
+    except Exception as exc:
+        log.warning("[KYA-INV] evidence_row_count introspection failed: %s", exc)
+        return
+
+    schema = _PG_SCHEMA if dialect == "postgresql" else None
+    qualified_prefix = f"{schema}." if schema else ""
+    table = "kya_invocations"
+    column = "evidence_row_count"
+
+    try:
+        if not insp.has_table(table, schema=schema):
+            return
+        cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
+        if column in cols:
+            return  # Already present — no-op.
+
+        qualified = f"{qualified_prefix}{table}"
+        # Every supported dialect accepts an additive nullable INTEGER
+        # column with ``ADD COLUMN`` — no type coercion, no default,
+        # no lock-heavy rewrite. The MySQL grammar wants no NULL clause
+        # (nullable is the default).
+        if dialect == "postgresql":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
+            ))
+        elif dialect == "mysql":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER NULL"
+            ))
+        elif dialect == "sqlite":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
+            ))
+        elif dialect == "duckdb":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
+            ))
+        else:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
+                ))
+            except Exception as exc:
+                log.warning(
+                    "[KYA-INV] could not add %s.%s on dialect=%s: %s",
+                    table, column, dialect, exc,
+                )
+                return
+        log.info(
+            "[KYA-INV] added %s.%s tamper-anchor column on dialect=%s",
+            table, column, dialect,
+        )
+    except Exception as exc:
+        # Fail-soft: if the ALTER can't be issued the write path
+        # gracefully degrades — record_evidence's UPDATE will raise
+        # and get swallowed, verify_chain will see NULL and fall back
+        # to legacy semantics. Log at ERROR so operators know the
+        # anchor isn't active yet.
+        log.error(
+            "[KYA-INV] evidence_row_count reconcile FAILED for %s.%s — "
+            "chain-wipe / tail-truncation detection degraded to legacy "
+            "hash-walk only: %s",
+            table, column, exc,
+        )
 
 
 def record_invocation(

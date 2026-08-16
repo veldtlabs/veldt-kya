@@ -717,6 +717,17 @@ def pillar_evidence_chain_review(
                 total_checked += 1
                 if not _maybe_get(r, "valid", False):
                     broken_chains.append(int(inv_id))
+                elif (
+                    _maybe_get(r, "expected_count") is not None
+                    and _maybe_get(r, "checked", 0)
+                    != _maybe_get(r, "expected_count")
+                ):
+                    # Defensive floor: verify_chain's fail-close on the
+                    # row-count anchor should catch this first, but if a
+                    # future refactor loosens verify_chain the
+                    # caller-side count-mismatch check keeps the
+                    # tamper-detection contract alive from this side.
+                    broken_chains.append(int(inv_id))
             except Exception as exc:
                 logger.debug(
                     "[ASSESSMENT] verify_chain inv=%s: %s",

@@ -94,7 +94,8 @@ def test_export_verify_roundtrip(db, keypair):
     assert result["valid"] is True
     assert result["reason"] == "ok"
     assert result["manifest"]["tenant_id"] == TENANT
-    assert result["manifest"]["row_count"] == 5
+    # 5 caller rows + 1 auto-genesis anchor = 6 total.
+    assert result["manifest"]["row_count"] == 6
 
 
 def test_export_includes_payloads_when_requested(db, keypair):
@@ -106,7 +107,8 @@ def test_export_includes_payloads_when_requested(db, keypair):
         signing_key_pem=keypair["priv"],
         include_payloads=True)
     assert "rows" in export
-    assert len(export["rows"]) == 3
+    # 3 caller rows + 1 auto-genesis anchor = 4 total.
+    assert len(export["rows"]) == 4
     # Verifier re-computes chain_digest from rows AND signature path
     result = verify_signed_export(export, public_key_pem=keypair["pub"])
     assert result["valid"] is True
@@ -122,7 +124,8 @@ def test_export_narrow_by_invocation(db, keypair):
         db, tenant_id=TENANT, start=start, end=end,
         signing_key_pem=keypair["priv"],
         invocation_id=inv_a)
-    assert export["manifest"]["row_count"] == 3
+    # 3 caller rows + 1 auto-genesis anchor = 4 total.
+    assert export["manifest"]["row_count"] == 4
     assert export["manifest"]["invocation_id"] == inv_a
 
 

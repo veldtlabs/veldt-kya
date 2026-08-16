@@ -761,26 +761,29 @@ def _evidence_e2e(url: str, tenant: str):
     # List in chain order
     with Session() as db:
         rows = list_evidence(db, tenant_id=tenant, invocation_id=invocation_id)
-    assert len(rows) == 3
-    assert [r["evidence_kind"] for r in rows] == ["prompt", "tool_call", "response"]
+    assert len(rows) == 4  # 3 caller rows + 1 auto-genesis anchor
+    assert [r["evidence_kind"] for r in rows] == ["chain_genesis", "prompt", "tool_call", "response"]
     # Each row has a non-empty signed_hash and the chain links via prev_hash
-    assert rows[0]["prev_hash"] is None  # first row in chain
+    assert rows[0]["prev_hash"] is None  # genesis anchor - first row in chain
     assert rows[1]["prev_hash"] == rows[0]["signed_hash"]
     assert rows[2]["prev_hash"] == rows[1]["signed_hash"]
+    assert rows[3]["prev_hash"] == rows[2]["signed_hash"]
     # All have a populated payload_hash + signing_key_id
     for r in rows:
         assert r["payload_hash"] and len(r["payload_hash"]) == 64
         assert r["signed_hash"] and len(r["signed_hash"]) == 64
         assert r["signing_key_id"]
 
-    # PII data class should trigger GDPR retention (~6 years)
-    assert rows[0]["retention_until"] is not None
+    # PII data class should trigger GDPR retention (~6 years).
+    # rows[0] is now the auto-genesis anchor (retention=None); the
+    # PII prompt is at rows[1].
+    assert rows[1]["retention_until"] is not None
 
     # Verify the chain — should be valid
     with Session() as db:
         report = verify_chain(db, tenant_id=tenant, invocation_id=invocation_id)
     assert report["valid"] is True
-    assert report["checked"] == 3
+    assert report["checked"] == 4  # 3 caller rows + 1 auto-genesis anchor
     assert report["broken_at"] is None
 
     # TAMPER TEST — directly mutate row 2's payload via raw SQL
@@ -1221,7 +1224,9 @@ def test_evidence_kms_provider_resolves():
             rows = list_evidence(db, tenant_id="t_kms", invocation_id=999)
             report = verify_chain(db, tenant_id="t_kms", invocation_id=999)
 
-        assert len(rows) == 1
+        # 1 caller row + 1 auto-genesis anchor.
+        assert len(rows) == 2
+        # Both rows are signed with the same provider-issued key.
         assert rows[0]["signing_key_id"] == "fake-key-v1", (
             f"expected provider-issued key_id, got {rows[0]['signing_key_id']}"
         )
@@ -1348,8 +1353,12 @@ def test_autoinstrument_captures_openai_call():
         assert "prompt" in kinds
         assert "response" in kinds
         assert "tool_call" in kinds
-        # data_classes propagated → retention auto-set
+        # data_classes propagated → retention auto-set. Skip the
+        # auto-inserted chain_genesis anchor row (its payload has no
+        # data_classes / source — it's not caller-emitted).
         for r in rows:
+            if r["evidence_kind"] == "chain_genesis":
+                continue
             assert r["data_classes"] == ["pii"]
             assert r["source"] == "autoinstrument"
 

@@ -147,7 +147,8 @@ def test_pack_evidence_section_sqlite():
     result = _run_pack_against("sqlite:///:memory:", "sqlite")
     assert result["dialect"] == "sqlite"
     assert result["invocations"] == 2
-    assert result["evidence_rows"] == 4
+    # 4 caller rows + 2 auto-genesis anchors (one per invocation).
+    assert result["evidence_rows"] == 6
     assert result["all_chains_valid"] is True
 
 
@@ -161,7 +162,8 @@ def test_pack_evidence_section_duckdb():
     result = _run_pack_against("duckdb:///:memory:", "duckdb")
     assert result["dialect"] == "duckdb"
     assert result["invocations"] == 2
-    assert result["evidence_rows"] == 4
+    # 4 caller rows + 2 auto-genesis anchors (one per invocation).
+    assert result["evidence_rows"] == 6
     assert result["all_chains_valid"] is True
 
 
@@ -185,7 +187,8 @@ def test_pack_evidence_section_mysql():
     result = _run_pack_against(url, "mysql")
     assert result["dialect"] == "mysql"
     assert result["invocations"] == 2
-    assert result["evidence_rows"] == 4
+    # 4 caller rows + 2 auto-genesis anchors (one per invocation).
+    assert result["evidence_rows"] == 6
     assert result["all_chains_valid"] is True
 
 
@@ -207,6 +210,14 @@ def test_pack_evidence_section_postgres():
                     "DELETE FROM prov_schema.kya_evidence WHERE tenant_id::text LIKE '00000000%pg%'"
                 )
             )
+            # Match the mysql cleanup: also purge invocations so a
+            # re-run doesn't accumulate stale parent rows and inflate
+            # result['invocations'] beyond the test's expectation.
+            conn.execute(
+                text(
+                    "DELETE FROM prov_schema.kya_invocations WHERE tenant_id::text LIKE '00000000%pg%'"
+                )
+            )
         except Exception:
             pass
     eng.dispose()
@@ -214,5 +225,6 @@ def test_pack_evidence_section_postgres():
     result = _run_pack_against(url, "pg")
     assert result["dialect"] == "pg"
     assert result["invocations"] == 2
-    assert result["evidence_rows"] == 4
+    # 4 caller rows + 2 auto-genesis anchors (one per invocation).
+    assert result["evidence_rows"] == 6
     assert result["all_chains_valid"] is True

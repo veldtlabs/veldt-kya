@@ -268,7 +268,7 @@ def test_live_evidence_chain_verifies_after_multiple_events():
         result = verify_chain(session, tenant_id="t1", invocation_id=42)
         assert result["valid"] is True, result
         assert result["broken_at"] is None, result
-        assert result["checked"] == 2, result
+        assert result["checked"] == 3, result  # 2 events + 1 auto-genesis anchor
     finally:
         session.close()
 
