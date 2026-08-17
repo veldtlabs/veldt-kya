@@ -417,11 +417,7 @@ def _reconcile_evidence_row_count_column(conn) -> None:
             conn.execute(text(
                 f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER NULL"
             ))
-        elif dialect == "sqlite":
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
-            ))
-        elif dialect == "duckdb":
+        elif dialect in ("sqlite", "duckdb"):
             conn.execute(text(
                 f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
             ))
@@ -517,11 +513,7 @@ def _reconcile_evidence_row_count_signature_column(conn) -> None:
             conn.execute(text(
                 f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT NULL"
             ))
-        elif dialect == "sqlite":
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
-            ))
-        elif dialect == "duckdb":
+        elif dialect in ("sqlite", "duckdb"):
             conn.execute(text(
                 f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
             ))
