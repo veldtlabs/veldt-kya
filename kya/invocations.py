@@ -199,6 +199,18 @@ if _HAS_SQLALCHEMY:
         # invocation row still verify with the pre-anchor semantics.
         evidence_row_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
+        # Counter-forgery guard: HMAC signature over the current
+        # (tenant_id, invocation_id, evidence_row_count) tuple, computed
+        # with the evidence signing key. record_evidence updates this
+        # in the same SAVEPOINT that bumps evidence_row_count, so an
+        # attacker with UPDATE on kya_invocations who deletes evidence
+        # rows AND rewrites evidence_row_count to match cannot also
+        # forge a matching signature without the signing key. Nullable
+        # so pre-signature deployments (evidence_row_count set but
+        # signature absent) fall through to the row-count-only anchor
+        # semantics as a migration bridge.
+        evidence_row_count_signature: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+
         __table_args__ = (
             Index(
                 "idx_kya_inv_tenant_agent_occurred",
@@ -238,6 +250,7 @@ def ensure_invocations_table(db) -> None:
     _Base.metadata.create_all(bind=conn, tables=[Invocation.__table__])
     _migrate_agent_key_width(conn)
     _reconcile_evidence_row_count_column(conn)
+    _reconcile_evidence_row_count_signature_column(conn)
 
 
 # Tables + columns whose `agent_key`-shaped field was originally
@@ -438,6 +451,159 @@ def _reconcile_evidence_row_count_column(conn) -> None:
             "chain-wipe / tail-truncation detection degraded to legacy "
             "hash-walk only: %s",
             table, column, exc,
+        )
+
+
+def _reconcile_evidence_row_count_signature_column(conn) -> None:
+    """Idempotently add the ``evidence_row_count_signature`` column to
+    ``kya_invocations`` on pre-existing databases.
+
+    The column carries an HMAC signature over the row-count anchor so
+    an attacker who both deletes evidence rows AND rewrites
+    ``evidence_row_count`` to match still cannot forge a signature
+    without the signing key. On a fresh install, ``create_all`` creates
+    it. On an upgraded install whose ``kya_invocations`` was created
+    before this column existed, ``create_all`` is a no-op for columns —
+    we probe the live schema and ALTER when missing. Nullable + no
+    default so the ALTER is safe on any dialect and pre-signature rows
+    fall through to the row-count-only anchor semantics.
+    """
+    import logging as _logging
+
+    from sqlalchemy import inspect as _inspect
+    log = _logging.getLogger(__name__)
+    try:
+        dialect = conn.engine.dialect.name
+        insp = _inspect(conn)
+    except Exception as exc:
+        log.warning(
+            "[KYA-INV] evidence_row_count_signature introspection failed: %s",
+            exc,
+        )
+        return
+
+    schema = _PG_SCHEMA if dialect == "postgresql" else None
+    qualified_prefix = f"{schema}." if schema else ""
+    table = "kya_invocations"
+    column = "evidence_row_count_signature"
+
+    try:
+        if not insp.has_table(table, schema=schema):
+            return
+        cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
+        if column in cols:
+            # CRITICAL: return early. Backfill MUST run only on the
+            # fresh-ALTER path — running it on every ensure_*_tables
+            # call would silently re-heal an attacker's nulled
+            # signature on the next read (verify_chain calls
+            # init_evidence_table which calls this reconciler if wired
+            # through init_storage). Post-migration all writes populate
+            # sig fresh, so any legitimate null-sig row means either
+            # (a) the row is pre-migration and needs backfill (this
+            # path caught at fresh-ALTER above), or (b) it was nulled
+            # by an attacker (must fail-closed at verify time).
+            return
+        qualified = f"{qualified_prefix}{table}"
+        # Every supported dialect accepts an additive nullable TEXT
+        # column with ``ADD COLUMN`` — no type coercion, no default,
+        # no lock-heavy rewrite. The MySQL grammar wants no NULL clause
+        # (nullable is the default). SQLite/DuckDB treat TEXT as an
+        # unbounded string type; MySQL/Postgres accept TEXT directly.
+        if dialect == "postgresql":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
+            ))
+        elif dialect == "mysql":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT NULL"
+            ))
+        elif dialect == "sqlite":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
+            ))
+        elif dialect == "duckdb":
+            conn.execute(text(
+                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
+            ))
+        else:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
+                ))
+            except Exception as exc:
+                log.warning(
+                    "[KYA-INV] could not add %s.%s on dialect=%s: %s",
+                    table, column, dialect, exc,
+                )
+                return
+        log.info(
+            "[KYA-INV] added %s.%s counter-signature column on dialect=%s",
+            table, column, dialect,
+        )
+        # Backfill runs exactly once, immediately after the ALTER.
+        # After this point, the column exists, so subsequent calls
+        # return early above.
+        _backfill_evidence_row_count_signature(conn, qualified)
+    except Exception as exc:
+        # Fail-loud: if the ALTER can't be issued the counter-forgery
+        # guard is inactive. verify_chain fails-closed on missing
+        # signatures under Option A semantics, so a degraded reconciler
+        # surfaces immediately at the first verify. Log at ERROR so
+        # operators can diagnose from logs before customers see verify
+        # failures.
+        log.error(
+            "[KYA-INV] evidence_row_count_signature reconcile FAILED for "
+            "%s.%s — verify_chain will fail-closed on missing signatures: %s",
+            table, column, exc,
+        )
+
+
+def _backfill_evidence_row_count_signature(conn, qualified_table: str) -> None:
+    """Backfill counter signatures for pre-existing 0.5.2 rows.
+
+    After adding the ``evidence_row_count_signature`` column, walk every
+    ``kya_invocations`` row where the count is populated but the
+    signature is NULL and compute a signature for it. Post-backfill,
+    a NULL signature on any row with a non-NULL count is unambiguous
+    evidence of tampering (attacker nulled the column) rather than a
+    legacy row awaiting migration.
+
+    Lazily imports ``_get_signing_key`` + ``_counter_signature`` to
+    avoid a circular import on module load.
+    """
+    import logging as _logging
+
+    from kya.evidence import _counter_signature, _get_signing_key
+    log = _logging.getLogger(__name__)
+    try:
+        key, _ = _get_signing_key()
+        rows = conn.execute(text(
+            f"SELECT tenant_id, id, evidence_row_count "
+            f"FROM {qualified_table} "
+            f"WHERE evidence_row_count IS NOT NULL "
+            f"  AND evidence_row_count_signature IS NULL"
+        )).fetchall()
+        backfilled = 0
+        for tenant_id, invocation_id, count in rows:
+            sig = _counter_signature(
+                key, str(tenant_id), int(invocation_id), int(count),
+            )
+            conn.execute(text(
+                f"UPDATE {qualified_table} "
+                f"SET evidence_row_count_signature = :s "
+                f"WHERE tenant_id = :t AND id = :i"
+            ), {"s": sig, "t": tenant_id, "i": invocation_id})
+            backfilled += 1
+        if backfilled:
+            log.info(
+                "[KYA-INV] backfilled counter signatures on %d "
+                "pre-existing rows",
+                backfilled,
+            )
+    except Exception as exc:
+        log.error(
+            "[KYA-INV] counter-signature backfill FAILED — verify_chain "
+            "will fail-closed on unbackfilled rows: %s", exc,
         )
 
 

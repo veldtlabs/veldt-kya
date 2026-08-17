@@ -334,6 +334,69 @@ def _hmac_sign(key: bytes, prev_hash: str, payload_hash: str) -> str:
     return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
+def _counter_signature(
+    key: bytes, tenant_id: str, invocation_id: int, count: int,
+) -> str:
+    """HMAC signature over the (tenant, invocation, count) tuple.
+
+    The signature binds the row-count anchor to the signing key so an
+    attacker with UPDATE on ``kya_invocations`` who deletes evidence
+    rows AND rewrites ``evidence_row_count`` to match still cannot
+    forge a signature without the key. Uses the same
+    ``_canonicalize`` + ``_hmac_sign`` primitives that the per-row
+    HMAC chain uses so the crypto surface stays uniform.
+    """
+    payload = {
+        "tenant_id": tenant_id,
+        "invocation_id": int(invocation_id),
+        "evidence_row_count": int(count),
+    }
+    canonical_hash = hashlib.sha256(_canonicalize(payload)).hexdigest()
+    return _hmac_sign(key, "", canonical_hash)
+
+
+def _bump_counter_and_resign(
+    db, tenant_id: str, invocation_id: int, key: bytes,
+) -> None:
+    """Increment ``evidence_row_count`` and refresh the counter signature.
+
+    Must be called from within a SAVEPOINT — a legacy schema missing
+    ``evidence_row_count_signature`` will raise on the UPDATE, and the
+    caller relies on SAVEPOINT rollback to preserve fail-soft
+    semantics for the row insert.
+
+    Two statements inside the same SAVEPOINT — portable across every
+    supported dialect (postgres RETURNING would work on PG only,
+    forcing per-dialect branches for no correctness gain):
+    1. INCREMENT the counter.
+    2. SELECT the new counter value and UPDATE the signature.
+    Genesis and caller rows share this path, so signing key
+    resolution stays consistent for both.
+    """
+    db.execute(text(
+        "UPDATE kya_invocations "
+        "SET evidence_row_count = COALESCE(evidence_row_count, 0) + 1 "
+        "WHERE tenant_id = :t AND id = :i"
+    ), {"t": tenant_id, "i": invocation_id})
+    new_count = db.execute(text(
+        "SELECT evidence_row_count FROM kya_invocations "
+        "WHERE tenant_id = :t AND id = :i"
+    ), {"t": tenant_id, "i": invocation_id}).scalar()
+    if new_count is None:
+        # No matching parent invocation row (evidence-only ingest
+        # paths, or legacy schema without evidence_row_count). Nothing
+        # to sign; the row-count-only anchor semantics catch these.
+        return
+    signature = _counter_signature(
+        key, tenant_id, int(invocation_id), int(new_count),
+    )
+    db.execute(text(
+        "UPDATE kya_invocations "
+        "SET evidence_row_count_signature = :s "
+        "WHERE tenant_id = :t AND id = :i"
+    ), {"s": signature, "t": tenant_id, "i": invocation_id})
+
+
 # ── ORM model ───────────────────────────────────────────────────────
 
 
@@ -729,13 +792,16 @@ def record_evidence(
         # counter bump, not the row insert. Missing parent invocation
         # row is expected in some ingest paths — degrades to legacy
         # verify semantics via the NULL counter path.
+        #
+        # Also refreshes the counter-forgery signature over the new
+        # counter value in the SAME SAVEPOINT so an attacker cannot
+        # observe an intermediate rows-without-signature (or
+        # counter-without-matching-signature) state.
         try:
             with db.begin_nested():
-                db.execute(text(
-                    "UPDATE kya_invocations "
-                    "SET evidence_row_count = COALESCE(evidence_row_count, 0) + 1 "
-                    "WHERE tenant_id = :t AND id = :i"
-                ), {"t": tenant_id, "i": invocation_id})
+                _bump_counter_and_resign(
+                    db, tenant_id, invocation_id, key,
+                )
         except Exception as exc:
             logger.debug("[KYA-EVIDENCE] genesis counter bump skipped: %s", exc)
         # Single commit publishes the genesis row AND the counter bump
@@ -794,15 +860,14 @@ def record_evidence(
         # Counter bump lives inside a SAVEPOINT so it can fail-soft
         # (missing table, legacy schema, missing parent row) without
         # rolling back the row insert. The single outer commit
-        # publishes row + counter atomically — a concurrent verify_chain
-        # reader never sees a rows-without-counter false-positive.
+        # publishes row + counter + signature atomically — a concurrent
+        # verify_chain reader never sees a rows-without-counter (or
+        # counter-without-matching-signature) false-positive.
         try:
             with db.begin_nested():
-                db.execute(text(
-                    "UPDATE kya_invocations "
-                    "SET evidence_row_count = COALESCE(evidence_row_count, 0) + 1 "
-                    "WHERE tenant_id = :t AND id = :i"
-                ), {"t": tenant_id, "i": invocation_id})
+                _bump_counter_and_resign(
+                    db, tenant_id, invocation_id, key,
+                )
         except Exception as exc:
             logger.debug("[KYA-EVIDENCE] counter bump skipped: %s", exc)
         db.commit()
@@ -955,7 +1020,7 @@ def get_evidence(db, tenant_id: str, evidence_id: int) -> dict | None:
 def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
     """Walk the (tenant, invocation) chain and recompute every signed_hash.
 
-    Two independent tamper anchors guard the chain:
+    Three independent tamper anchors guard the chain:
 
     1. **Row-count anchor** — ``kya_invocations.evidence_row_count`` is
        incremented on every successful ``record_evidence`` call.
@@ -963,16 +1028,26 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
        actually present. A mismatch means rows were deleted from the
        tail (or the entire chain wiped) even though the surviving rows
        still HMAC-verify against each other.
-    2. **Genesis anchor** — ``record_evidence`` auto-inserts a
+    2. **Counter-signature anchor** —
+       ``kya_invocations.evidence_row_count_signature`` is an HMAC over
+       the current row-count value. Blocks counter forgery: an
+       attacker with UPDATE on ``kya_invocations`` who deletes evidence
+       rows AND rewrites ``evidence_row_count`` to match cannot also
+       forge a signature without the signing key. Checked BEFORE the
+       row-count comparison so counter forgery gets the specific reason
+       string.
+    3. **Genesis anchor** — ``record_evidence`` auto-inserts a
        ``chain_genesis`` row on first write. verify_chain requires it
        to still be at position 0. An attacker who deletes rows starting
        from the head (including the genesis) leaves a chain whose
        first surviving row is no longer ``chain_genesis``.
 
-    Legacy chains (rows written before either anchor existed) leave
-    ``evidence_row_count`` NULL and have no genesis row. verify_chain
-    detects this and falls back to the original HMAC-only semantics so
-    upgraded deployments don't spuriously flag pre-existing chains.
+    Legacy chains (rows written before any anchor existed) leave
+    ``evidence_row_count`` NULL and have no genesis row. Pre-signature
+    chains (counter set but signature NULL) also fall back to the
+    row-count-only semantics as a migration bridge — retroactively
+    signing them would require the signing key to have been consistent
+    between the original counter bump and now, which is not guaranteed.
 
     Returns:
         {
@@ -982,30 +1057,105 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
             "reason": str | None,     # human-readable explanation
             "expected_count": int | None,  # value from evidence_row_count
                                            # (None for legacy chains)
+            "expected_count_signature_verified": bool | None,
+                # True iff a signature was present AND verified.
+                # False iff a signature was expected but missing (NULL
+                # column = tampering post-migration) OR present and
+                # invalid (counter was rewritten). None only when the
+                # row has no count anchor at all (evidence-only ingest
+                # path or fresh row that never went through the bump).
         }
     """
     _require_sqlalchemy()
     init_evidence_table(db)
 
-    # Load the row-count anchor. Missing invocation row OR NULL column
-    # both resolve to ``expected_count = None`` (legacy chain — fall
-    # back to hash-walk-only semantics).
+    # Load the row-count anchor + its signature. Missing invocation
+    # row OR NULL columns both resolve to ``expected_count = None`` /
+    # ``expected_count_signature = None`` (legacy or pre-signature
+    # chain — fall back to hash-walk-only or row-count-only semantics
+    # respectively).
     expected_count: int | None = None
+    expected_count_signature: str | None = None
     try:
-        anchor = db.execute(
+        anchor_row = db.execute(
             text(
-                "SELECT evidence_row_count FROM kya_invocations "
+                "SELECT evidence_row_count, evidence_row_count_signature "
+                "FROM kya_invocations "
                 "WHERE tenant_id = :t AND id = :i"
             ),
             {"t": tenant_id, "i": invocation_id},
-        ).scalar()
-        if anchor is not None:
-            expected_count = int(anchor)
+        ).first()
+        if anchor_row is not None:
+            if anchor_row[0] is not None:
+                expected_count = int(anchor_row[0])
+            if anchor_row[1] is not None:
+                expected_count_signature = str(anchor_row[1])
     except Exception as exc:
         # Column missing on a very old schema, or invocations table
         # absent (evidence-only fixtures). Silent fall-through to
-        # legacy semantics.
-        logger.debug("[KYA-EVIDENCE] row-count anchor unavailable: %s", exc)
+        # legacy semantics. Retry with the older single-column SELECT
+        # so upgraded-mid-flight databases (row_count column added,
+        # signature column not yet ALTERed) still surface the row-count
+        # anchor rather than falling all the way back to hash-walk.
+        logger.debug(
+            "[KYA-EVIDENCE] full anchor SELECT unavailable, retrying "
+            "row-count-only: %s", exc,
+        )
+        try:
+            anchor = db.execute(
+                text(
+                    "SELECT evidence_row_count FROM kya_invocations "
+                    "WHERE tenant_id = :t AND id = :i"
+                ),
+                {"t": tenant_id, "i": invocation_id},
+            ).scalar()
+            if anchor is not None:
+                expected_count = int(anchor)
+        except Exception as exc2:
+            logger.debug(
+                "[KYA-EVIDENCE] row-count anchor unavailable: %s", exc2,
+            )
+
+    # Counter-signature verification MUST run BEFORE the row-count
+    # comparison so counter-forgery attempts get attributed with the
+    # specific reason string rather than the generic count-mismatch
+    # message. Fail-closed on NULL signature when a count is present —
+    # the reconciler backfills all pre-existing 0.5.2 rows at boot, so
+    # post-migration any NULL signature on a row with a non-NULL count
+    # is unambiguous tampering (attacker nulled the column). Rows with
+    # a NULL count (never anchored, or evidence-only ingest paths)
+    # continue to fall through to the pre-anchor hash-walk semantics.
+    expected_count_signature_verified: bool | None = None
+    if expected_count is not None:
+        if expected_count_signature is None:
+            return {
+                "valid": False,
+                "broken_at": None,
+                "checked": 0,
+                "reason": (
+                    "evidence_row_count signature missing — counter "
+                    "column was nulled or backfill incomplete"
+                ),
+                "expected_count": expected_count,
+                "expected_count_signature_verified": False,
+            }
+        _key_for_sig, _ = _get_signing_key()
+        recomputed = _counter_signature(
+            _key_for_sig, tenant_id, invocation_id, expected_count,
+        )
+        if not hmac.compare_digest(recomputed, expected_count_signature):
+            return {
+                "valid": False,
+                "broken_at": None,
+                "checked": 0,
+                "reason": (
+                    "evidence_row_count signature invalid — "
+                    "counter was rewritten"
+                ),
+                "expected_count": expected_count,
+                "expected_count_signature_verified": False,
+            }
+        expected_count_signature_verified = True
 
     stmt = (
         select(_EvidenceRow)
@@ -1026,6 +1176,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 "checked": 0,
                 "reason": "empty chain",
                 "expected_count": expected_count,
+                "expected_count_signature_verified": (
+                    expected_count_signature_verified
+                ),
             }
         return {
             "valid": False,
@@ -1036,6 +1189,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 f"found 0 — full chain wipe detected"
             ),
             "expected_count": expected_count,
+            "expected_count_signature_verified": (
+                expected_count_signature_verified
+            ),
         }
 
     # Row-count check — only meaningful for post-anchor chains.
@@ -1049,6 +1205,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 f"found {len(rows)} — evidence rows deleted"
             ),
             "expected_count": expected_count,
+            "expected_count_signature_verified": (
+                expected_count_signature_verified
+            ),
         }
 
     # Genesis check — only meaningful for post-anchor chains
@@ -1063,6 +1222,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
             "checked": 0,
             "reason": "chain missing genesis anchor — head row was deleted",
             "expected_count": expected_count,
+            "expected_count_signature_verified": (
+                expected_count_signature_verified
+            ),
         }
 
     key, _ = _get_signing_key()
@@ -1078,6 +1240,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 "checked": int(row.id),
                 "reason": "payload_hash mismatch — payload was modified",
                 "expected_count": expected_count,
+                "expected_count_signature_verified": (
+                    expected_count_signature_verified
+                ),
             }
 
         # Verify chain link
@@ -1088,6 +1253,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 "checked": int(row.id),
                 "reason": "prev_hash break — earlier row was inserted, deleted, or modified",
                 "expected_count": expected_count,
+                "expected_count_signature_verified": (
+                    expected_count_signature_verified
+                ),
             }
 
         recomputed_signed = _hmac_sign(key, expected_prev, row.payload_hash)
@@ -1098,6 +1266,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
                 "checked": int(row.id),
                 "reason": "signed_hash mismatch — row was forged or signing key changed",
                 "expected_count": expected_count,
+                "expected_count_signature_verified": (
+                    expected_count_signature_verified
+                ),
             }
 
         expected_prev = row.signed_hash
@@ -1108,6 +1279,9 @@ def verify_chain(db, tenant_id: str, invocation_id: int) -> dict:
         "checked": len(rows),
         "reason": None,
         "expected_count": expected_count,
+        "expected_count_signature_verified": (
+            expected_count_signature_verified
+        ),
     }
 
 
