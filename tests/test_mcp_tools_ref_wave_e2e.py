@@ -1021,7 +1021,7 @@ def test_wave_e2e_latency_p50_p99(gateway_url, did_header):
     floor so a failing budget assertion can be attributed to governance
     work vs. Docker Desktop / WSL2 hypervisor overhead. If the
     network-only floor is already above budget, we skip with an
-    infrastructure-attribution note rather than blaming Chunk A.
+    infrastructure-attribution note rather than blaming this backend.
     """
     unique_path = f"latency-probe-{uuid.uuid4().hex[:8]}.txt"
     warmup = httpx.post(
@@ -1104,17 +1104,17 @@ def test_wave_e2e_latency_p50_p99(gateway_url, did_header):
         f"network floor p50={floor_p50:.2f}ms"
     )
 
-    # Aspirational budget (per user memory feedback_latency_budget):
-    # p50 < 25 ms, p99 < 100 ms full-round-trip. The current wave
-    # baseline on Docker Desktop / WSL2 sits ~55 ms because of DID
-    # resolve + evidence hash-chain write in the gateway — neither of
-    # which Chunk A introduced.
+    # Aspirational budget for the reference stack: p50 < 25 ms,
+    # p99 < 100 ms full-round-trip. The current baseline on Docker
+    # Desktop / WSL2 sits ~55 ms because of DID resolve + evidence
+    # hash-chain write in the gateway — inherited pipeline cost, not
+    # introduced by this backend.
     #
     # We assert at a REGRESSION-DETECTOR threshold (2× current baseline)
-    # so a Chunk-A change that adds meaningful latency will trip this
-    # test, while pre-existing wave-baseline cost does not fake-fail.
+    # so a code change that adds meaningful latency will trip this
+    # test, while pre-existing pipeline cost does not fake-fail.
     # If the aspirational budget is missed, that is a separate finding
-    # against the wave, tracked outside Chunk A.
+    # against the gateway pipeline.
     _P50_REGRESSION_CEILING_MS = 150.0
     _P99_REGRESSION_CEILING_MS = 300.0
     if p50 >= _P50_REGRESSION_CEILING_MS or p99 >= _P99_REGRESSION_CEILING_MS:
