@@ -122,6 +122,9 @@ bench_results/
 /OPPORTUNITIES_*
 /FUNDING_*
 TASK_*_HANDOFF.md
+# On case-insensitive filesystems (Windows/macOS) /KYA_* also matches
+# the lowercase reference-backend package. Explicit allow-list it back.
+!/kya_mcp_tools_ref/
 /private/
 /internal/
 /_private/
