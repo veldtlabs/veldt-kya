@@ -8,10 +8,14 @@ Endpoints
                                  - tools/call      (invoke a tool)
                                Any other method → -32601 (Method not found).
     GET  /healthz              Liveness probe (always 200).
-    POST /_test/reset_counters Test-only. Route registered ONLY when
-                               ``KYA_MCP_TEST_MODE=1`` at boot; a
-                               defence-in-depth 404 also guards the
-                               handler if it somehow ran without the env.
+    GET  /_test/counters       Test-only. Returns current per-tool
+                               invocation counters WITHOUT mutating them.
+    POST /_test/reset_counters Test-only. Returns the pre-reset counters
+                               snapshot and then zeroes them.
+
+    Both ``/_test/*`` routes are registered ONLY when
+    ``KYA_MCP_TEST_MODE=1`` at boot; a defence-in-depth 404 also guards
+    the handlers if they somehow ran without the env.
 
 Trust boundary
 --------------
@@ -151,11 +155,29 @@ async def _handle_mcp(request: web.Request) -> web.Response:
             )
         # The KYA gateway forwards req.raw unchanged, so a call routed as
         # ``mcp.<backend>.<tool>`` arrives here with the ``<backend>.`` prefix
-        # still attached to params.name. Strip an optional leading
-        # ``<anything>.`` segment so this backend is gateway-name-agnostic —
+        # still attached to params.name. Accept exactly one optional
+        # ``<backend>.`` prefix so this backend is gateway-name-agnostic —
         # customers can wire it as any backend name in their gateway.yaml
         # without needing to re-register tools.
-        bare_tool_name = tool_name.rsplit(".", 1)[-1]
+        #
+        # Reject any name with more than one dot. A prefix-repeat like
+        # ``reference.reference.governed_bash`` would otherwise resolve to
+        # the bare ``governed_bash`` here while producing a DIFFERENT
+        # action string at the gateway RBAC layer (``mcp.reference.
+        # reference.governed_bash``) — that mismatch is a policy bypass.
+        # Fail-closed at the backend as belt-and-suspenders alongside the
+        # gateway-side check in ``parse_backend_from_tool``.
+        parts = tool_name.split(".")
+        if len(parts) > 2:
+            return web.json_response(
+                _jrpc_error(
+                    id_,
+                    _JRPC_INVALID_PARAMS,
+                    "malformed tool name: expected '<backend>.<tool>' or '<tool>'",
+                ),
+                status=400,
+            )
+        bare_tool_name = parts[-1]
         spec = tools_mod.TOOLS.get(bare_tool_name)
         if spec is None:
             # Tool not registered — either the name is unknown OR the
@@ -190,16 +212,31 @@ async def _handle_healthz(request: web.Request) -> web.Response:  # noqa: ARG001
     return web.json_response({"status": "ok"})
 
 
-async def _handle_reset_counters(request: web.Request) -> web.Response:
-    """POST /_test/reset_counters — test-only counter reset.
+async def _handle_get_counters(request: web.Request) -> web.Response:  # noqa: ARG001
+    """GET /_test/counters — test-only counter read (no mutation).
 
     Only registered when ``KYA_MCP_TEST_MODE=1`` at boot. Defence-in-depth:
     if the handler runs but the env is missing, return 404.
     """
     if os.environ.get("KYA_MCP_TEST_MODE") != "1":
         return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"counters": tools_mod.get_invocation_counters()})
+
+
+async def _handle_reset_counters(request: web.Request) -> web.Response:  # noqa: ARG001
+    """POST /_test/reset_counters — test-only counter reset.
+
+    Returns the pre-reset snapshot so a caller can observe what fired in
+    a previous phase and then start the next phase from zero atomically.
+
+    Only registered when ``KYA_MCP_TEST_MODE=1`` at boot. Defence-in-depth:
+    if the handler runs but the env is missing, return 404.
+    """
+    if os.environ.get("KYA_MCP_TEST_MODE") != "1":
+        return web.json_response({"error": "not found"}, status=404)
+    pre = tools_mod.get_invocation_counters()
     tools_mod.reset_invocation_counters()
-    return web.json_response({"reset": True, "counters": tools_mod.get_invocation_counters()})
+    return web.json_response({"reset": True, "pre_reset_counters": pre})
 
 
 def build_app(cfg: RefConfig | None = None) -> web.Application:
@@ -232,10 +269,13 @@ def build_app(cfg: RefConfig | None = None) -> web.Application:
     app = web.Application(client_max_size=_MAX_BODY_BYTES)
     app.router.add_post("/mcp", _handle_mcp)
     app.router.add_get("/healthz", _handle_healthz)
-    if cfg.test_mode:
+    if cfg.test_mode and os.environ.get("KYA_MCP_TEST_MODE") == "1":
         # Registered only in test mode. Production images MUST NOT set
-        # KYA_MCP_TEST_MODE=1. The handler carries a second 404 check as
-        # defence in depth.
+        # KYA_MCP_TEST_MODE=1. Each handler also carries a second 404
+        # check as defence in depth. The env-var re-check at register
+        # time protects against a stale/spoofed ``cfg`` object that
+        # claims test_mode=True while the process env says otherwise.
+        app.router.add_get("/_test/counters", _handle_get_counters)
         app.router.add_post("/_test/reset_counters", _handle_reset_counters)
     return app
 
