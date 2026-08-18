@@ -1125,6 +1125,226 @@ def build_app(gw: Gateway) -> FastAPI:
             mode=mode,
         )
 
+    @app.post("/v1/policy/decide")
+    async def decide_endpoint(request: Request) -> JSONResponse:
+        """Run the SAME policy pipeline as ``/mcp`` and return the verdict
+        WITHOUT forwarding to a backend.
+
+        Purpose: let hook-based clients (e.g., a shell PreToolUse hook) get
+        a policy decision before invoking the tool. No backend call is
+        made; evidence is still written since this IS a governance event.
+
+        Response is ALWAYS HTTP 200 (except transport failures) so the
+        hook consumer has a stable envelope:
+            {"verdict": "...", "reason_codes": [...],
+             "pending_id": "..." | null,
+             "policy_hash": "..."}
+        """
+        # Body cap identical to /mcp — never allocate a huge body.
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > _MAX_HTTP_BODY_BYTES:
+                    return JSONResponse(
+                        {"error": "request body too large"},
+                        status_code=413,
+                    )
+            except ValueError:
+                return JSONResponse(
+                    {"error": "invalid Content-Length"},
+                    status_code=400,
+                )
+        body_chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > _MAX_HTTP_BODY_BYTES:
+                return JSONResponse(
+                    {"error": "request body too large"},
+                    status_code=413,
+                )
+            body_chunks.append(chunk)
+        body = b"".join(body_chunks)
+
+        # Parse JSON body.
+        try:
+            payload = json.loads(body) if body else {}
+        except (json.JSONDecodeError, ValueError) as exc:
+            return JSONResponse(
+                {"error": f"invalid JSON: {exc}"},
+                status_code=400,
+            )
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"error": "body must be a JSON object"},
+                status_code=400,
+            )
+        tool_name = payload.get("tool_name")
+        tool_input = payload.get("tool_input", {}) or {}
+        if tool_name is None:
+            return JSONResponse(
+                {"error": "missing required field: tool_name"},
+                status_code=400,
+            )
+        # Reuse the shared parser so nested-dot + non-string rejection
+        # matches the /mcp path exactly (fail-closed).
+        try:
+            backend_name, bare_tool = parse_backend_from_tool(tool_name)
+        except MalformedToolName as exc:
+            return JSONResponse(
+                {
+                    "error": f"malformed tool_name: {exc}",
+                    "reason_codes": ["MALFORMED_TOOL_NAME"],
+                },
+                status_code=400,
+            )
+
+        # Bind identity. No X-KYA-DID (or invalid DID) → 401. Unlike /mcp
+        # (which supports audit_only / advise soft-fail modes), the decide
+        # endpoint's contract requires an authenticated caller so the
+        # verdict corresponds to a real principal.
+        raw_headers = dict(request.headers)
+        try:
+            principal = gw.identity.resolve(raw_headers)
+        except IdentityBindingFailed as exc:
+            _emit_identity_failure_event(gw=gw, exc=exc, headers=raw_headers)
+            return JSONResponse(
+                {
+                    "error": str(exc),
+                    "reason_codes": [_identity_failure_code(exc)],
+                },
+                status_code=401,
+            )
+
+        # Build the same action string /mcp would build. For a bare tool
+        # name we still get mcp.default.<tool>, matching /mcp.
+        action = action_from_tool_call(backend_name, bare_tool)
+
+        # Synthesise a JSON-RPC-shaped params dict so downstream evidence
+        # (which reads params.arguments) has a stable shape identical to
+        # a /mcp tools/call. Nothing is forwarded to a backend.
+        pseudo_request_payload = {
+            "params": {"name": tool_name, "arguments": tool_input},
+        }
+
+        try:
+            invocation_id = _record_invocation_pre_policy(
+                gw=gw, principal=principal, action=action,
+            )
+            verdict = _run_policy(
+                gw=gw,
+                principal=principal,
+                action=action,
+                payload_bytes=len(body),
+                invocation_id=invocation_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Fail-closed per gateway convention (see server.py:1524 +
+            # 1064 "treating as deny (fail-closed)"). Dual-signal: HTTP
+            # 500 status + a deny body so a hook consumer that only
+            # checks HTTP status still refuses. Never leak the traceback.
+            logger.exception(
+                "[KYA-GATEWAY] /v1/policy/decide pipeline crash: %s", exc,
+            )
+            return JSONResponse(
+                {
+                    "verdict": "deny",
+                    "reason_codes": ["POLICY_ENGINE_ERROR"],
+                    "signal_kind": "policy_engine_error",
+                    "pending_id": None,
+                    "evidence_id": None,
+                    "evaluator_name": None,
+                    "policy_hash": None,
+                },
+                status_code=500,
+            )
+
+        # flag_for_review → persist a pending row so the hook client (or a
+        # separate approver) has a poll target, identical to /mcp enforce.
+        pending_id: str | None = None
+        try:
+            from kya_gateway.policy_pipeline import (
+                _CANONICAL_HUMAN_APPROVAL_VERDICT,
+                _LEGACY_VERDICT_ALIASES,
+            )
+            _human_approval_verdicts: frozenset[str] = (
+                frozenset({_CANONICAL_HUMAN_APPROVAL_VERDICT})
+                | frozenset(_LEGACY_VERDICT_ALIASES.keys())
+            )
+            if verdict.verdict in _human_approval_verdicts:
+                pending_id = _create_pending_row(
+                    gw=gw,
+                    principal=principal,
+                    action=action,
+                    body=body,
+                    invocation_id=invocation_id,
+                    request_headers=raw_headers,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[KYA-GATEWAY] decide flag_for_review pending write failed: %s",
+                exc,
+            )
+
+        # Evidence — always written, this IS a governance event. Same row
+        # shape as /mcp so downstream consumers don't branch on origin.
+        # Best-effort per existing /mcp behaviour: a failure to write
+        # evidence leaves ``evidence_id`` as null but does NOT fail the
+        # decide response.
+        evidence_id: str | None = None
+        try:
+            _evidence_int = _record_verdict_evidence(
+                gw=gw,
+                principal=principal,
+                action=action,
+                verdict=verdict,
+                request_payload=pseudo_request_payload,
+                invocation_id=invocation_id,
+            )
+            if _evidence_int is not None:
+                evidence_id = str(_evidence_int)
+        except Exception as exc:  # noqa: BLE001 — never fail the decide on evidence
+            logger.warning(
+                "[KYA-GATEWAY] decide evidence write failed: %s", exc,
+            )
+
+        # Normalise verdict string to the canonical form (matches /mcp).
+        display_verdict = verdict.verdict
+        try:
+            from kya_gateway.policy_pipeline import (
+                _CANONICAL_HUMAN_APPROVAL_VERDICT,
+                _LEGACY_VERDICT_ALIASES,
+            )
+            if display_verdict in _LEGACY_VERDICT_ALIASES:
+                display_verdict = _CANONICAL_HUMAN_APPROVAL_VERDICT
+        except Exception:
+            pass
+
+        # Pull policy_hash + evaluator_name off the ``rich`` breadcrumb
+        # the pipeline populates (single source of truth — same field
+        # ``_record_verdict_evidence`` reads for evaluator attribution).
+        policy_hash: str | None = None
+        evaluator_name: str | None = None
+        try:
+            _rich = getattr(verdict, "rich", None) or {}
+            policy_hash = _rich.get("policy_hash") or None
+            evaluator_name = _rich.get("evaluator_name") or None
+        except Exception:
+            pass
+
+        # signal_kind is a first-class field on Verdict (see
+        # policy_pipeline.py:138) — surface it verbatim so hook consumers
+        # can branch on the canonical KYA signal vocabulary.
+        return JSONResponse({
+            "verdict": display_verdict,
+            "reason_codes": list(verdict.reason_codes or []),
+            "signal_kind": getattr(verdict, "signal_kind", None),
+            "pending_id": pending_id,
+            "evidence_id": evidence_id,
+            "evaluator_name": evaluator_name,
+            "policy_hash": policy_hash,
+        })
+
     return app
 
 
@@ -1501,7 +1721,7 @@ def _record_verdict_evidence(
     verdict,
     request_payload: dict,
     invocation_id: int | None,
-) -> None:
+) -> int | None:
     """Record the verdict on the KYA evidence chain.
 
     Always records — allow + deny + require_human. The customer platform
@@ -1510,6 +1730,10 @@ def _record_verdict_evidence(
 
     Fail-soft: a failure to record evidence is logged but doesn't fail
     the HTTP request. The gateway's promise is "we tried to record."
+
+    Returns the evidence row id on success, ``None`` on failure — callers
+    that surface an ``evidence_id`` to clients can use this without
+    branching on internal state.
     """
     try:
         from kya import (
@@ -1537,7 +1761,7 @@ def _record_verdict_evidence(
             except Exception:
                 # Never fail evidence write on attribution lookup.
                 pass
-            record_evidence(
+            evidence_row_id = record_evidence(
                 db,
                 tenant_id=gw.cfg.gateway.tenant_id,
                 invocation_id=invocation_id,
@@ -1561,5 +1785,8 @@ def _record_verdict_evidence(
                 attributes={"action": action, "reason_codes": verdict.reason_codes},
             )
             db.commit()
+            return evidence_row_id
     except Exception as exc:
         logger.warning("[KYA-GATEWAY] evidence recording failed: %s", exc)
+        return None
+    return None
