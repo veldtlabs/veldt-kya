@@ -23,8 +23,8 @@ psycopg2 or the DB is unreachable rather than failing the whole module.
 
 The demo RBAC rule that drives ``flag_for_review`` on
 ``mcp.reference.governed_http_fetch`` for the agent principal kind is
-defined in ``ops/demo/gateway.yaml`` on the Pro side; this test file only
-observes its externally visible effect.
+defined in ``ops/demo/gateway.yaml``; this test file only observes its
+externally visible effect.
 """
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ _FLAGGED_ACTION = "mcp.reference.governed_http_fetch"
 _FLAGGED_URL = "https://example.com"
 
 
-# --- docker/curl helpers (mirror wave-e2e conventions) -----------------
+# --- docker/curl helpers (mirror gateway-integration conventions) ------
 
 
 def _docker_curl(path: str, *, method: str = "GET") -> dict:
@@ -425,38 +425,34 @@ async def test_two_concurrent_flags_get_distinct_pending_ids(
 
 # --- Category 4 - HITL approve/reject resume ---------------------------
 #
-# The Pro HITL router (kya_pro.policy._hitl_router) exposes
-# /api/v1/pending/{id}/decide + /api/v1/invocations/{id}/resume. Driving
-# it from this OSS test would require:
+# The commercial companion dashboard-api exposes a HITL decide/resume
+# endpoint set. Driving it from this integration test would require:
 #
-#   1. Knowing which tenant-scoped API token to authenticate with (the
-#      dashboard-api requires a valid ``kya_api_tokens`` row + Bearer
-#      token; the demo stack does not expose a stable known token to the
-#      host).
+#   1. A stable authenticated dashboard-api endpoint reachable from the
+#      host (a valid ``kya_api_tokens`` bearer token; the demo stack does
+#      not expose a stable known token to the host).
 #   2. Coordinating the resume-execution path back to the gateway/backend
 #      so that an approve actually re-plays the original tool call and
 #      increments the counter.
 #
-# Both are Pro-side concerns; wiring them into an OSS integration test
-# without a stable, documented host-reachable resume endpoint would be
-# fragile. The pending-row + evidence-row invariants above already prove
-# the flag_for_review path deposits the state that a HITL approve/reject
-# operates on — the resume state-machine is unit-covered in
-# ``kya_pro/tests/test_hitl_router.py``.
+# Without a stable, documented host-reachable resume endpoint this
+# integration is fragile. The pending-row + evidence-row invariants above
+# already prove the flag_for_review path deposits the state that a HITL
+# approve/reject operates on — the resume state-machine itself is
+# covered by dedicated unit tests alongside the commercial handler.
 
 
 def test_approve_resumes_and_increments_counter():
     """HITL approve → backend counter increments.
 
     Requires a stable authenticated dashboard-api resume endpoint reachable
-    from the host, which the demo stack does not expose. Covered in
-    ``kya_pro.policy._hitl_router`` unit tests instead.
+    from the host, which the demo stack does not expose. The resume
+    state-machine is covered by the commercial handler's own unit tests.
     """
     pytest.skip(
         "HITL approve/resume requires a host-reachable, "
         "authenticated dashboard-api endpoint that the demo stack does "
-        "not expose. Resume state-machine is unit-covered on the Pro "
-        "side (test_hitl_router.py)."
+        "not expose. State-machine covered by companion unit tests."
     )
 
 
@@ -468,5 +464,5 @@ def test_reject_denies_and_counter_stays_zero():
     pytest.skip(
         "HITL reject requires a host-reachable, authenticated "
         "dashboard-api endpoint that the demo stack does not expose. "
-        "Reject state-machine is unit-covered on the Pro side."
+        "State-machine covered by companion unit tests."
     )
