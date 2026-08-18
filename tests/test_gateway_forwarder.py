@@ -11,6 +11,7 @@ from kya_gateway.config import BackendConfig
 from kya_gateway.errors import BackendUnreachable
 from kya_gateway.forwarder import (
     Forwarder,
+    MalformedToolName,
     parse_backend_from_tool,
 )
 
@@ -25,9 +26,21 @@ def test_parse_backend_without_dot_defaults():
     assert parse_backend_from_tool("read") == ("default", "read")
 
 
-def test_parse_backend_nested_dots():
-    """Only the FIRST dot separates backend from tool name."""
-    assert parse_backend_from_tool("k8s.pods.list") == ("k8s", "pods.list")
+def test_parse_backend_nested_dots_rejected():
+    """Nested dots are rejected as malformed — prevents a prefix-repeat
+    policy bypass where ``<backend>.<backend>.<tool>`` would resolve at
+    the backend to the bare ``<tool>`` while producing a longer action
+    string at the RBAC layer that misses the deny rule."""
+    with pytest.raises(MalformedToolName):
+        parse_backend_from_tool("k8s.pods.list")
+
+
+def test_parse_backend_non_string_rejected():
+    """Non-string params.name must fail-closed, not raise TypeError."""
+    with pytest.raises(MalformedToolName):
+        parse_backend_from_tool(42)  # type: ignore[arg-type]
+    with pytest.raises(MalformedToolName):
+        parse_backend_from_tool(["k8s", "read"])  # type: ignore[arg-type]
 
 
 # ─── Backend lookup ────────────────────────────────────────────────

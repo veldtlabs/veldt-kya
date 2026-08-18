@@ -33,7 +33,11 @@ from kya_gateway.errors import (
     GatewayError,
     IdentityBindingFailed,
 )
-from kya_gateway.forwarder import Forwarder, parse_backend_from_tool
+from kya_gateway.forwarder import (
+    Forwarder,
+    MalformedToolName,
+    parse_backend_from_tool,
+)
 from kya_gateway.identity import BoundPrincipal, IdentityResolver
 from kya_gateway.mcp_protocol import (
     action_from_tool_call,
@@ -887,8 +891,28 @@ def build_app(gw: Gateway) -> FastAPI:
             )
 
         # ─── 4. Policy pipeline ──────────────────────────────────
-        tool_name = req.tool_name or ""
-        backend_name, bare_tool = parse_backend_from_tool(tool_name)
+        # Preserve the raw params.name (may be non-string / prefix-repeat)
+        # so the parser can fail-closed. Do NOT coerce with ``or ""`` —
+        # that would silently hide an integer / list bug from the check.
+        raw_tool_name = req.tool_name
+        try:
+            backend_name, bare_tool = parse_backend_from_tool(
+                raw_tool_name if raw_tool_name is not None else ""
+            )
+        except MalformedToolName as exc:
+            # Fail-closed on malformed / non-string / nested-dot names.
+            # Return JSON-RPC _JRPC_INVALID_PARAMS (-32602) at HTTP 400
+            # rather than letting a TypeError or a policy-bypass shape
+            # escape into downstream evaluation.
+            return JSONResponse(
+                make_error(
+                    req.request_id,
+                    -32602,
+                    f"malformed params.name: {exc}",
+                    data={"reason_codes": ["MALFORMED_TOOL_NAME"]},
+                ),
+                status_code=400,
+            )
         action = action_from_tool_call(backend_name, bare_tool)
 
         # B8: record_invocation BEFORE policy so replay protection has a
@@ -951,6 +975,10 @@ def build_app(gw: Gateway) -> FastAPI:
         # ─── 6a. Enforce mode: KYA blocks (operator opted into liability) ─
         if mode == "enforce":
             if verdict.verdict == "deny":
+                # Advertise the canonical verdict in the header too so a
+                # gateway consumer can branch on ``X-KYA-Verdict`` without
+                # parsing the JSON-RPC body. Matches the header set on
+                # non-enforce forwards in section 6b.
                 return JSONResponse(
                     make_error(
                         req.request_id,
@@ -959,6 +987,10 @@ def build_app(gw: Gateway) -> FastAPI:
                         data={"reason_codes": verdict.reason_codes, "verdict": "deny"},
                     ),
                     status_code=403,
+                    headers={
+                        "X-KYA-Verdict": "deny",
+                        "X-KYA-Reason-Codes": ",".join(verdict.reason_codes),
+                    },
                 )
             # The legacy alias `require_human` is
             # normalized at the rbac-evaluate + adapter boundaries in
@@ -1046,6 +1078,10 @@ def build_app(gw: Gateway) -> FastAPI:
                         },
                     ),
                     status_code=403,
+                    headers={
+                        "X-KYA-Verdict": "deny",
+                        "X-KYA-Reason-Codes": ",".join(verdict.reason_codes),
+                    },
                 )
 
         # ─── 6b. Forward to backend (audit_only/advise always; enforce on allow) ─

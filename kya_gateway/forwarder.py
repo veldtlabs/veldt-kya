@@ -133,6 +133,16 @@ class Forwarder:
             ) from exc
 
 
+class MalformedToolName(ValueError):
+    """Raised when ``tool_name`` is not a valid ``<backend>.<tool>`` or ``<tool>``.
+
+    Callers should surface this as a JSON-RPC ``_JRPC_INVALID_PARAMS``
+    (``-32602``) response with HTTP 400 rather than letting it bubble to
+    a 500. The gateway's ``tools/call`` dispatch wraps this into the
+    correct envelope shape.
+    """
+
+
 def parse_backend_from_tool(tool_name: str) -> tuple[str, str]:
     """Split a fully-qualified tool name into (backend, tool).
 
@@ -140,10 +150,32 @@ def parse_backend_from_tool(tool_name: str) -> tuple[str, str]:
     doesn't have a backend prefix, return ``("default", tool_name)`` so
     a single-backend gateway still works.
 
+    Rejects (raises :class:`MalformedToolName`):
+        * Non-string ``tool_name`` — a bare int or list would otherwise
+          raise ``TypeError`` inside ``"." not in ...`` and surface as an
+          uncaught 500 with a leaked traceback.
+        * More than one dot — e.g. ``reference.reference.governed_bash``.
+          The tail-dot would still produce a valid backend + bare-tool
+          split, but the resulting RBAC action string
+          (``mcp.reference.reference.governed_bash``) would NOT match a
+          deny rule written for ``mcp.reference.governed_bash``, giving
+          a policy bypass. Fail-closed here as defence in depth so a
+          backend that forgets to check the shape is still safe.
+
     Returns:
         (backend_name, bare_tool_name)
     """
+    if not isinstance(tool_name, str):
+        raise MalformedToolName(
+            f"tool name must be a string, got {type(tool_name).__name__}"
+        )
     if "." not in tool_name:
         return "default", tool_name
+    # Reject prefix-repeat / nested-dot names — see docstring.
+    if tool_name.count(".") > 1:
+        raise MalformedToolName(
+            "tool name must be '<backend>.<tool>' or '<tool>' "
+            "(nested dots are not allowed)"
+        )
     backend, _, bare = tool_name.partition(".")
     return backend, bare
