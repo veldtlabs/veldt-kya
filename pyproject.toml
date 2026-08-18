@@ -227,10 +227,15 @@ include = [
     # so `import kya_gateway` works for tooling that only needs config /
     # error types without the HTTP runtime.
     "kya_gateway", "kya_gateway.*",
-    # Reference MCP tool backend. Heavy deps (aiohttp, httpx) imported
-    # lazily inside kya_mcp_tools_ref.server / .tools so `import
-    # kya_mcp_tools_ref` works for tooling that only needs config /
-    # types. Install `veldt-kya[mcp-tools-ref]` for the runnable server.
+    # Reference MCP tool backend. The top-level package `__init__.py`
+    # deliberately does NOT re-export server / tools symbols, so
+    # `import kya_mcp_tools_ref` on a bare install (no extra) works and
+    # exposes `__version__` without pulling in aiohttp/httpx. Submodules
+    # (`kya_mcp_tools_ref.server`, `kya_mcp_tools_ref.tools`,
+    # `kya_mcp_tools_ref.cli`) do have hard imports on those runtime
+    # deps, which is why the `mcp-tools-ref` extra pins them — install
+    # `veldt-kya[mcp-tools-ref]` to run the server or import the
+    # submodules.
     "kya_mcp_tools_ref", "kya_mcp_tools_ref.*",
 ]
 exclude = [

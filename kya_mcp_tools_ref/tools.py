@@ -108,7 +108,7 @@ _METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
 #
 # These are module-level ints. The server pins single-worker
 # (aiohttp default) so counters are process-global and stable
-# across the wave-e2e test suite.
+# for observability and integration testing.
 #
 # CRITICAL: increment MUST be the first line of every tool body.
 # The counter measures BACKEND CALLS, not executions. If a request
@@ -283,7 +283,7 @@ def governed_file_read(arguments: dict[str, Any]) -> ToolResult:
         return _err(str(exc))
 
     if not os.path.exists(canonical):
-        return _err(f"no such file: {os.path.relpath(canonical, cfg.scratch_root)}")
+        return _err("file not found under scratch root")
     if not os.path.isfile(canonical):
         return _err("not a regular file")
 

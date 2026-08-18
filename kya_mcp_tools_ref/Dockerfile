@@ -28,6 +28,16 @@ COPY kya_mcp_tools_ref /app/kya_mcp_tools_ref
 # bug that OSS-clean-venv-test-before-push memory is about.
 RUN pip install --no-cache-dir -e ".[mcp-tools-ref]"
 
+# Non-root runtime user. The scratch dir is a docker volume; ownership
+# set here is authoritative when the volume is first initialised from
+# an empty state. If a pre-existing volume masks this ownership, run
+# a one-time `docker exec --user root kya-mcp-tools-ref chown -R
+# kya:kya /var/lib/kya-mcp-tools-ref/scratch` after upgrade.
+RUN groupadd -r kya --gid=1000 \
+    && useradd -r -u 1000 -g kya --home-dir=/app --shell=/bin/false kya \
+    && install -d -o kya -g kya /var/lib/kya-mcp-tools-ref/scratch
+USER kya
+
 # Fail-closed defaults:
 #   - governed_bash NOT registered (KYA_MCP_ENABLE_BASH unset)
 #   - test endpoints NOT exposed (KYA_MCP_TEST_MODE unset)

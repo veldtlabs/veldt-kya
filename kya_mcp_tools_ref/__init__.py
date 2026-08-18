@@ -30,19 +30,41 @@ Fork this to expose your own tools
 3. Point your ``kya-gateway`` backend config at this server.
 4. Your existing enterprise ABAC/RBAC/regimes apply automatically.
 
-Public API
-----------
-* :class:`ToolResult` — the shape a tool returns.
-* :func:`run` — start the aiohttp server.
-* :data:`TOOLS` — the tool registry (see ``tools.py``).
+Install profile
+---------------
+``pip install veldt-kya`` installs this package for import-only use
+(``import kya_mcp_tools_ref`` works and exposes :data:`__version__`).
+The runnable server has additional runtime deps (``aiohttp``, ``httpx``)
+that live behind the ``mcp-tools-ref`` extra so bare installs stay small
+and free of unused transitive dependencies. To run the server::
 
-Quickstart::
+    pip install "veldt-kya[mcp-tools-ref]"
+    python -m kya_mcp_tools_ref --port 18090
+
+To access server / tool internals in code, import from the submodules
+explicitly — they are NOT re-exported at package top level, precisely
+so that ``import kya_mcp_tools_ref`` never triggers the heavy imports::
+
+    from kya_mcp_tools_ref.server import run
+    from kya_mcp_tools_ref.tools import (
+        TOOLS, ToolResult, get_invocation_counters, reset_invocation_counters,
+    )
+
+Public API (bare install)
+-------------------------
+* :data:`__version__` — package version string.
+
+Quickstart (with the extra)::
 
     python -m kya_mcp_tools_ref --port 18090
 
 Or via Docker::
 
     docker run veldtlabs/mcp-tools-reference:0.1.0
+
+Ships 3 governed tools by default (``governed_file_read``,
+``governed_file_write``, ``governed_http_fetch``), plus an optional
+``governed_bash`` when ``KYA_MCP_ENABLE_BASH=1`` at boot.
 
 Security posture
 ----------------
@@ -58,19 +80,6 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from kya_mcp_tools_ref.server import run
-from kya_mcp_tools_ref.tools import (
-    TOOLS,
-    ToolResult,
-    get_invocation_counters,
-    reset_invocation_counters,
-)
-
 __all__ = [
     "__version__",
-    "run",
-    "TOOLS",
-    "ToolResult",
-    "get_invocation_counters",
-    "reset_invocation_counters",
 ]
