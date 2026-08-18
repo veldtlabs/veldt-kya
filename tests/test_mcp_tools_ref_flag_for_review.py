@@ -425,8 +425,8 @@ async def test_two_concurrent_flags_get_distinct_pending_ids(
 
 # --- Category 4 - HITL approve/reject resume ---------------------------
 #
-# The commercial companion dashboard-api exposes a HITL decide/resume
-# endpoint set. Driving it from this integration test would require:
+# HITL decide/resume via an authenticated dashboard-api endpoint is out of
+# scope for this integration test. Driving it would require:
 #
 #   1. A stable authenticated dashboard-api endpoint reachable from the
 #      host (a valid ``kya_api_tokens`` bearer token; the demo stack does
@@ -435,24 +435,22 @@ async def test_two_concurrent_flags_get_distinct_pending_ids(
 #      so that an approve actually re-plays the original tool call and
 #      increments the counter.
 #
-# Without a stable, documented host-reachable resume endpoint this
-# integration is fragile. The pending-row + evidence-row invariants above
-# already prove the flag_for_review path deposits the state that a HITL
-# approve/reject operates on — the resume state-machine itself is
-# covered by dedicated unit tests alongside the commercial handler.
+# The pending-row + evidence-row invariants above already prove the
+# flag_for_review path deposits the state that a HITL approve/reject
+# operates on. Resume state-machine testing is out of scope here.
 
 
 def test_approve_resumes_and_increments_counter():
     """HITL approve → backend counter increments.
 
     Requires a stable authenticated dashboard-api resume endpoint reachable
-    from the host, which the demo stack does not expose. The resume
-    state-machine is covered by the commercial handler's own unit tests.
+    from the host, which the demo stack does not expose. Out of scope for
+    this integration test.
     """
     pytest.skip(
-        "HITL approve/resume requires a host-reachable, "
-        "authenticated dashboard-api endpoint that the demo stack does "
-        "not expose. State-machine covered by companion unit tests."
+        "HITL approve/resume requires a host-reachable, authenticated "
+        "dashboard-api endpoint that the demo stack does not expose. "
+        "Out of scope for this integration test."
     )
 
 
@@ -464,5 +462,5 @@ def test_reject_denies_and_counter_stays_zero():
     pytest.skip(
         "HITL reject requires a host-reachable, authenticated "
         "dashboard-api endpoint that the demo stack does not expose. "
-        "State-machine covered by companion unit tests."
+        "Out of scope for this integration test."
     )
