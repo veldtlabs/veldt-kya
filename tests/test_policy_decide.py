@@ -350,6 +350,124 @@ def test_decide_response_shape_forward_compat(decide_url, did_header):
     # versions and clients MUST tolerate them.
 
 
+@pytest.mark.parametrize("tool_name,expected", [
+    # Baseline — canonical form still denies.
+    ("reference.governed_bash",        "deny"),
+    # Case-flip on tool segment.
+    ("reference.Governed_bash",        "deny"),
+    # Case-flip on backend segment.
+    ("REFERENCE.governed_bash",        "deny"),
+    # Mixed case on the tool.
+    ("reference.governed_bAsh",        "deny"),
+    # Trailing ASCII space — stripped by canonicalizer.
+    ("reference.governed_bash ",       "deny"),
+    # Leading ASCII space on backend.
+    (" reference.governed_bash",       "deny"),
+    # Full-width Latin ｂ (U+FF42) folds to b via NFKC.
+    ("reference.governed_ｂash",   "deny"),
+])
+def test_decide_canonicalization_prevents_bypass(
+    decide_url, did_header, tool_name, expected,
+):
+    """Deep-sabotage regression — case flips and NFKC-foldable variants
+    of a denied tool name MUST resolve to the canonical action string
+    and hit the same deny rule. Previously all of these returned allow."""
+    resp = _decide(tool_name, {"command": "whoami"})
+    assert resp.status_code == 200, (tool_name, resp.text)
+    body = resp.json()
+    assert body["verdict"] == expected, (tool_name, body)
+    if expected == "deny":
+        assert "RBAC_DENY" in body["reason_codes"], (tool_name, body)
+
+
+@pytest.mark.parametrize("tool_name", [
+    # Zero-width space suffix (U+200B) — Cf category, rejected.
+    "reference.governed_bash​",
+    # Cyrillic о (U+043E) homoglyph for Latin o — NFKC does NOT fold
+    # this; fix rejects all non-ASCII in tool identifiers.
+    "reference.gоverned_bash",
+    # Embedded ASCII whitespace (survives strip) — not a valid
+    # tool identifier.
+    "reference.governed bash",
+])
+def test_decide_invisible_smuggle_rejected(decide_url, did_header, tool_name):
+    """Invisible-format / homoglyph / embedded-whitespace tool names MUST
+    fail-closed as HTTP 400 MALFORMED_TOOL_NAME. A legitimate caller has
+    no reason to send a ZWSP, Cyrillic look-alike, or embedded space in
+    a tool identifier."""
+    resp = _decide(tool_name, {"command": "whoami"})
+    assert resp.status_code == 400, (tool_name, resp.text)
+    body = resp.json()
+    assert "MALFORMED_TOOL_NAME" in (body.get("reason_codes") or []), (
+        tool_name, body,
+    )
+
+
+
+def test_decide_nbsp_suffix_still_denied(decide_url, did_header):
+    """NBSP (U+00A0) is a Zs whitespace char — Python's ``str.strip()``
+    treats it as whitespace and strips it during canonicalization. The
+    resulting canonical form matches the RBAC deny rule → the attack
+    is neutralized as a legitimate deny verdict (not an error). Both
+    outcomes are safe; this test locks in the observed behavior so a
+    future canonicalizer change doesn't accidentally open the bypass."""
+    resp = _decide("reference.governed_bash ", {"command": "whoami"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["verdict"] == "deny", body
+    assert "RBAC_DENY" in body["reason_codes"], body
+
+def test_decide_oversized_body_returns_413(decide_url, did_header):
+    """A 10 MB body MUST be rejected at ingress with HTTP 413 and
+    PAYLOAD_TOO_LARGE. Prior to this fix, /decide admitted 10 MB
+    bodies; the evidence writer's 1 MB cap then silently dropped the
+    audit row, leaving callers with allow + evidence_id=null."""
+    huge_arg = "x" * (10 * 1024 * 1024)
+    resp = httpx.post(
+        _DECIDE_URL,
+        headers={"content-type": "application/json", "X-KYA-DID": _TEST_DID},
+        json={
+            "tool_name": "reference.governed_file_read",
+            "tool_input": {"path": huge_arg},
+        },
+        timeout=30.0,
+    )
+    assert resp.status_code == 413, resp.text
+    body = resp.json()
+    assert "PAYLOAD_TOO_LARGE" in (body.get("reason_codes") or []), body
+
+
+def test_decide_oversized_tool_name_returns_400(decide_url, did_header):
+    """A 100 kB tool_name MUST be rejected as MALFORMED_TOOL_NAME.
+    The canonicalizer's per-segment 256-byte cap fires before the
+    RBAC scan can be poisoned by an enormous input."""
+    huge_name = "reference." + ("a" * 100_000)
+    resp = _decide(huge_name, {"command": "x"})
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert "MALFORMED_TOOL_NAME" in (body.get("reason_codes") or []), body
+
+
+def test_decide_duplicate_tool_name_key_rejected(decide_url, did_header):
+    """Duplicate top-level ``tool_name`` keys MUST be rejected with
+    HTTP 400 MALFORMED_BODY. json.loads is last-wins — otherwise an
+    attacker could shadow an allowed name with a denied one."""
+    raw = (
+        b'{"tool_name": "reference.governed_file_read",'
+        b' "tool_name": "reference.governed_bash",'
+        b' "tool_input": {"command": "whoami"}}'
+    )
+    resp = httpx.post(
+        _DECIDE_URL,
+        headers={"content-type": "application/json", "X-KYA-DID": _TEST_DID},
+        content=raw,
+        timeout=10.0,
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert "MALFORMED_BODY" in (body.get("reason_codes") or []), body
+
+
 def test_decide_no_backend_forward_ever(decide_url, did_header):
     """After 10 decide calls of various verdicts, ALL backend
     counters MUST remain at 0. Locks in invariant #1."""

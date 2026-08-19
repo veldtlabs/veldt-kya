@@ -13,6 +13,7 @@ and return the response bytes blob, preserving streaming semantics."
 from __future__ import annotations
 
 import logging
+import unicodedata
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -143,6 +144,77 @@ class MalformedToolName(ValueError):
     """
 
 
+# Hard byte cap on a single tool/backend segment. Two segments joined
+# by "." give a 512-byte ceiling on the total tool_name — small enough
+# that a caller cannot make the RBAC scan or evidence row expensive by
+# smuggling a 100 kB "tool name".
+_MAX_TOOL_SEGMENT_BYTES = 256
+
+
+def canonicalize_tool_segment(s: str) -> str:
+    """Normalize a backend or tool name for RBAC matching.
+
+    - NFKC compose (folds full-width, ligatures, compatibility chars)
+    - casefold (broader than ``lower()`` for cross-locale case)
+    - strip leading/trailing whitespace
+    - reject if the resulting segment contains Unicode ``Cf`` (Format),
+      ``Cc`` (Control), or non-ASCII ``Zs`` (Space Separator) chars —
+      those are invisible smuggle vectors (ZWSP, NBSP, RLO, etc.)
+    - reject embedded ASCII whitespace after strip — a tool identifier
+      may not contain an inner space
+    - reject any non-ASCII char (Cyrillic/Greek homoglyphs like ``о`` /
+      ``ο`` for Latin ``o`` are 100% smuggle attempts and NFKC does
+      NOT fold them)
+    - reject empty result (input was pure whitespace)
+    - reject > ``_MAX_TOOL_SEGMENT_BYTES`` bytes (UTF-8)
+
+    Raises :class:`MalformedToolName` on any of the above; callers
+    surface as HTTP 400 with ``MALFORMED_TOOL_NAME`` reason code (see
+    ``kya_gateway.server`` /mcp and /v1/policy/decide handlers).
+    """
+    if not isinstance(s, str):
+        raise MalformedToolName(
+            f"tool segment must be a string, got {type(s).__name__}"
+        )
+    # Byte-length check on the ORIGINAL input — an attacker cannot
+    # inflate past the cap and hope NFKC shrinks it below.
+    if len(s.encode("utf-8")) > _MAX_TOOL_SEGMENT_BYTES:
+        raise MalformedToolName(
+            f"tool segment exceeds {_MAX_TOOL_SEGMENT_BYTES} bytes"
+        )
+    canon = unicodedata.normalize("NFKC", s).casefold().strip()
+    if not canon:
+        raise MalformedToolName("tool segment is empty after canonicalization")
+    for ch in canon:
+        cat = unicodedata.category(ch)
+        if cat in ("Cf", "Cc"):
+            raise MalformedToolName(
+                f"tool segment contains disallowed control/format char "
+                f"(U+{ord(ch):04X})"
+            )
+        if cat == "Zs" and ch != " ":
+            raise MalformedToolName(
+                f"tool segment contains non-ASCII whitespace "
+                f"(U+{ord(ch):04X})"
+            )
+        # After strip, an embedded ASCII space is still suspicious for
+        # a tool identifier — reject rather than silently paper over.
+        if ch == " ":
+            raise MalformedToolName(
+                "tool segment contains embedded whitespace"
+            )
+        # Tool identifiers are ASCII-only. Cyrillic/Greek homoglyphs
+        # (e.g., Cyrillic ``о`` U+043E vs Latin ``o`` U+006F) do NOT
+        # fold via NFKC and would otherwise bypass RBAC on lookalike
+        # names. Reject non-ASCII outright.
+        if ord(ch) > 0x7F:
+            raise MalformedToolName(
+                f"tool segment contains non-ASCII char "
+                f"(U+{ord(ch):04X}); tool identifiers must be ASCII"
+            )
+    return canon
+
+
 def parse_backend_from_tool(tool_name: str) -> tuple[str, str]:
     """Split a fully-qualified tool name into (backend, tool).
 
@@ -170,7 +242,9 @@ def parse_backend_from_tool(tool_name: str) -> tuple[str, str]:
             f"tool name must be a string, got {type(tool_name).__name__}"
         )
     if "." not in tool_name:
-        return "default", tool_name
+        # Single-segment tool. Canonicalize it AND return "default" as
+        # backend — canonical form is what RBAC + evidence records use.
+        return "default", canonicalize_tool_segment(tool_name)
     # Reject prefix-repeat / nested-dot names — see docstring.
     if tool_name.count(".") > 1:
         raise MalformedToolName(
@@ -178,4 +252,13 @@ def parse_backend_from_tool(tool_name: str) -> tuple[str, str]:
             "(nested dots are not allowed)"
         )
     backend, _, bare = tool_name.partition(".")
-    return backend, bare
+    # Canonicalize BOTH segments (NFKC + casefold + strip + reject
+    # invisibles / non-ASCII / oversized). The canonical form is what
+    # RBAC matches against AND what evidence records. Callers that
+    # named the tool with case/Unicode variants see their canonical
+    # form in evidence — fair; they should have used it in the first
+    # place.
+    return (
+        canonicalize_tool_segment(backend),
+        canonicalize_tool_segment(bare),
+    )

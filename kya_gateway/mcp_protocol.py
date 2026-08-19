@@ -153,17 +153,37 @@ class MCPMethodNotFound(GatewayError):
         self.method = method
 
 
+def _no_dupe_keys(pairs):
+    """``object_pairs_hook`` that fail-closes on duplicate JSON keys.
+
+    ``json.loads`` is last-wins; without this an attacker could send
+    e.g. two ``params`` or two ``method`` entries and have downstream
+    validators inspect one while the runtime executes the other.
+    """
+    seen: set = set()
+    for k, _ in pairs:
+        if k in seen:
+            raise GatewayError(f"duplicate JSON key in request body: {k!r}")
+        seen.add(k)
+    return dict(pairs)
+
+
 def parse_request(raw_body: bytes) -> MCPRequest:
     """Parse a JSON-RPC 2.0 request body into an MCPRequest.
 
     Raises:
         GatewayError: Malformed JSON (-32700 Parse error) or missing/wrong
-            required fields (-32600 Invalid Request).
+            required fields (-32600 Invalid Request). Also raised on
+            duplicate JSON keys — last-wins is a smuggle vector.
         JSONRPCBatchNotSupported: Body parses but is a list — batches are
             not supported (also -32600).
     """
     try:
-        parsed = json.loads(raw_body)
+        parsed = json.loads(raw_body, object_pairs_hook=_no_dupe_keys)
+    except GatewayError:
+        # Duplicate-key rejection raised via object_pairs_hook. Bubble
+        # up as-is; caller maps to HTTP 400 with -32600.
+        raise
     except json.JSONDecodeError as exc:
         raise GatewayError(f"malformed JSON in request body: {exc}") from exc
     if isinstance(parsed, list):

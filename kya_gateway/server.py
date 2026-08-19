@@ -101,7 +101,41 @@ def _me_rate_limit_check(client_ip: str) -> bool:
 # the "trying to OOM the process" case.
 _MAX_HTTP_BODY_BYTES = 32 * 1024 * 1024  # 32 MB hard ceiling
 
+# Tighter cap for the /v1/policy/decide endpoint. Mirrors the evidence
+# writer's own 1 MB payload cap so the ingress does NOT admit a request
+# whose audit row would be dropped silently downstream (the deep-sabotage
+# "10 MB body, allow verdict, evidence_id=null" bypass). /mcp keeps the
+# larger cap because its policy.payload_caps path fires the size verdict
+# explicitly, giving a well-formed policy denial rather than silent drop.
+_MAX_DECIDE_BODY_BYTES = 1_000_000
+
 logger = logging.getLogger(__name__)
+
+
+class _DuplicateJSONKey(ValueError):
+    """Raised by ``_no_dupe_keys`` when the same key appears twice in
+    a single JSON object. Mapped to HTTP 400 by callers.
+
+    A duplicate top-level key (e.g. two ``tool_name`` entries) is
+    a smuggle vector — Python's ``json.loads`` is last-wins, so an
+    attacker can hide the intended-denied name behind an intended-allowed
+    one and have most middleware read the first while ``json.loads``
+    picks the second.
+    """
+
+
+def _no_dupe_keys(pairs):
+    """``object_pairs_hook`` that fail-closes on duplicate keys.
+
+    Passed to ``json.loads`` on any endpoint that shells a decision
+    off a top-level field the caller must not be able to shadow.
+    """
+    seen: set = set()
+    for k, _ in pairs:
+        if k in seen:
+            raise _DuplicateJSONKey(f"duplicate JSON key: {k!r}")
+        seen.add(k)
+    return dict(pairs)
 
 
 # Map internal exception classes to a stable enum surfaced in
@@ -1140,13 +1174,21 @@ def build_app(gw: Gateway) -> FastAPI:
              "pending_id": "..." | null,
              "policy_hash": "..."}
         """
-        # Body cap identical to /mcp — never allocate a huge body.
+        # Body cap TIGHTER than /mcp — 1 MB mirror of the evidence
+        # payload cap. Ingress must not admit a request whose audit row
+        # would be dropped silently downstream. Deep-sabotage scenario:
+        # 10 MB body → policy pipeline returns "allow" → evidence writer
+        # drops the row → caller sees allow with evidence_id=null. Fix:
+        # reject at the door with PAYLOAD_TOO_LARGE.
         cl = request.headers.get("content-length")
         if cl is not None:
             try:
-                if int(cl) > _MAX_HTTP_BODY_BYTES:
+                if int(cl) > _MAX_DECIDE_BODY_BYTES:
                     return JSONResponse(
-                        {"error": "request body too large"},
+                        {
+                            "error": "request body too large",
+                            "reason_codes": ["PAYLOAD_TOO_LARGE"],
+                        },
                         status_code=413,
                     )
             except ValueError:
@@ -1158,17 +1200,31 @@ def build_app(gw: Gateway) -> FastAPI:
         total = 0
         async for chunk in request.stream():
             total += len(chunk)
-            if total > _MAX_HTTP_BODY_BYTES:
+            if total > _MAX_DECIDE_BODY_BYTES:
                 return JSONResponse(
-                    {"error": "request body too large"},
+                    {
+                        "error": "request body too large",
+                        "reason_codes": ["PAYLOAD_TOO_LARGE"],
+                    },
                     status_code=413,
                 )
             body_chunks.append(chunk)
         body = b"".join(body_chunks)
 
-        # Parse JSON body.
+        # Parse JSON body. ``object_pairs_hook=_no_dupe_keys`` fails
+        # closed on duplicate top-level keys — an attacker cannot hide
+        # a denied tool_name behind an allowed one and have json.loads
+        # pick the second (last-wins).
         try:
-            payload = json.loads(body) if body else {}
+            payload = json.loads(body, object_pairs_hook=_no_dupe_keys) if body else {}
+        except _DuplicateJSONKey as exc:
+            return JSONResponse(
+                {
+                    "error": str(exc),
+                    "reason_codes": ["MALFORMED_BODY"],
+                },
+                status_code=400,
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             return JSONResponse(
                 {"error": f"invalid JSON: {exc}"},

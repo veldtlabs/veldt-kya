@@ -403,6 +403,44 @@ def _parse_rate_limit(block: dict | None) -> RateLimitConfig | None:
     return RateLimitConfig(**kwargs)
 
 
+def _canonicalize_rule_action(action: str) -> str:
+    """Canonicalize an RBAC rule ``action`` pattern for match parity.
+
+    Rule actions look like ``mcp.<backend>.<tool>`` or ``mcp.<backend>.*``.
+    We casefold + NFKC-normalize + strip each dotted segment (except a
+    trailing ``*`` wildcard) so the rule matches the request-side
+    canonicalization performed by
+    :func:`kya_gateway.forwarder.canonicalize_tool_segment`. Without
+    this, a PascalCase rule wouldn't match lowercase input.
+
+    Segments other than the trailing wildcard MUST be pure ASCII and
+    survive canonicalization — a rule author who wrote a rule with a
+    Cyrillic homoglyph is almost certainly making a mistake.
+    """
+    from kya_gateway.forwarder import (
+        MalformedToolName,
+        canonicalize_tool_segment,
+    )
+    if not isinstance(action, str) or not action:
+        raise GatewayConfigError(
+            f"rbac rule action must be a non-empty string, got {action!r}"
+        )
+    parts = action.split(".")
+    out: list[str] = []
+    for i, p in enumerate(parts):
+        if p == "*" and i == len(parts) - 1:
+            out.append(p)
+            continue
+        try:
+            out.append(canonicalize_tool_segment(p))
+        except MalformedToolName as exc:
+            raise GatewayConfigError(
+                f"rbac rule action {action!r} segment {p!r} failed "
+                f"canonicalization: {exc}"
+            ) from exc
+    return ".".join(out)
+
+
 def _parse_rbac(block: dict | None) -> RBACConfig | None:
     if not block:
         return None
@@ -445,7 +483,13 @@ def _parse_rbac(block: dict | None) -> RBACConfig | None:
             )
         rules.append(RBACRule(
             principal_kind=r["principal_kind"],
-            actions=list(r.get("actions") or []),
+            # Canonicalize each action pattern so PascalCase / Unicode
+            # variants in the YAML still match the request-side
+            # canonicalization done by parse_backend_from_tool. Trailing
+            # ``*`` wildcards are preserved verbatim.
+            actions=[
+                _canonicalize_rule_action(a) for a in (r.get("actions") or [])
+            ],
             verdict=verdict,
         ))
     return RBACConfig(default=default, rules=rules)
