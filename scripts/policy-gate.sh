@@ -30,19 +30,37 @@ GATEWAY_URL="${KYA_GATEWAY_URL:-http://localhost:18080}"
 TIMEOUT="${KYA_HOOK_TIMEOUT_SEC:-5}"
 DID="${KYA_HOOK_DID:-}"
 
-emit_deny() {
-  local reason="$1"
-  jq -cn --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+# Escape a string for embedding in a JSON string literal WITHOUT relying on
+# jq. Handles backslash, double-quote, and control characters (\b \f \n \r \t
+# and other C0). This is the fallback path used when jq is stubbed / broken —
+# without this, a PATH-shadowed jq would let emit_deny print an empty body
+# and Claude would treat "no output" as "no verdict" = allow (fail-OPEN).
+_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\b'/\\b}"; s="${s//$'\f'/\\f}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+_emit_decision() {
+  local decision="$1" reason="$2" out
+  if command -v jq >/dev/null 2>&1; then
+    out=$(jq -cn --arg d "$decision" --arg r "$reason" \
+      '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:$d,permissionDecisionReason:$r}}' 2>/dev/null)
+  fi
+  if [[ -z "${out:-}" ]]; then
+    # jq missing or produced no output — fall back to hand-built JSON so
+    # the fail-CLOSED promise survives a PATH-shadow attack on jq.
+    out=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s","permissionDecisionReason":"%s"}}' \
+      "$(_json_escape "$decision")" "$(_json_escape "$reason")")
+  fi
+  printf '%s\n' "$out"
   exit 0
 }
 
-emit_ask() {
-  local reason="$1"
-  jq -cn --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'
-  exit 0
-}
+emit_deny() { _emit_decision "deny" "$1"; }
+emit_ask()  { _emit_decision "ask"  "$1"; }
 
 fail() {
   local reason="$1"
