@@ -35,7 +35,7 @@ Add the hook to `~/.claude/settings.json` and restart Claude Code:
 }
 ```
 
-**Fail-CLOSED by default:** gateway unreachable → tool call denied. `KYA_HOOK_FAIL_OPEN=1` to opt into allow-on-failure (logged to stderr).
+**Fail-CLOSED by default:** gateway unreachable → tool call denied. Set `KYA_HOOK_FAIL_OPEN=1` in your shell env (or the hook's `command`) to opt into allow-on-failure (logged to stderr).
 
 ---
 

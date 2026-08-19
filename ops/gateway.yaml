@@ -1,0 +1,51 @@
+# Minimal KYA Gateway config for the QUICKSTART local stack.
+#
+# Posture: default: allow with a single visible deny rule so a fresh
+# clone can observe an end-to-end enforcement event without wiring
+# per-persona allowlists first. Production deployments should flip
+# `policy.rbac.default` to `deny` and enumerate explicit allow rules.
+
+gateway:
+  bind: 0.0.0.0:8080
+  tenant_id: 00000000-0000-0000-0000-0000000000ac
+
+identity:
+  methods: [did]
+  did:
+    resolvers: [key, web, jwk]
+    # Header-trust is safe on a local single-user machine. NEVER enable
+    # this in a multi-tenant / networked deployment without a service
+    # mesh in front — anyone who can reach the port can claim any DID.
+    allow_header_trust: true
+    dpop_audience: http://localhost:18080/mcp
+    require_dpop_on_me: false
+    revocation_check: false
+    revocation_cache_ttl_seconds: 60
+
+backends:
+  # Reference MCP tools backend. See kya_mcp_tools_ref for the tool
+  # catalog. Clients invoke tools as `reference.<tool_name>` — the
+  # gateway routes by the `<backend>.` prefix.
+  - name: reference
+    url: http://kya-mcp-tools-ref:18090/mcp
+
+policy:
+  rbac:
+    # Default-allow keeps the first-run experience friendly. The single
+    # deny rule below proves the enforcement path fires end-to-end.
+    default: allow
+    rules:
+      # QUICKSTART enforcement proof: deny `governed_bash` on the
+      # reference backend so `scripts/test-policy-gate.sh` can assert
+      # a real deny verdict flowing back through the hook.
+      - principal_kind: agent
+        actions:
+          - "mcp.reference.governed_bash"
+        verdict: deny
+
+enforcement:
+  mode: enforce
+
+audit:
+  hmac_chain: true
+  evidence_signing_key_env: KYA_EVIDENCE_SIGNING_KEY

@@ -10,6 +10,20 @@
 #   KYA_HOOK_FAIL_OPEN    if set to 1, allow on gateway failure
 #                         (availability tradeoff; default is fail-CLOSED).
 
+# Preflight: emit a static deny JSON before any tool (jq / curl) is
+# invoked. If either binary is missing we cannot reliably parse the
+# gateway response or emit a well-formed Claude Code hook JSON — so
+# fail-CLOSED with a human-readable reason. Runs BEFORE `set -euo
+# pipefail` so a missing binary doesn't crash the shell.
+if ! command -v jq >/dev/null 2>&1; then
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Veldt hook: jq missing on PATH; failing closed. Install jq."}}\n'
+  exit 0
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Veldt hook: curl missing on PATH; failing closed. Install curl."}}\n'
+  exit 0
+fi
+
 set -euo pipefail
 
 GATEWAY_URL="${KYA_GATEWAY_URL:-http://localhost:18080}"

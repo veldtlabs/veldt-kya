@@ -1236,7 +1236,23 @@ def build_app(gw: Gateway) -> FastAPI:
                 status_code=400,
             )
         tool_name = payload.get("tool_name")
-        tool_input = payload.get("tool_input", {}) or {}
+        tool_input = payload.get("tool_input")
+        if tool_input is None:
+            tool_input = {}
+        elif not isinstance(tool_input, dict):
+            # Reject strings, lists, numbers, bools — anything that
+            # would silently no-op any policy rule inspecting the
+            # tool's arguments. Prior to this guard a caller could pass
+            # tool_input="rm -rf /" as a string and the evidence
+            # payload plus every arguments-aware policy predicate would
+            # see an empty {} instead. Fail-closed at ingress.
+            return JSONResponse(
+                {
+                    "error": "tool_input must be a JSON object",
+                    "reason_codes": ["MALFORMED_BODY"],
+                },
+                status_code=400,
+            )
         if tool_name is None:
             return JSONResponse(
                 {"error": "missing required field: tool_name"},

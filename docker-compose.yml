@@ -1,0 +1,53 @@
+# Minimal Veldt KYA local stack for the QUICKSTART.
+#
+# Two services:
+#   * kya-gateway         — the policy enforcement point (published on 18080)
+#   * kya-mcp-tools-ref   — reference MCP tools backend (internal network only)
+#
+# Evidence writes are best-effort — this stack does not ship a
+# persistent database. For production, add a Postgres service, point
+# the gateway at it via KYA_POSTGRES_URL, and mount a persistent
+# volume. See docs/gateway_setup.md.
+#
+# Usage:
+#   docker compose up -d kya-gateway
+#   bash scripts/test-policy-gate.sh
+
+services:
+  kya-gateway:
+    image: ghcr.io/veldtlabs/kya-gateway:latest
+    container_name: kya-gateway
+    restart: unless-stopped
+    ports:
+      - "18080:8080"
+    environment:
+      KYA_GATEWAY_CONFIG: /etc/kya/gateway.yaml
+      KYA_EVIDENCE_SIGNING_KEY: ${KYA_EVIDENCE_SIGNING_KEY:-dev-hmac-key-not-for-prod}
+    volumes:
+      - ./ops/gateway.yaml:/etc/kya/gateway.yaml:ro
+    depends_on:
+      kya-mcp-tools-ref:
+        condition: service_healthy
+    networks: [veldt-kya]
+
+  kya-mcp-tools-ref:
+    build:
+      context: .
+      dockerfile: kya_mcp_tools_ref/Dockerfile
+    container_name: kya-mcp-tools-ref
+    restart: unless-stopped
+    environment:
+      KYA_MCP_TEST_MODE: "1"
+      KYA_MCP_ENABLE_BASH: "${KYA_MCP_ENABLE_BASH:-}"
+      KYA_MCP_BASH_ALLOWLIST: "${KYA_MCP_BASH_ALLOWLIST:-whoami,pwd,hostname,date}"
+      KYA_MCP_HTTP_ALLOWLIST: "${KYA_MCP_HTTP_ALLOWLIST:-}"
+      KYA_MCP_SCRATCH_ROOT: "/var/lib/kya-mcp-tools-ref/scratch"
+    volumes:
+      - kya_mcp_scratch:/var/lib/kya-mcp-tools-ref/scratch
+    networks: [veldt-kya]
+
+volumes:
+  kya_mcp_scratch:
+
+networks:
+  veldt-kya:

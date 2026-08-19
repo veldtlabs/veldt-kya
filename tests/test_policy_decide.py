@@ -468,6 +468,28 @@ def test_decide_duplicate_tool_name_key_rejected(decide_url, did_header):
     assert "MALFORMED_BODY" in (body.get("reason_codes") or []), body
 
 
+@pytest.mark.parametrize("bad_input", ["string", 42, [1, 2, 3], True, 3.14])
+def test_decide_non_dict_tool_input_rejected(decide_url, did_header, bad_input):
+    """tool_input MUST be a JSON object (or absent). Any other type
+    (string, list, number, bool) silently no-ops arguments-aware policy
+    predicates and hides the real payload from the evidence writer, so
+    ingress rejects with HTTP 400 + MALFORMED_BODY."""
+    resp = httpx.post(
+        _DECIDE_URL,
+        headers={"content-type": "application/json", "X-KYA-DID": _TEST_DID},
+        json={
+            "tool_name": "reference.governed_file_read",
+            "tool_input": bad_input,
+        },
+        timeout=10.0,
+    )
+    assert resp.status_code == 400, (bad_input, resp.text)
+    body = resp.json()
+    assert "MALFORMED_BODY" in (body.get("reason_codes") or []), (
+        bad_input, body,
+    )
+
+
 def test_decide_no_backend_forward_ever(decide_url, did_header):
     """After 10 decide calls of various verdicts, ALL backend
     counters MUST remain at 0. Locks in invariant #1."""
