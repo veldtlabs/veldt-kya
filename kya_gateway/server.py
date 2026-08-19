@@ -1237,6 +1237,15 @@ def build_app(gw: Gateway) -> FastAPI:
             )
         tool_name = payload.get("tool_name")
         tool_input = payload.get("tool_input")
+        # Optional delegation context forwarded by hook clients (e.g.
+        # Claude Code PreToolUse). Structured fields lets downstream
+        # readers (dashboards, replay) stitch a parent -> child tree from
+        # session_id + tool_use_id + agent_id without parsing free text.
+        # Ignored silently if not a dict — callers unaware of the field
+        # keep working; the payload lands in evidence best-effort.
+        context = payload.get("context")
+        if not isinstance(context, dict):
+            context = {}
         if tool_input is None:
             tool_input = {}
         elif not isinstance(tool_input, dict):
@@ -1294,10 +1303,14 @@ def build_app(gw: Gateway) -> FastAPI:
 
         # Synthesise a JSON-RPC-shaped params dict so downstream evidence
         # (which reads params.arguments) has a stable shape identical to
-        # a /mcp tools/call. Nothing is forwarded to a backend.
-        pseudo_request_payload = {
-            "params": {"name": tool_name, "arguments": tool_input},
-        }
+        # a /mcp tools/call. Nothing is forwarded to a backend. When the
+        # caller forwarded a delegation context (e.g. Claude Code hook
+        # session_id + tool_use_id + optional agent_id), include it as a
+        # sibling key so evidence carries the parent -> child linkage.
+        _params: dict[str, Any] = {"name": tool_name, "arguments": tool_input}
+        if context:
+            _params["context"] = context
+        pseudo_request_payload = {"params": _params}
 
         try:
             invocation_id = _record_invocation_pre_policy(

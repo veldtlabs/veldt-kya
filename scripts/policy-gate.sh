@@ -76,7 +76,23 @@ if [[ -z "$DID" ]]; then
 fi
 
 INPUT="$(cat)"
-if ! REQ="$(printf '%s' "$INPUT" | jq -c '{tool_name, tool_input}' 2>/dev/null)"; then
+# Forward Claude Code's delegation identifiers to the gateway so evidence
+# rows can be stitched into a parent -> child tree:
+#   session_id      — same across every tool call in one Claude session
+#   tool_use_id     — unique per tool call
+#   agent_id        — set when a sub-agent (spawned via the Task tool) issues
+#                     the call; absent for the main agent
+#   transcript_path — the on-disk conversation transcript, enables replay
+if ! REQ="$(printf '%s' "$INPUT" | jq -c '{
+    tool_name,
+    tool_input,
+    context: {
+      session_id: .session_id,
+      tool_use_id: .tool_use_id,
+      agent_id: (.agent_id // null),
+      transcript_path: (.transcript_path // null)
+    }
+  }' 2>/dev/null)"; then
   fail "malformed hook stdin"
 fi
 
