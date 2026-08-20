@@ -29,13 +29,37 @@ Add the hook to `~/.claude/settings.json` and restart Claude Code:
   "hooks": {
     "PreToolUse": [{
       "matcher": ".*",
-      "hooks": [{ "type": "command", "command": "/absolute/path/to/policy-gate.sh", "timeout": 10 }]
+      "hooks": [{
+        "type": "command",
+        "command": "env KYA_HOOK_DID=did:key:z6Mkr... KYA_GATEWAY_URL=http://localhost:18080 bash /absolute/path/to/policy-gate.sh",
+        "timeout": 10
+      }]
     }]
   }
 }
 ```
 
-**Fail-CLOSED by default:** gateway unreachable → tool call denied. Set `KYA_HOOK_FAIL_OPEN=1` in your shell env (or the hook's `command`) to opt into allow-on-failure (logged to stderr).
+**Windows users:** Claude Code may spawn hooks via a shell that lacks POSIX `env` on PATH, so the `env VAR=x ...` prefix can silently fail to launch. Create a personal wrapper script that exports env vars inside bash and points at `policy-gate.sh`:
+
+```bash
+# ~/kya-hook.sh (outside the repo)
+#!/usr/bin/env bash
+export KYA_HOOK_DID="did:key:your-did-here"
+export KYA_GATEWAY_URL="http://localhost:18080"
+exec bash /absolute/path/to/veldt-kya/scripts/policy-gate.sh
+```
+
+Then point settings.json at your wrapper:
+
+```json
+{ "type": "command", "command": "bash /absolute/path/to/kya-hook.sh", "timeout": 10 }
+```
+
+Keep the wrapper OUTSIDE the repo — it contains your identity DID.
+
+**Fail-CLOSED by default:** gateway unreachable → tool call denied. Set `KYA_HOOK_FAIL_OPEN=1` in the wrapper to opt into allow-on-failure (logs to stderr; use only for dev).
+
+**Debug tee (opt-in):** set `KYA_HOOK_STDIN_DUMP=/absolute/path/to/hook.log` in the wrapper to append every hook stdin + forwarded body to that file — useful when troubleshooting delegation-context flow. Point it at a trusted path only (the file contains full tool inputs, which may include secrets from Bash commands or Read file contents).
 
 ---
 

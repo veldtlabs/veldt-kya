@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE="$SCRIPT_DIR/policy-gate.sh"
 
 export KYA_GATEWAY_URL="${KYA_GATEWAY_URL:-http://localhost:18080}"
-export KYA_HOOK_DID="${KYA_HOOK_DID:-did:key:z6MkrBdNdwUPnXDVD1DCxedzVVBpaGi8aSmoXFAeKNgtAer8}"
+export KYA_HOOK_DID="${KYA_HOOK_DID:-did:example:kya-hook-test-subject}"
 export KYA_HOOK_TIMEOUT_SEC="${KYA_HOOK_TIMEOUT_SEC:-5}"
 
 pass=0; fail=0

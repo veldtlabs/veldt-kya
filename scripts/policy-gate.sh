@@ -76,6 +76,15 @@ if [[ -z "$DID" ]]; then
 fi
 
 INPUT="$(cat)"
+# Optional debug tee — when KYA_HOOK_STDIN_DUMP is set to a writable path,
+# append the raw stdin + forwarded body so operators can inspect what
+# Claude Code sends to the hook. No-op when the env var is unset.
+if [[ -n "${KYA_HOOK_STDIN_DUMP:-}" ]]; then
+  {
+    printf '=== %s pid=%d ===\n' "$(date -Iseconds)" "$$"
+    printf 'STDIN: %s\n' "$INPUT"
+  } >> "$KYA_HOOK_STDIN_DUMP" 2>/dev/null || true
+fi
 # Forward Claude Code's delegation identifiers to the gateway so evidence
 # rows can be stitched into a parent -> child tree:
 #   session_id      — same across every tool call in one Claude session
@@ -83,17 +92,22 @@ INPUT="$(cat)"
 #   agent_id        — set when a sub-agent (spawned via the Task tool) issues
 #                     the call; absent for the main agent
 #   transcript_path — the on-disk conversation transcript, enables replay
-if ! REQ="$(printf '%s' "$INPUT" | jq -c '{
-    tool_name,
-    tool_input,
-    context: {
-      session_id: .session_id,
-      tool_use_id: .tool_use_id,
-      agent_id: (.agent_id // null),
-      transcript_path: (.transcript_path // null)
-    }
-  }' 2>/dev/null)"; then
+# Normalize to what the gateway accepts without a 400:
+#   - tool_name: string, no nested dots (join tail with `_` past the first)
+#   - tool_input: object (coerce null/string/array/number/bool -> {})
+# Rationale: Claude Code hook clients emit lifecycle events + odd tools
+# (ExitPlanMode, TodoWrite, MCP nested-namespace calls) that would
+# otherwise trip gateway MALFORMED_BODY / MALFORMED_TOOL_NAME 400s.
+if ! REQ="$(printf '%s' "$INPUT" | jq -c '{ tool_name: ((.tool_name // "") | tostring | if contains(".") then (split(".") | .[0] + "." + (.[1:] | join("_"))) else . end), tool_input: (if (.tool_input | type) == "object" then .tool_input else {} end), context: { session_id: .session_id, tool_use_id: .tool_use_id, agent_id: (.agent_id // null), transcript_path: (.transcript_path // null) } } | select(.tool_name != "")' 2>/dev/null)"; then
   fail "malformed hook stdin"
+fi
+# Empty REQ = jq's select() filtered out a lifecycle event with no
+# tool_name. Emit allow so Claude proceeds normally; nothing to gate.
+if [[ -z "$REQ" ]]; then
+  _emit_decision "allow" "no tool_name (lifecycle event); nothing to gate"
+fi
+if [[ -n "${KYA_HOOK_STDIN_DUMP:-}" ]]; then
+  printf 'FWDREQ: %s\n' "$REQ" >> "$KYA_HOOK_STDIN_DUMP" 2>/dev/null || true
 fi
 
 HTTP_BODY_FILE="$(mktemp)"

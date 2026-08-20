@@ -13,6 +13,12 @@ pip install pytest mypy ruff   # dev tools
 pytest                          # 0 failures expected on a clean clone
 ```
 
+Four integration test files (`test_policy_decide.py`, `test_mcp_tools_ref_wave_e2e.py`, `test_mcp_tools_ref_bypass.py`, `test_mcp_tools_ref_flag_for_review.py`) require a live docker-compose stack (`kya-gateway` + `kya-mcp-tools-ref` + `kya-postgres`); they self-skip when the stack is unreachable. To bypass them entirely on a machine without docker, run:
+
+```bash
+pytest -m "not integration"
+```
+
 KYA targets **Python 3.10+** and runs against PostgreSQL, MySQL, SQLite, and DuckDB. Most local development uses SQLite by default — no extra setup.
 
 ## Where to contribute
