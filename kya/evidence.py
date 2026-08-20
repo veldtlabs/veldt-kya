@@ -100,6 +100,61 @@ from typing import Any
 from .canonicals import CANONICAL_EVIDENCE_KINDS as _CANONICAL_EVIDENCE_KINDS
 from .canonicals import EVIDENCE_KIND_CHAIN_GENESIS
 
+# ---------------------------------------------------------------------------
+# Redaction target surface (record_evidence pre-persist redaction)
+# ---------------------------------------------------------------------------
+# Payload keys that receive redaction pre-persist. Add sparingly — every
+# added key increases audit-trail redaction latency. Kept as a
+# module-level constant (no hardcoded literals sprinkled through the
+# redaction block) so operators can widen via ``KYA_EVIDENCE_REDACTION_KEYS``
+# (CSV) without a code change.
+#
+# Guardrail: for each target key, redaction fires ONLY when the payload
+# value is a dict OR a string. Non-string leaf types (numbers, booleans,
+# arrays) pass through unchanged — those don't hold secrets under normal
+# payload shapes and touching them would just burn CPU on every write.
+_REDACTION_TARGET_KEYS: tuple[str, ...] = (
+    "tool_arguments",
+    "arguments",  # canonical alias
+    "prompt",
+    "response",
+    "http_body",
+    "tool_input",
+    "tool_output",
+    "input",
+    "output",
+)
+
+# Nested key paths (dot-separated) that also receive redaction. Same
+# dict-or-string guardrail applies at the leaf.
+_REDACTION_TARGET_NESTED_PATHS: tuple[str, ...] = (
+    "tool_call.arguments",
+    "tool_call.input",
+    "tool_call.output",
+)
+
+
+def _resolve_redaction_target_keys() -> tuple[str, ...]:
+    """Return the effective top-level key allowlist.
+
+    Base allowlist = ``_REDACTION_TARGET_KEYS``. Operators can widen
+    (never narrow) via the ``KYA_EVIDENCE_REDACTION_KEYS`` env var, which
+    is a comma-separated list of extra keys to include. Whitespace and
+    empty entries are ignored. Duplicates are collapsed.
+    """
+    extra = os.environ.get("KYA_EVIDENCE_REDACTION_KEYS", "")
+    if not extra:
+        return _REDACTION_TARGET_KEYS
+    extras = tuple(k.strip() for k in extra.split(",") if k.strip())
+    # preserve base order first, then any new extras (dedup preserving order)
+    seen = set(_REDACTION_TARGET_KEYS)
+    merged = list(_REDACTION_TARGET_KEYS)
+    for k in extras:
+        if k not in seen:
+            merged.append(k)
+            seen.add(k)
+    return tuple(merged)
+
 # Per-(tenant, invocation) in-process serialization lock for SQLite +
 # DuckDB. PG uses pg_advisory_xact_lock, MySQL uses SELECT FOR UPDATE,
 # both of which work cross-process. SQLite and DuckDB have no
@@ -649,6 +704,119 @@ def record_evidence(
     if evidence_kind not in VALID_EVIDENCE_KINDS:
         logger.debug("[KYA-EVIDENCE] unknown kind=%s -> 'system_message'", evidence_kind)
         evidence_kind = "system_message"
+
+    # SECRET-LEAK REDACTION (2026-08-20) — apply the installed
+    # ``RedactionHook`` inside ``record_evidence`` itself so every
+    # caller (gateway, Pro plugins, third-party integrations) gets
+    # redaction for free. Before this, only the gateway's
+    # ``_record_verdict_evidence`` called the hook; every other
+    # caller silently persisted raw secrets. Bug-prone-by-convention.
+    #
+    # Scoped redaction — rewrite an explicit allowlist of well-known
+    # secret-bearing payload keys (``_REDACTION_TARGET_KEYS``) plus a
+    # short list of nested paths (``_REDACTION_TARGET_NESTED_PATHS``).
+    # Rewriting arbitrary payload fields would alter the signed
+    # evidence chain in unexpected ways for callers that put non-secret
+    # dicts under other keys. The allowlist can be widened without a
+    # code change via ``KYA_EVIDENCE_REDACTION_KEYS`` (CSV) for
+    # customers with custom payload shapes.
+    #
+    # Design guardrail: for each target, redact ONLY if the value is a
+    # dict OR a string. Non-string leaf types (numbers, booleans,
+    # arrays) pass through unchanged.
+    #
+    # Fail-soft — a raise from the hook (e.g. Presidio model glitch)
+    # MUST NOT drop the evidence write. Emit WARN + fall through to
+    # the raw payload so the audit chain is never silently blank.
+    if isinstance(payload, dict):
+        try:
+            _top_keys = _resolve_redaction_target_keys()
+            _nested_paths = _REDACTION_TARGET_NESTED_PATHS
+            # Cheap pre-check: skip the whole block (no hook import, no
+            # dict copy) when nothing on the payload is in-scope.
+            _has_top = any(k in payload for k in _top_keys)
+            _has_nested = False
+            if not _has_top:
+                for _path in _nested_paths:
+                    _head = _path.split(".", 1)[0]
+                    if isinstance(payload.get(_head), dict):
+                        _has_nested = True
+                        break
+            if _has_top or _has_nested:
+                from ._redaction_hooks import get_redaction_hook
+
+                _hook = get_redaction_hook()
+                _new_payload = dict(payload)
+
+                # Top-level allowlist
+                for _k in _top_keys:
+                    if _k not in _new_payload:
+                        continue
+                    _v = _new_payload[_k]
+                    if isinstance(_v, dict):
+                        _new_payload[_k] = _hook.redact_attrs(_v)
+                    elif isinstance(_v, str):
+                        # Wrap the bare string in a single-key attrs bag
+                        # so the hook contract (dict-in / dict-out)
+                        # applies uniformly; unwrap after.
+                        _redacted = _hook.redact_attrs({_k: _v})
+                        _new_payload[_k] = _redacted.get(_k, _v)
+                    # else: number/bool/list/None — pass through per guardrail
+
+                # Nested dot-paths (e.g. tool_call.arguments)
+                #
+                # IMPORTANT — walk ``_new_payload`` (NOT ``payload``) so
+                # redactions performed by earlier paths in this loop are
+                # preserved. Re-walking ``payload`` and re-``dict(_src_child)``
+                # would overwrite prior copies with a fresh copy of the
+                # original, discarding earlier redactions when multiple
+                # nested paths share a parent (e.g. tool_call.arguments +
+                # tool_call.input both share the ``tool_call`` parent).
+                #
+                # To keep the caller's payload immutable, we copy-on-write
+                # any parent dict the first time we descend into it
+                # (detected by identity check against the source dict).
+                for _path in _nested_paths:
+                    _parts = _path.split(".")
+                    _cursor_new = _new_payload
+                    _cursor_src = payload
+                    _ok = True
+                    for _part in _parts[:-1]:
+                        _src_child = _cursor_src.get(_part) if isinstance(_cursor_src, dict) else None
+                        if not isinstance(_src_child, dict):
+                            _ok = False
+                            break
+                        _cur_child = _cursor_new.get(_part) if isinstance(_cursor_new, dict) else None
+                        # Copy-on-write when the child in _new_payload
+                        # is still the source dict (identity match) or
+                        # missing/wrong type. Otherwise, keep the prior
+                        # copy so earlier redactions on the same parent
+                        # survive this iteration.
+                        if _cur_child is _src_child or not isinstance(_cur_child, dict):
+                            _cur_child = dict(_src_child)
+                            _cursor_new[_part] = _cur_child
+                        _cursor_new = _cur_child
+                        _cursor_src = _src_child
+                    if not _ok:
+                        continue
+                    _leaf = _parts[-1]
+                    if _leaf not in _cursor_new:
+                        continue
+                    _lv = _cursor_new[_leaf]
+                    if isinstance(_lv, dict):
+                        _cursor_new[_leaf] = _hook.redact_attrs(_lv)
+                    elif isinstance(_lv, str):
+                        _redacted = _hook.redact_attrs({_leaf: _lv})
+                        _cursor_new[_leaf] = _redacted.get(_leaf, _lv)
+                    # else: pass through per guardrail
+
+                payload = _new_payload
+        except Exception as _hook_exc:
+            logger.warning(
+                "[KYA-EVIDENCE] redaction hook raised: %s "
+                "— proceeding with unredacted payload",
+                _hook_exc,
+            )
 
     # Payload size cap + rate limit. Both off-by-default;
     # only fire when operators have set the corresponding env vars.
