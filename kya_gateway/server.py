@@ -957,13 +957,55 @@ def build_app(gw: Gateway) -> FastAPI:
         )
 
         if identity_failure is None:
-            verdict = _run_policy(
-                gw=gw,
-                principal=principal,
-                action=action,
-                payload_bytes=len(body),
-                invocation_id=invocation_id,
-            )
+            # Thread params.arguments through so arg-aware policy rules
+            # (ABAC/OPA/Cedar/CEL predicates on ``attributes.tool.input.*``)
+            # can match. Falls back to {} for a well-shaped call with no
+            # arguments (MCP allows this); the property already handles
+            # missing/malformed params.
+            #
+            # Fail-closed: mirror /v1/policy/decide (server.py:1341-1360).
+            # If the policy pipeline raises (Pro-side ABAC NoneType,
+            # OPA/Cedar/CEL evaluator crash, DB blip mid-eval, ...) we
+            # MUST NOT leak a bare 500 with a Python traceback. Return
+            # a typed JSON-RPC deny envelope carrying POLICY_ENGINE_ERROR
+            # so the SDK / hook consumer treats it identically to any
+            # other policy deny. Header dual-signal matches /decide so
+            # non-JSON consumers can branch on X-KYA-Verdict alone.
+            try:
+                verdict = _run_policy(
+                    gw=gw,
+                    principal=principal,
+                    action=action,
+                    payload_bytes=len(body),
+                    invocation_id=invocation_id,
+                    tool_arguments=req.tool_arguments,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "[KYA-GATEWAY] /mcp pipeline crash: %s", exc,
+                )
+                if req.is_notification:
+                    # Per JSON-RPC 2.0 §4.1: MUST NOT reply to
+                    # notifications. Fail-closed still — the caller
+                    # didn't ask for a response and can't act on one.
+                    return Response(status_code=204)
+                return JSONResponse(
+                    make_error(
+                        req.request_id,
+                        -32603,  # JSON-RPC internal error
+                        "KYA policy pipeline crash (fail-closed deny)",
+                        data={
+                            "verdict": "deny",
+                            "reason_codes": ["POLICY_ENGINE_ERROR"],
+                            "signal_kind": "policy_engine_error",
+                        },
+                    ),
+                    status_code=500,
+                    headers={
+                        "X-KYA-Verdict": "deny",
+                        "X-KYA-Reason-Codes": "POLICY_ENGINE_ERROR",
+                    },
+                )
         else:
             # Policy can't meaningfully evaluate an unauth call — synthesize
             # a deny verdict carrying the identity-failure reason. The
@@ -994,6 +1036,7 @@ def build_app(gw: Gateway) -> FastAPI:
                 verdict=verdict,
                 request_payload=req.raw,
                 invocation_id=invocation_id,
+                tool_arguments=req.tool_arguments,
             )
 
         if req.is_notification:
@@ -1060,6 +1103,10 @@ def build_app(gw: Gateway) -> FastAPI:
                     body=body,
                     invocation_id=invocation_id,
                     request_headers=dict(request.headers),
+                    tool_arguments=(
+                        req.tool_arguments
+                        if isinstance(req.tool_arguments, dict) else None
+                    ),
                 )
                 headers_out: dict[str, str] = {
                     "WWW-Authenticate":
@@ -1316,12 +1363,16 @@ def build_app(gw: Gateway) -> FastAPI:
             invocation_id = _record_invocation_pre_policy(
                 gw=gw, principal=principal, action=action,
             )
+            # Thread tool_input through — see the /mcp counterpart at
+            # server.py:960. Same reason: enables arg-aware policy rules
+            # on ``attributes.tool.input.*`` via ``_build_eval_input``.
             verdict = _run_policy(
                 gw=gw,
                 principal=principal,
                 action=action,
                 payload_bytes=len(body),
                 invocation_id=invocation_id,
+                tool_arguments=tool_input if isinstance(tool_input, dict) else None,
             )
         except Exception as exc:  # noqa: BLE001
             # Fail-closed per gateway convention (see server.py:1524 +
@@ -1364,6 +1415,9 @@ def build_app(gw: Gateway) -> FastAPI:
                     body=body,
                     invocation_id=invocation_id,
                     request_headers=raw_headers,
+                    tool_arguments=(
+                        tool_input if isinstance(tool_input, dict) else None
+                    ),
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -1385,6 +1439,7 @@ def build_app(gw: Gateway) -> FastAPI:
                 verdict=verdict,
                 request_payload=pseudo_request_payload,
                 invocation_id=invocation_id,
+                tool_arguments=tool_input if isinstance(tool_input, dict) else None,
             )
             if _evidence_int is not None:
                 evidence_id = str(_evidence_int)
@@ -1507,6 +1562,7 @@ def _create_pending_row(
     body: bytes,
     invocation_id: int | None,
     request_headers: dict,
+    tool_arguments: dict | None = None,
 ) -> str | None:
     """Persist a kya_pending_invocations row so the 428 response has
     something to poll against (#101 layer 2).
@@ -1522,6 +1578,13 @@ def _create_pending_row(
     at-rest bytes are always encrypted in Pro. OSS-only self-hosted
     deploys accept the operational risk of plaintext at rest (documented
     in the ops guide).
+
+    ``tool_arguments`` (2026-08-20 audit item #5) — REDACTED tool-call
+    args surfaced to HITL reviewers on the pending row. Redaction is
+    applied HERE (not at the call sites) so both /mcp and /decide
+    always land redacted args in the queue. Matches the fail-soft
+    pattern used by ``_record_verdict_evidence`` — a hook raise WARNs
+    and falls through to raw args rather than dropping the pending row.
     """
     try:
         from kya import default_session
@@ -1582,6 +1645,28 @@ def _create_pending_row(
                     body, tenant_id=gw.cfg.gateway.tenant_id,
                 )
             # else: no encryption hook — plaintext by design.
+            # HITL-reviewer redaction (item #5, 2026-08-20): pass
+            # ``tool_arguments`` through the installed RedactionHook
+            # BEFORE persisting so reviewers never see raw secrets in
+            # the queue. Matches the fail-soft envelope used by
+            # ``_record_verdict_evidence`` (server.py ~1899): a hook
+            # raise WARNs + falls through to raw args rather than
+            # dropping the pending row (never let a redaction bug take
+            # down the HITL loop).
+            _redacted_tool_arguments: dict | None = None
+            if tool_arguments is not None:
+                try:
+                    from kya_gateway.policy_pipeline import get_redaction_hook
+                    _redacted_tool_arguments = get_redaction_hook().redact_attrs(
+                        tool_arguments,
+                    )
+                except Exception as _hook_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[KYA-GATEWAY] redaction hook raised on create_pending "
+                        "path: %s — proceeding with raw tool_arguments",
+                        _hook_exc,
+                    )
+                    _redacted_tool_arguments = tool_arguments
             pending_id = create_pending(
                 engine,
                 tenant_id=gw.cfg.gateway.tenant_id,
@@ -1595,6 +1680,7 @@ def _create_pending_row(
                 policy_config_hash=hash_policy_config(
                     getattr(gw.cfg, "policy", None)
                 ),
+                tool_arguments=_redacted_tool_arguments,
             )
             logger.info(
                 "[KYA-GATEWAY] pending row created for 428 pending_id=%s "
@@ -1628,11 +1714,20 @@ def _run_policy(
     action: str,
     payload_bytes: int,
     invocation_id: int | None,
+    tool_arguments: dict | None = None,
 ):
     """Run the policy pipeline within a KYA session.
 
     Wrapped in its own function so failures don't leak DB sessions and
     so tests can stub it.
+
+    ``tool_arguments`` (params.arguments on /mcp, tool_input on
+    /v1/policy/decide) is threaded through so ``_build_eval_input``
+    flattens each arg as ``attributes["tool.input.<k>"]`` — surfaced
+    to ABAC / OPA / Cedar / CEL evaluators as
+    ``attributes.tool.input.<k>`` for arg-aware policy rules (e.g.
+    "deny Bash with curl"). Optional to preserve callers that only
+    care about action-level RBAC.
     """
     try:
         from kya import default_session
@@ -1655,6 +1750,7 @@ def _run_policy(
             payload_bytes=payload_bytes,
             invocation_id=invocation_id,
             cfg=gw.cfg.policy,
+            tool_arguments=tool_arguments,
         )
 
 
@@ -1806,6 +1902,7 @@ def _record_verdict_evidence(
     verdict,
     request_payload: dict,
     invocation_id: int | None,
+    tool_arguments: dict | None = None,
 ) -> int | None:
     """Record the verdict on the KYA evidence chain.
 
@@ -1819,6 +1916,13 @@ def _record_verdict_evidence(
     Returns the evidence row id on success, ``None`` on failure — callers
     that surface an ``evidence_id`` to clients can use this without
     branching on internal state.
+
+    ``tool_arguments`` is surfaced as a top-level ``tool_arguments`` key on
+    the payload dict so a forensic reviewer reading the evidence row can
+    see the exact args that triggered the verdict (e.g. the ``command``
+    that a curl-exfil rule denied) without having to navigate into the
+    nested ``tool_call.arguments`` path. Additive; when ``None`` the key
+    is omitted so pre-existing payloads keep byte-identical shape.
     """
     try:
         from kya import (
@@ -1846,19 +1950,40 @@ def _record_verdict_evidence(
             except Exception:
                 # Never fail evidence write on attribution lookup.
                 pass
+            # Forensic-audit fix (2026-08-20): surface the actual tool args
+            # as a top-level ``tool_arguments`` key so a reviewer reading
+            # "denied by curl-exfil rule" can immediately see the command
+            # that triggered it, without navigating into ``tool_call.arguments``.
+            #
+            # SECRET-LEAK REDACTION — single source of truth is now
+            # ``kya.evidence.record_evidence`` itself (see evidence.py:673).
+            # That wrapper reads the installed RedactionHook and rewrites
+            # both ``tool_arguments`` and ``tool_call.arguments`` inside
+            # the payload before writing the row, giving every caller
+            # (this one, Pro plugins, third-party integrations) redaction
+            # for free. We used to redact HERE too — that was a double
+            # hook call on every gateway verdict (~2× the cost) with no
+            # semantic effect (redaction is idempotent). Removed to
+            # collapse the hot path to a single hook invocation per
+            # verdict. Sabotage-verify: unset the hook in a test and
+            # confirm evidence rows land with RAW args — proves the
+            # OSS-level hook is now the SOLE enforcement point.
+            _payload: dict[str, Any] = {
+                "action": action,
+                "verdict": verdict.verdict,
+                "reason_codes": verdict.reason_codes,
+                "tool_call": request_payload.get("params", {}),
+                "method": principal.method,
+                "external_subject": principal.external_subject,
+            }
+            if tool_arguments is not None:
+                _payload["tool_arguments"] = tool_arguments
             evidence_row_id = record_evidence(
                 db,
                 tenant_id=gw.cfg.gateway.tenant_id,
                 invocation_id=invocation_id,
                 evidence_kind="gateway_verdict",
-                payload={
-                    "action": action,
-                    "verdict": verdict.verdict,
-                    "reason_codes": verdict.reason_codes,
-                    "tool_call": request_payload.get("params", {}),
-                    "method": principal.method,
-                    "external_subject": principal.external_subject,
-                },
+                payload=_payload,
                 evaluator_name=_evaluator_name,
             )
             record_principal_signal(

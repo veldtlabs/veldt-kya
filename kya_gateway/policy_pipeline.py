@@ -49,6 +49,65 @@ from kya_gateway.identity import BoundPrincipal
 logger = logging.getLogger(__name__)
 
 
+# ─── RedactionHook seam ─────────────────────────────────────────────
+#
+# Policy-engine-agnostic redaction seam. OSS ships a no-op passthrough;
+# Pro plugs in ``PresidioRedactionHook`` (Presidio Analyzer +
+# Anonymizer) via ``set_redaction_hook``. A future Cloud DLP / Nightfall
+# hook drops in the same way — no changes needed here.
+#
+# The hook is invoked on the EVIDENCE-BOUND copy of attrs only. The
+# evaluator continues to see the RAW attrs so rules that reference
+# ``tool.input.command`` can still match against the pre-redaction
+# value. This split honours the audit-vs-enforcement distinction the
+# forensic-audit finding #8 called out (secrets in evidence, but rules
+# need real args to enforce).
+
+
+# NOTE: the authoritative RedactionHook registry now lives in the OSS
+# ``kya._redaction_hooks`` module so ``kya.evidence.record_evidence``
+# can call the hook directly without breaking the layering rule
+# (``kya`` MUST NOT import from ``kya_gateway``). The setter/getter
+# below are backward-compat pass-throughs — existing callers
+# (tests, Pro's Presidio installer) keep working unchanged, and the
+# hook state is shared with the in-``record_evidence`` redaction call.
+from kya._redaction_hooks import (  # noqa: E402
+    RedactionHook,
+    _NoopRedactionHook,
+)
+from kya._redaction_hooks import (  # noqa: E402
+    get_redaction_hook as _get_redaction_hook_oss,
+)
+from kya._redaction_hooks import (  # noqa: E402
+    set_redaction_hook as _set_redaction_hook_oss,
+)
+
+
+def set_redaction_hook(hook: RedactionHook | None) -> None:
+    """Install a process-wide RedactionHook.
+
+    Backward-compat pass-through — delegates to
+    :func:`kya._redaction_hooks.set_redaction_hook` so the gateway's
+    evidence path AND :func:`kya.evidence.record_evidence` see the
+    same installed hook. Callers that previously imported this
+    symbol from ``kya_gateway.policy_pipeline`` continue to work
+    unchanged.
+    """
+    _set_redaction_hook_oss(hook)
+
+
+def get_redaction_hook() -> RedactionHook:
+    """Return the currently-installed RedactionHook.
+
+    Backward-compat pass-through — delegates to
+    :func:`kya._redaction_hooks.get_redaction_hook`. Never returns
+    ``None``. Kept so ``from kya_gateway.policy_pipeline import
+    get_redaction_hook`` in existing gateway call sites continues to
+    resolve.
+    """
+    return _get_redaction_hook_oss()
+
+
 # ─── Legacy verdict alias mapping ──────────────────────────────────
 #
 # ``require_human`` was renamed to ``flag_for_review`` in the canonical
@@ -190,6 +249,7 @@ def _build_eval_input(
     candidate_reasons: list[str],
     candidate_signal_kind: str,
     extra: dict[str, Any] | None = None,
+    tool_arguments: dict[str, Any] | None = None,
 ):
     """Assemble the ``EvaluationInput`` for a rule-triggered evaluation.
 
@@ -227,6 +287,21 @@ def _build_eval_input(
         "payload_bytes": payload_bytes,
         "invocation_id": invocation_id,
     }
+    # Flatten tool arguments as ``tool.input.<key>`` on the internal
+    # attrs bag so evaluator rules can inspect the actual call. The
+    # ABAC evaluator wraps every EvaluationInput.attributes entry with
+    # an ``attributes.`` namespace prefix (per the 4-namespace model —
+    # subject./action./resource./attributes.), so operators authoring
+    # ABAC DSL rules write the fully-qualified form:
+    # ``attr: attributes.tool.input.command`` (e.g. deny when
+    # ``attributes.tool.input.command`` matches a curl-exfil pattern).
+    # Values kept as their raw JSON type — a predicate that needs
+    # strings should call str(). ``None`` and empty dict both yield no
+    # ``tool.input.*`` keys, so a rule using ``.*``-style regex can't
+    # accidentally match a synthesised empty value.
+    if tool_arguments:
+        for k, v in tool_arguments.items():
+            attrs[f"tool.input.{k}"] = v
     if extra:
         attrs.update(extra)
     return EvaluationInput(
@@ -503,6 +578,7 @@ def evaluate(
     payload_bytes: int,
     invocation_id: int | None,
     cfg: PolicyConfig,
+    tool_arguments: dict[str, Any] | None = None,
 ) -> Verdict:
     """Run an MCP request through the configured policy stack.
 
@@ -548,6 +624,7 @@ def evaluate(
             candidate_reasons=candidate.reason_codes,
             candidate_signal_kind=candidate.signal_kind,
             extra=extra or None,
+            tool_arguments=tool_arguments,
         )
         return _emit_via_evaluator(evaluator, inp, candidate, db=db)
 

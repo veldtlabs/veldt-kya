@@ -216,6 +216,11 @@ SIGNAL_KIND_ISSUER_ROTATION_PENDING: str = "issuer_rotation_pending"
 SIGNAL_KIND_VC_APPROVAL_DENIED: str = "vc_approval_denied"
 SIGNAL_KIND_BUDGET_EXCEEDED: str = "budget_exceeded"
 SIGNAL_KIND_BUDGET_ERROR: str = "budget_error"
+# Emitted when the OSS gateway returns ``flag_for_review`` — the request
+# is neither allowed nor denied, but pending a human-in-the-loop decision.
+# Kept in sync with ``kya_pro.mcp_edge._app._OSS_VERDICT_TO_SIGNAL_KIND``
+# so audit rows can correlate a flag_for_review verdict to its signal.
+SIGNAL_KIND_HUMAN_GATE: str = "human_gate"
 
 CANONICAL_SIGNAL_KINDS: frozenset[str] = frozenset({
     SIGNAL_KIND_OOS_TOOL,
@@ -239,6 +244,7 @@ CANONICAL_SIGNAL_KINDS: frozenset[str] = frozenset({
     SIGNAL_KIND_VC_APPROVAL_DENIED,
     SIGNAL_KIND_BUDGET_EXCEEDED,
     SIGNAL_KIND_BUDGET_ERROR,
+    SIGNAL_KIND_HUMAN_GATE,
 })
 
 
@@ -380,6 +386,7 @@ __all__ = [
     "SIGNAL_KIND_VC_APPROVAL_DENIED",
     "SIGNAL_KIND_BUDGET_EXCEEDED",
     "SIGNAL_KIND_BUDGET_ERROR",
+    "SIGNAL_KIND_HUMAN_GATE",
     "CANONICAL_SIGNAL_KINDS",
     # Lifecycle states
     "LIFECYCLE_STATE_DRAFT",

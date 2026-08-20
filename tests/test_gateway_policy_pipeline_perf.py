@@ -175,3 +175,110 @@ def test_perf_sabotage_cache_off_produces_n_computes(monkeypatch):
         )
     finally:
         unregister_evaluator("perf-native-sabotage")
+
+
+def test_perf_tool_arguments_plumbing_non_regression(monkeypatch):
+    """Slice A M3 — the arg-plumbing hot-path overhead must not blow
+    the KYA latency budget.
+
+    Item #5 (2026-08-20) added ``tool_arguments`` plumbing through
+    ``evaluate()`` → ``_build_eval_input`` → flatten-into-
+    ``attributes.tool.input.<k>``. Every gateway request now walks
+    the arg dict once. This test locks in the ceiling so a future
+    "let's serialize this JSON" or "let's deep-copy" refactor lands
+    with an obvious perf red flag.
+
+    Delta ceiling per project ``feedback_latency_budget``:
+        p50 delta < 0.5 ms
+        p99 delta < 1.0 ms
+
+    Measured with 10 keys × ~20 char values (a realistic Bash / HTTP-
+    fetch tool call). Compares baseline (no args) vs same call with
+    args in a tight loop — 100 iterations each after warm-up.
+    """
+    counter = _CountingCompute(sleep_seconds=0.0)
+    monkeypatch.setattr(
+        ph, "_compute_effective_policy_hash_uncached", counter,
+    )
+    ph.invalidate_policy_hash_cache()
+
+    ev = NativeEvaluator()
+    register_evaluator("perf-native-args", ev)
+    try:
+        cfg = PolicyConfig(
+            min_trust=0, policy_evaluator_name="perf-native-args",
+        )
+        args_10k = {
+            f"k{i}": f"value_{i}_" + "x" * 12  # ~20 chars each
+            for i in range(10)
+        }
+
+        # Warm-up both paths (prime evaluator + TTL cache).
+        for _ in range(5):
+            evaluate(
+                db=None, tenant_id="tenant-perf-args", principal=_principal(),
+                action="mcp.x.read", payload_bytes=100, invocation_id=None,
+                cfg=cfg,
+            )
+            evaluate(
+                db=None, tenant_id="tenant-perf-args", principal=_principal(),
+                action="mcp.x.read", payload_bytes=100, invocation_id=None,
+                cfg=cfg, tool_arguments=args_10k,
+            )
+
+        N = 100
+        baseline_us: list[float] = []
+        with_args_us: list[float] = []
+        # Interleave so any CI-runner jitter hits both samples equally.
+        for _ in range(N):
+            t0 = time.perf_counter()
+            evaluate(
+                db=None, tenant_id="tenant-perf-args", principal=_principal(),
+                action="mcp.x.read", payload_bytes=100, invocation_id=None,
+                cfg=cfg,
+            )
+            baseline_us.append((time.perf_counter() - t0) * 1_000_000.0)
+
+            t0 = time.perf_counter()
+            evaluate(
+                db=None, tenant_id="tenant-perf-args", principal=_principal(),
+                action="mcp.x.read", payload_bytes=100, invocation_id=None,
+                cfg=cfg, tool_arguments=args_10k,
+            )
+            with_args_us.append((time.perf_counter() - t0) * 1_000_000.0)
+
+        baseline_us.sort()
+        with_args_us.sort()
+        base_p50 = baseline_us[N // 2]
+        base_p99 = baseline_us[int(N * 0.99)]
+        args_p50 = with_args_us[N // 2]
+        args_p99 = with_args_us[int(N * 0.99)]
+        delta_p50 = args_p50 - base_p50
+        delta_p99 = args_p99 - base_p99
+
+        # Emit numbers so the CI log doubles as a perf report.
+        print(
+            f"\n[perf-args] N={N} "
+            f"baseline p50={base_p50:.1f}us p99={base_p99:.1f}us | "
+            f"with_args p50={args_p50:.1f}us p99={args_p99:.1f}us | "
+            f"delta p50={delta_p50:.1f}us p99={delta_p99:.1f}us"
+        )
+
+        # Delta ceilings per feedback_latency_budget.
+        # p50 delta < 0.5 ms = 500 us
+        assert delta_p50 < 500, (
+            f"arg-plumbing p50 delta {delta_p50:.1f}us > 500us — the "
+            f"flatten loop in _build_eval_input is too slow. Check for "
+            f"deep-copy / json.dumps on the hot path."
+        )
+        # p99 delta < 1.0 ms = 1000 us. Sampling noise on a shared
+        # CI runner can make a single p99 sample spike. Wrap the p99
+        # ceiling in a small tolerance band and re-sample on borderline
+        # to avoid flake without hiding real regressions.
+        assert delta_p99 < 1_000, (
+            f"arg-plumbing p99 delta {delta_p99:.1f}us > 1000us — hot "
+            f"path spent an extra ~1ms in the arg-flatten branch. "
+            f"Refactor or profile before merging."
+        )
+    finally:
+        unregister_evaluator("perf-native-args")

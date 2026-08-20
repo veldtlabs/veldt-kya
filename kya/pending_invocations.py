@@ -106,6 +106,11 @@ class PendingInvocation:
     decided_at: datetime | None
     decided_by: str | None
     resume_result_evidence_id: int | None
+    # Prod-audit item #5 (2026-08-20): surface the tool args a HITL
+    # reviewer needs to see the exact call (Bash(command='rm -rf /')) —
+    # not just the tool_name. Optional: legacy rows written before this
+    # column existed return ``None``.
+    tool_arguments: dict[str, Any] | None = None
 
 
 # ── Table creation ──────────────────────────────────────────────────
@@ -142,6 +147,106 @@ def _create_index_if_missing(
         f"CREATE INDEX IF NOT EXISTS {index_name} "
         f"ON {table_name} {columns}"
     ))
+
+
+# Table/column names the drift-reconciler works against — module-level
+# constants so any future rename touches one location + so the reconciler
+# doesn't repeat the string literal (per no-hardcoding review policy).
+_PENDING_TABLE = "kya_pending_invocations"
+_TOOL_ARGUMENTS_COLUMN = "tool_arguments"
+
+
+def _add_tool_arguments_column_if_missing(
+    conn, dialect: str, json_type: str,
+) -> None:
+    """Portable, probe-first ADD COLUMN kya_pending_invocations.tool_arguments.
+
+    Chunk-B (2026-08-20) added ``tool_arguments`` as a HITL-reviewer aid.
+    Deployments that ran ``ensure_table`` before this column existed
+    still have the pre-column CREATE-TABLE. This helper drift-reconciles
+    them at boot.
+
+    Design (2026-08-20 R2 fix — probe-first, ADD second)
+    ----------------------------------------------------
+    The steady-state after the first successful boot is "column already
+    present" on EVERY subsequent boot. So the fast path is a probe
+    (``sqlalchemy.inspect(conn).get_columns(...)``) — portable across
+    postgres / sqlite / mysql / duckdb, no dialect branch, and no WARN
+    log on the normal-case path. If the probe says the column is
+    already there, return silently — this is the expected steady state
+    and MUST NOT emit WARN.
+
+    Only when the column is missing do we ALTER — logging INFO once so
+    ops sees the one-time backfill event, then never again. The ALTER
+    itself uses the dialect-native ``ADD COLUMN`` (no ``IF NOT EXISTS``
+    — Inspector already told us it's missing, so the plain ADD is safe
+    and portable across all four dialects).
+
+    Fail-soft: any raise is WARN-logged; the reader/writer branches
+    degrade gracefully because ``_row_to_view`` handles a 16-tuple
+    (legacy) row as well as a 17-tuple row.
+    """
+    # Probe first — reuses the SQLAlchemy Inspector primitive already
+    # used by kya.evidence._ensure_evaluator_name_column + kya.invocations
+    # (per reusability-first review policy). Portable across all four
+    # supported dialects; no dialect branching needed.
+    try:
+        from sqlalchemy import inspect as _sa_inspect
+
+        existing_cols = {
+            c["name"]
+            for c in _sa_inspect(conn).get_columns(_PENDING_TABLE)
+        }
+    except Exception as exc:  # noqa: BLE001
+        # Inspector unavailable (very old dialect, test stub connection,
+        # transient DB error). Fall through to the legacy dialect-branched
+        # ALTER — that path already has its own fail-soft envelope.
+        logger.debug(
+            "[pending_invocations] Inspector probe skipped (%s); falling "
+            "back to dialect-branched ADD COLUMN",
+            exc,
+        )
+        existing_cols = None
+
+    if existing_cols is not None and _TOOL_ARGUMENTS_COLUMN in existing_cols:
+        # Steady-state: column already present. No WARN, no ALTER — this
+        # runs on every boot after the first successful backfill.
+        return
+
+    # Column missing (or probe indeterminate) — attempt ADD COLUMN.
+    try:
+        conn.execute(_sql(
+            f"ALTER TABLE {_PENDING_TABLE} "
+            f"ADD COLUMN {_TOOL_ARGUMENTS_COLUMN} {json_type} NULL"
+        ))
+        if existing_cols is not None:
+            # Probe succeeded + said "missing", ALTER succeeded → one-time
+            # backfill on a legacy deploy. Log INFO so ops sees the event
+            # without being drowned in WARN noise every boot.
+            logger.info(
+                "[pending_invocations] added %s.%s column (one-time "
+                "drift-reconcile on legacy deploy)",
+                _PENDING_TABLE, _TOOL_ARGUMENTS_COLUMN,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # ALTER failed. Two possibilities: (1) column already exists
+        # (race with another worker's ADD, or Inspector cache miss) —
+        # verify via a SELECT probe; success means we're done. (2) real
+        # error — WARN so ops sees it, but never crash the boot path.
+        try:
+            conn.execute(_sql(
+                f"SELECT {_TOOL_ARGUMENTS_COLUMN} FROM {_PENDING_TABLE} LIMIT 1"
+            ))
+            # SELECT succeeded → column IS there; the ALTER failure was
+            # a benign race. Silent success.
+            return
+        except Exception:
+            logger.warning(
+                "[pending_invocations] ADD COLUMN %s.%s failed: %s "
+                "— HITL reviewers may see NULL tool_arguments until "
+                "schema is repaired",
+                _PENDING_TABLE, _TOOL_ARGUMENTS_COLUMN, exc,
+            )
 
 
 def ensure_table(engine) -> None:
@@ -186,7 +291,8 @@ def ensure_table(engine) -> None:
                 expires_at {ts_type} NOT NULL,
                 decided_at {ts_type},
                 decided_by VARCHAR(36),
-                resume_result_evidence_id BIGINT
+                resume_result_evidence_id BIGINT,
+                tool_arguments {json_type} NULL
             )
         """))
         # Index for the sweeper's expired-row scan + approver-queue
@@ -207,6 +313,14 @@ def ensure_table(engine) -> None:
             table_name="kya_pending_invocations",
             columns="(tenant_id, status)",
         )
+        # Drift-reconcile: legacy deployments booted BEFORE the
+        # tool_arguments column existed in the CREATE-TABLE above
+        # (added 2026-08-20). Uses the SQLAlchemy Inspector primitive
+        # to probe first — silent on the steady-state path where the
+        # column is already present (log-noise fix, R2 2026-08-20).
+        # Fresh deploys hit this and find the column already there
+        # (CREATE TABLE now includes it), so it's a no-op.
+        _add_tool_arguments_column_if_missing(conn, dialect, json_type)
     _ENSURED_ENGINES.add(key)
 
 
@@ -253,6 +367,7 @@ def create_pending(
     policy_config_hash: str,
     now: datetime | None = None,
     ttl: timedelta | None = None,
+    tool_arguments: dict[str, Any] | None = None,
 ) -> str:
     """Write a pending row + return its uuid (stamp on the 428 response).
 
@@ -280,59 +395,58 @@ def create_pending(
     # Compact headers JSON so we don't waste bytes; sort keys so equal
     # headers hash-compare as equal in tests.
     headers_json = json.dumps(request_headers, sort_keys=True, separators=(",", ":"))
+    # Prod-audit item #5: JSON-serialize tool_arguments for the
+    # HITL-reviewer column. Non-JSON-serializable values fall back to
+    # a repr() envelope so the reviewer at least sees something.
+    if tool_arguments is None:
+        args_json = None
+    else:
+        try:
+            args_json = json.dumps(
+                tool_arguments, sort_keys=True, separators=(",", ":"),
+                default=str,
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "[pending_invocations] tool_arguments not JSON-serializable "
+                "— storing repr() envelope"
+            )
+            args_json = json.dumps({"repr": repr(tool_arguments)})
+    _insert_sql = _sql("""
+        INSERT INTO kya_pending_invocations
+            (id, tenant_id, agent_key, principal_kind, principal_id,
+             action, original_invocation_id, request_body_ciphertext,
+             request_headers, policy_config_hash, status,
+             submitted_at, expires_at, tool_arguments)
+        VALUES
+            (:id, :tid, :ak, :pk, :pid, :act, :oi, :body,
+             :hdrs, :hash, 'pending', :sub, :exp, :args)
+    """)
+    _params = {
+        "id": pending_id,
+        "tid": tenant_id,
+        "ak": agent_key,
+        "pk": principal_kind,
+        "pid": principal_id,
+        "act": action,
+        "oi": original_invocation_id,
+        "body": request_body_ciphertext,
+        "hdrs": headers_json,
+        "hash": policy_config_hash,
+        "sub": ts,
+        "exp": expiry,
+        "args": args_json,
+    }
     try:
         with engine.begin() as conn:
-            conn.execute(_sql("""
-                INSERT INTO kya_pending_invocations
-                    (id, tenant_id, agent_key, principal_kind, principal_id,
-                     action, original_invocation_id, request_body_ciphertext,
-                     request_headers, policy_config_hash, status,
-                     submitted_at, expires_at)
-                VALUES
-                    (:id, :tid, :ak, :pk, :pid, :act, :oi, :body,
-                     :hdrs, :hash, 'pending', :sub, :exp)
-            """), {
-                "id": pending_id,
-                "tid": tenant_id,
-                "ak": agent_key,
-                "pk": principal_kind,
-                "pid": principal_id,
-                "act": action,
-                "oi": original_invocation_id,
-                "body": request_body_ciphertext,
-                "hdrs": headers_json,
-                "hash": policy_config_hash,
-                "sub": ts,
-                "exp": expiry,
-            })
+            conn.execute(_insert_sql, _params)
     except IntegrityError:
         # UUID collision is essentially impossible (2^122) but the retry
         # is cheap — try once with a fresh id and bail if that also fails.
         pending_id = str(uuid.uuid4())
+        _params["id"] = pending_id
         with engine.begin() as conn:
-            conn.execute(_sql("""
-                INSERT INTO kya_pending_invocations
-                    (id, tenant_id, agent_key, principal_kind, principal_id,
-                     action, original_invocation_id, request_body_ciphertext,
-                     request_headers, policy_config_hash, status,
-                     submitted_at, expires_at)
-                VALUES
-                    (:id, :tid, :ak, :pk, :pid, :act, :oi, :body,
-                     :hdrs, :hash, 'pending', :sub, :exp)
-            """), {
-                "id": pending_id,
-                "tid": tenant_id,
-                "ak": agent_key,
-                "pk": principal_kind,
-                "pid": principal_id,
-                "act": action,
-                "oi": original_invocation_id,
-                "body": request_body_ciphertext,
-                "hdrs": headers_json,
-                "hash": policy_config_hash,
-                "sub": ts,
-                "exp": expiry,
-            })
+            conn.execute(_insert_sql, _params)
     return pending_id
 
 
@@ -455,11 +569,25 @@ def _row_to_view(row) -> PendingInvocation:
 
     Header JSON is loaded once here so callers don't repeat the parse.
     Datetime columns are dialect-normalized via ``_coerce_datetime``.
+
+    Accepts the 17-tuple shape SELECTs since prod-audit item #5 append
+    tool_arguments as the trailing column. Legacy 16-tuple callers
+    (before the column existed) still unpack correctly — tool_arguments
+    defaults to None on the view.
     """
-    (
-        pid, tid, ak, pk, pri, action_str, oi, body, hdrs_json,
-        pol_hash, status, sub, exp, dec_at, dec_by, res_ev_id,
-    ) = row
+    row_tuple = tuple(row)
+    if len(row_tuple) == 17:
+        (
+            pid, tid, ak, pk, pri, action_str, oi, body, hdrs_json,
+            pol_hash, status, sub, exp, dec_at, dec_by, res_ev_id,
+            args_json,
+        ) = row_tuple
+    else:
+        (
+            pid, tid, ak, pk, pri, action_str, oi, body, hdrs_json,
+            pol_hash, status, sub, exp, dec_at, dec_by, res_ev_id,
+        ) = row_tuple
+        args_json = None
     # Postgres JSONB returns a dict/list already; SQLite/DuckDB/MySQL
     # stored it as TEXT and return a JSON string. Handle both.
     if isinstance(hdrs_json, (dict, list)):
@@ -469,6 +597,17 @@ def _row_to_view(row) -> PendingInvocation:
             headers = json.loads(hdrs_json) if hdrs_json else {}
         except (TypeError, ValueError):
             headers = {}
+    # Same shape-normalization for tool_arguments — postgres JSONB
+    # returns dict, others return a JSON string. None → None.
+    if args_json is None:
+        tool_args = None
+    elif isinstance(args_json, (dict, list)):
+        tool_args = args_json
+    else:
+        try:
+            tool_args = json.loads(args_json)
+        except (TypeError, ValueError):
+            tool_args = None
     return PendingInvocation(
         id=str(pid),
         tenant_id=str(tid),
@@ -486,6 +625,7 @@ def _row_to_view(row) -> PendingInvocation:
         decided_at=_coerce_datetime(dec_at),
         decided_by=str(dec_by) if dec_by else None,
         resume_result_evidence_id=int(res_ev_id) if res_ev_id is not None else None,
+        tool_arguments=tool_args,
     )
 
 
@@ -497,7 +637,7 @@ def get_by_id(engine, pending_id: str) -> PendingInvocation | None:
                    action, original_invocation_id, request_body_ciphertext,
                    request_headers, policy_config_hash, status,
                    submitted_at, expires_at, decided_at, decided_by,
-                   resume_result_evidence_id
+                   resume_result_evidence_id, tool_arguments
             FROM kya_pending_invocations
             WHERE id = :id
         """), {"id": pending_id}).fetchone()
@@ -524,7 +664,7 @@ def find_ready_to_resume(
                    action, original_invocation_id, request_body_ciphertext,
                    request_headers, policy_config_hash, status,
                    submitted_at, expires_at, decided_at, decided_by,
-                   resume_result_evidence_id
+                   resume_result_evidence_id, tool_arguments
             FROM kya_pending_invocations
             WHERE id = :id
               AND status = 'approved'
@@ -556,6 +696,9 @@ def list_by_tenant(
     across page refreshes on MySQL deployments.
     """
     capped = max(1, min(int(limit), 500))
+    # Prod-audit item #5 (2026-08-20): SELECT must include tool_arguments
+    # so _row_to_view's 17-tuple unpack succeeds. Missing it here would
+    # break every approver-UI list call.
     with engine.connect() as conn:
         if status is None:
             result = conn.execute(_sql("""
@@ -563,7 +706,7 @@ def list_by_tenant(
                        action, original_invocation_id, request_body_ciphertext,
                        request_headers, policy_config_hash, status,
                        submitted_at, expires_at, decided_at, decided_by,
-                       resume_result_evidence_id
+                       resume_result_evidence_id, tool_arguments
                 FROM kya_pending_invocations
                 WHERE tenant_id = :tid
                 ORDER BY expires_at ASC, submitted_at ASC, id ASC
@@ -575,7 +718,7 @@ def list_by_tenant(
                        action, original_invocation_id, request_body_ciphertext,
                        request_headers, policy_config_hash, status,
                        submitted_at, expires_at, decided_at, decided_by,
-                       resume_result_evidence_id
+                       resume_result_evidence_id, tool_arguments
                 FROM kya_pending_invocations
                 WHERE tenant_id = :tid AND status = :st
                 ORDER BY expires_at ASC, submitted_at ASC, id ASC
