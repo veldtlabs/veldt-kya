@@ -59,12 +59,6 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for exactly this and runs on the evidence-bound attrs copy only,
   leaving the evaluator's view of the raw attrs intact.
 
-### Cross-reference
-- Downstream Pro consumers: this release ships alongside a `matches`
-  operator alias on the ABAC compiler (aliases the existing `regex`
-  op). Rules can be authored with either spelling and both compile to
-  the same `pattern.search()` callable.
-
 ## [0.5.3] — 2026-08-19
 
 ### Added
