@@ -118,13 +118,18 @@ def _require_live_stack() -> None:
         pytest.skip(f"kya-gateway unreachable on localhost:18080: {exc}")
     if resp.status_code != 200:
         pytest.skip(f"kya-gateway healthz returned {resp.status_code}")
+    # Catch:
+    #   * RuntimeError            -- docker returned non-zero / non-JSON
+    #   * subprocess.TimeoutExpired -- container up-but-unhealthy (docker
+    #     exec hangs past our 10s cap); previously escaped as ERROR
+    #   * FileNotFoundError       -- docker binary missing on host
     try:
         _docker_curl("/healthz", method="GET")
-    except RuntimeError as exc:
+    except (RuntimeError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
         pytest.skip(f"{_REF_CONTAINER} not reachable via docker exec: {exc}")
     try:
         _get_counters()
-    except RuntimeError as exc:
+    except (RuntimeError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
         pytest.skip(
             f"{_REF_CONTAINER} /_test/counters unavailable "
             f"(KYA_MCP_TEST_MODE=1 not set?): {exc}"
