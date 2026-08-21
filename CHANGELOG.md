@@ -6,127 +6,73 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-- **`tool_arguments` plumbing to policy evaluators.** The gateway now
-  threads the caller's `tool_arguments` dict through `_run_policy` →
-  `evaluate_policy`; the pipeline flattens each entry as
-  `tool.input.<key>` on the internal evaluation attrs bag. ABAC
-  operators author these predicates as
-  `attr: attributes.tool.input.<key>` (the ABAC evaluator wraps every
-  `EvaluationInput.attributes` entry with the `attributes.` namespace
-  prefix per the 4-namespace model — `subject.`/`action.`/`resource.`/
-  `attributes.`). Every registered evaluator (`NativeEvaluator`,
-  `OpaEvaluator`, `CedarEvaluator`, `CelEvaluator`, ABAC) can now
-  write predicates against the actual call payload rather than only
-  tool identity + principal metadata. Raw JSON types are preserved
-  (predicates that need strings should call `str()`); `None` and
-  empty-dict inputs synthesize no `tool.input.*` keys, so a permissive
-  `.*` regex cannot accidentally match a phantom empty value.
-
-### Behavior change (silent-enable warning)
-- **Rules referencing `attributes.tool.input.*` in the ABAC DSL become
-  LIVE.** Prior to this release such predicates matched against a
-  never-populated attrs slot — effectively a silent no-op that
-  looked-installed-but-did-nothing. On upgrade, any pre-seeded rule
-  that mentions `attributes.tool.input.<field>` starts enforcing
-  against real arguments on the next request. This is a silent
-  behavior change: no exception is raised, no log line escalates, the
-  rule simply begins matching.
-
-### Pre-bump audit checklist (required before pinning downstream)
-- Grep seeded policy documents for `attributes.tool.input.` (both the
-  JSON string form and the compiled DSL form your loader uses).
-- For each match, confirm the rule was intentionally scoped to
-  argument-level enforcement — not a placeholder committed while the
-  attribute was known to be a no-op.
-- For each match, verify the predicate is not overly broad. Example:
-  a `regex`/`matches` predicate of `".*"` against
-  `attributes.tool.input.command` will now deny every Bash
-  invocation, not zero.
-- Recommended: replay the last 7 days of production evidence through
-  the ABAC comparator with `attributes.tool.input.*` attrs enabled,
-  diff the verdicts, and review the delta before the pin bump lands
-  in production.
-
-### Security note
-- `attributes.tool.input.*` values are the raw JSON payload of the
-  tool call.
-  These may include shell command lines, API keys, file paths, and
-  other secret-bearing tokens. Operators subject to PII / secrets
-  handling requirements should install a redaction hook before
-  evidence emission — the `RedactionHook` seam in
-  `kya_gateway.policy_pipeline` (`set_redaction_hook`) is designed
-  for exactly this and runs on the evidence-bound attrs copy only,
-  leaving the evaluator's view of the raw attrs intact.
-
-## [0.5.3] — 2026-08-19
+## [0.5.4] — 2026-08-20
 
 ### Added
-- **`POST /v1/policy/decide`** — verdict-only endpoint for hook clients
-  (Claude Code `PreToolUse` hooks, custom agent gates, etc.). Returns the
-  full verdict envelope (`verdict`, `reason_codes`, `signal_kind`,
-  `pending_id`, `evidence_id`, `evaluator_name`, `policy_hash`) without
-  forwarding the tool call to a backend. **Fail-CLOSED** on pipeline crash.
-- **`kya_mcp_tools_ref` package** — reference MCP tool backend proving any
-  MCP-capable coding agent (Claude Code, Cursor, Cline, Continue) can be
-  routed through the gateway with zero code change. Ships four templated
-  tools (`bash`, `file_read`, `file_write`, `http_fetch`). Fork to expose
-  your own tools. Not for production use. Install with
-  `pip install veldt-kya[mcp-tools-ref]`; run with `kya-mcp-tools-ref`.
-- **`scripts/policy-gate.sh`** — Claude Code `PreToolUse` hook script.
-  Translates gateway verdicts (`allow` / `deny` / `flag_for_review`) into
-  Claude's `permissionDecision` format. Fail-CLOSED by default; opt into
-  fail-OPEN with `KYA_HOOK_FAIL_OPEN=1`.
-- **`scripts/test-policy-gate.sh`** — integration harness for the hook.
-- **`QUICKSTART.md`** — 60-second local-stack quickstart covering both
-  the hook and the MCP integration paths.
-- **`docker-compose.yml`** + **`ops/gateway.yaml`** — minimal reference
-  compose stack (gateway + reference tool backend) and a minimal gateway
-  config to run it against.
-- **Delegation context forwarding** — hook clients can pass
-  `context.session_id`, `tool_use_id`, `agent_id`, and `transcript_path`
-  in the decide payload; the gateway persists these fields on the
-  evidence row so downstream tooling can stitch parent → child agent
-  invocation trees.
+- `POST /v1/policy/decide` — verdict-only endpoint for hook
+  clients (Claude Code `PreToolUse`, custom agent gates). Returns
+  the full envelope (`verdict`, `reason_codes`, `signal_kind`,
+  `pending_id`, `evidence_id`, `evaluator_name`, `policy_hash`).
+  Fail-CLOSED on pipeline crash.
+- `kya_mcp_tools_ref` — reference MCP tool backend proving any
+  MCP-capable coding agent can route through the gateway with
+  zero code change. Ships four templated tools (`bash`,
+  `file_read`, `file_write`, `http_fetch`). Fork to expose your
+  own tools. Not for production. Install with
+  `pip install veldt-kya[mcp-tools-ref]`.
+- `scripts/policy-gate.sh` — Claude Code `PreToolUse` hook.
+  Translates verdicts into `permissionDecision` format.
+  Fail-CLOSED default; fail-OPEN via `KYA_HOOK_FAIL_OPEN=1`.
+- Plumb `tool_arguments` through the policy pipeline as
+  `attributes.tool.input.<key>` attrs. Every registered evaluator
+  (Native, OPA, Cedar, CEL, and any `PolicyEvaluator` adapter)
+  can now inspect call payloads, not just tool + principal.
+- `RedactionHook` seam in `kya_gateway.policy_pipeline` +
+  centralized redaction inside `record_evidence`. Widened
+  targets: 9 payload keys + 3 nested paths; override via
+  `KYA_EVIDENCE_REDACTION_KEYS`.
+- `/mcp` typed error envelope on policy-engine crash
+  (JSON-RPC `-32603`, `X-KYA-Verdict: deny` header).
+- Delegation context forwarding — hook clients pass
+  `session_id`, `tool_use_id`, `agent_id`, `transcript_path`
+  on the decide payload; persisted on the evidence row for
+  parent → child agent trees.
+- `QUICKSTART.md` + `docker-compose.yml` + `ops/gateway.yaml`
+  — 60-second local-stack quickstart.
 
 ### Changed
-- **Tool-name canonicalization** — RBAC action matching now NFKC-normalizes,
-  case-folds, and trims tool names before comparison. Closes case-flip,
-  Unicode-homoglyph, and zero-width-space bypasses of deny rules. Tool
-  identifiers containing non-ASCII characters (or Unicode categories `Cf`
-  / `Zs`) are rejected with `MALFORMED_TOOL_NAME`.
-- **`/v1/policy/decide` request limits** — body cap 1 MB; `tool_name` cap
-  256 bytes; duplicate JSON keys rejected at parse time (closes
-  last-wins ambiguity).
-- **Non-root container user** — the reference tool backend now runs as
-  the unprivileged `kya` user (UID 1000).
-- **`X-KYA-Verdict` response header** — now set on RBAC-deny responses as
-  well as forwarded responses.
+- Tool-name canonicalization — RBAC matching NFKC-normalizes,
+  case-folds, and trims. Closes case-flip, homoglyph, and
+  zero-width bypasses. Non-ASCII / `Cf` / `Zs` names rejected
+  with `MALFORMED_TOOL_NAME`.
+- `/v1/policy/decide` limits — 1 MB body cap, 256B `tool_name`
+  cap, duplicate JSON keys rejected at parse.
+- Reference tool backend runs as unprivileged `kya` user
+  (UID 1000).
+- `X-KYA-Verdict` header now set on RBAC-deny responses as well
+  as forwarded ones.
 
 ### Fixed
-- **Prefix-repeat tool-name bypass** — inputs like
-  `reference.reference.governed_bash` no longer slip past deny rules.
-  Nested / duplicated backend prefixes are rejected at both the gateway
-  (`parse_backend_from_tool`) and backend layers.
-- **`params.name` non-string values** — a non-string `params.name` (e.g.
-  `42`) previously raised an unhandled `TypeError` → HTTP 500. Now
-  returns a clean HTTP 400 with `MALFORMED_TOOL_NAME`.
-- **`import kya_mcp_tools_ref` in a clean venv** — importing the
-  top-level package without the `[mcp-tools-ref]` extra no longer errors
-  on missing `aiohttp` / `httpx` (submodule imports are now lazy).
-- **Hook script preflight** — `policy-gate.sh` now preflights `jq` and
-  `curl`, with a hardcoded-JSON fallback in the deny/ask emit paths so a
-  compromised or missing `jq` cannot silently defeat fail-CLOSED via
-  PATH shadowing.
+- Prefix-repeat tool-name bypass
+  (`reference.reference.governed_bash`) rejected at gateway +
+  backend.
+- Non-string `params.name` returns HTTP 400 with
+  `MALFORMED_TOOL_NAME` instead of unhandled 500.
+- `import kya_mcp_tools_ref` in a clean venv no longer errors
+  when the `[mcp-tools-ref]` extra is not installed.
+- Hardcoded JSON fallback in `emit_deny`/`emit_ask` — closes
+  PATH-shadow attack on the fail-CLOSED contract.
 
-### Docs
-- `QUICKSTART.md` at the repo root — hook + MCP integration walkthroughs.
+### Behavior change
+- Rules referencing `attributes.tool.input.*` become live
+  enforcement on upgrade. Audit seeded rules first — an overly
+  broad `.*` predicate against `tool.input.command` will now
+  deny every invocation.
 
-### Notes
-- The test suite ships four files marked `xfail(strict=False)` for
-  pre-existing failures unrelated to this release. Each is tracked
-  separately and the marker should be removed once the underlying
-  issue is addressed.
+### Security
+- Regulated deployments should install a redaction hook via
+  `set_redaction_hook(...)` before pinning. Raw argument values
+  may carry API keys, shell commands, or PII.
 
 ## [0.5.1] — 2026-08-09
 
