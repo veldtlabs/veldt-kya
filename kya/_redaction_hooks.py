@@ -74,10 +74,10 @@ _REDACTION_HOOK: RedactionHook = _NoopRedactionHook()
 def set_redaction_hook(hook: RedactionHook | None) -> None:
     """Install a process-wide RedactionHook.
 
-    Called once at Pro boot (see ``kya_pro.policy._redaction_hook``)
-    to plug Presidio into the seam. Passing ``None`` resets to the
-    OSS no-op passthrough — used by tests to assert feature-flag OFF
-    parity with pre-hook behaviour.
+    Called once at host-application boot to plug a redaction engine
+    into the seam. Passing ``None`` resets to the built-in no-op
+    passthrough — used by tests to assert feature-flag OFF parity
+    with pre-hook behaviour.
     """
     global _REDACTION_HOOK
     _REDACTION_HOOK = hook if hook is not None else _NoopRedactionHook()

@@ -88,7 +88,7 @@ body should not sit around forever."
 class PendingInvocation:
     """Read-side view of a kya_pending_invocations row.
 
-    Ciphertext is opaque bytes — decryption happens in Pro's resume
+    Ciphertext is opaque bytes — decryption happens in the resume
     router (which has access to the DEK). This view carries only what
     OSS callers legitimately need: identity + status + metadata.
     """

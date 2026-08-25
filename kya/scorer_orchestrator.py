@@ -977,10 +977,9 @@ def register_phoenix_adapter() -> None:
 #      whichever default models have keys present (or accepts an
 #      explicit list).
 #
-# This is open-source substrate. The `veldt-kya-pro` pack ships a
-# CURATED 6-model panel + cost-budget instrumentation + cross-
-# provider-disagreement alerting — but the panel mechanics are open
-# and customers can register any litellm-compatible model.
+# The panel mechanics are open: any litellm-compatible model can be
+# registered. Curated model selection, cost-budget instrumentation
+# and cross-provider-disagreement alerting are left to the caller.
 
 # Default conservative panel: 3 widely-available cheap models, one
 # per major provider. Filtered at registration time to only the ones

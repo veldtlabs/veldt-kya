@@ -30,8 +30,8 @@ What this MVP does NOT do
 * Health endpoint or Prometheus metrics
 * Backpressure / rate limiting
 
-Those are the differentiators that ship in ``veldt-kya-pro``'s
-production collector.
+Those belong in a production collector deployment rather than this
+reference CLI.
 """
 from __future__ import annotations
 
