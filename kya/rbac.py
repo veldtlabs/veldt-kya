@@ -54,6 +54,8 @@ Public API
 
 from __future__ import annotations
 
+from ._schema_gate import schema_init_enabled
+
 import logging
 import os
 import re
@@ -233,6 +235,9 @@ def ensure_rbac_table(db) -> None:
     """Idempotent CREATE for kya_role_grants. Shares MetaData
     with the rest of the legacy tables for the schema_translate_map
     cross-backend flow."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import create_legacy_tables, kya_role_grants
     create_legacy_tables(db, [kya_role_grants])
 

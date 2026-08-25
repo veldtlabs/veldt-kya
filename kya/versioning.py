@@ -33,6 +33,7 @@ Public API
 """
 
 import json
+from ._schema_gate import schema_init_enabled
 import logging
 import os
 from datetime import datetime, timezone
@@ -151,6 +152,9 @@ def ensure_table(db) -> None:
     participates in the same transaction — required by backends like
     DuckDB that disallow nested transactions.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)

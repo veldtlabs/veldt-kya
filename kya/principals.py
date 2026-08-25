@@ -49,6 +49,7 @@ Public API
 """
 
 import hashlib
+from ._schema_gate import schema_init_enabled
 import json
 import logging
 import os
@@ -990,6 +991,9 @@ def ensure_principal_table(db) -> None:
     so deployments upgrading from older KYA pick up the new columns
     without dropping the table.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)

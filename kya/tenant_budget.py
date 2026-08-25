@@ -46,6 +46,8 @@ Public API
 
 from __future__ import annotations
 
+from ._schema_gate import schema_init_enabled
+
 import logging
 import os
 import threading
@@ -229,6 +231,9 @@ def ensure_tables(db) -> None:
     ``create_legacy_tables`` which applies the right
     ``schema_translate_map`` for the bound dialect.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import (
         create_legacy_tables,
         kya_budget_changes,

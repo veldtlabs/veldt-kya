@@ -35,6 +35,8 @@ Security contract:
 
 from __future__ import annotations
 
+from ._schema_gate import schema_init_enabled
+
 import atexit
 import logging
 import threading
@@ -122,6 +124,9 @@ def _gauge(name: str, value: float) -> None:
 
 
 def ensure_inbound_table(db) -> None:
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     create_legacy_tables(db, [_T])
     db.commit()
 

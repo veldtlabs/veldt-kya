@@ -55,6 +55,8 @@ few hundred edges per tenant is cheaper to ship and read than a CTE.
 """
 from __future__ import annotations
 
+from ._schema_gate import schema_init_enabled
+
 import logging
 import os
 import random
@@ -202,6 +204,9 @@ def ensure_principal_edges_table(db: Any) -> None:
     Idempotent. Cheap to call repeatedly (existence check by the
     ORM ``create_all``).
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     _Base.metadata.create_all(
         db.bind, tables=[_PrincipalEdgeRow.__table__],

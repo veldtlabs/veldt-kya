@@ -46,6 +46,8 @@ layer just writes what it's given.
 """
 from __future__ import annotations
 
+from ._schema_gate import schema_init_enabled
+
 import hashlib
 import json
 import logging
@@ -257,6 +259,9 @@ def ensure_table(engine) -> None:
     ``kya_gateway.server._boot_gateway``). Tracks engines it has
     already-ensured so repeat calls on the hot path are free.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     key = id(engine)
     if key in _ENSURED_ENGINES:
         return

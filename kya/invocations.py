@@ -33,6 +33,7 @@ Portable across PostgreSQL, SQLite, DuckDB, MySQL via SQLAlchemy ORM.
 """
 
 import logging
+from ._schema_gate import schema_init_enabled
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -244,6 +245,9 @@ def ensure_invocations_table(db) -> None:
     Postgres / MySQL; SQLite has no enforced width and DuckDB's ALTER
     is best-effort.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)

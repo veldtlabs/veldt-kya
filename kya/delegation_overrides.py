@@ -45,6 +45,8 @@ History is preserved.
 
 from __future__ import annotations
 
+from ._schema_gate import schema_init_enabled
+
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -70,6 +72,9 @@ def ensure_delegation_overrides_table(db) -> None:
     """Idempotent create_all of kya_delegation_policy_overrides.
     Shares MetaData with the other legacy tables for cross-backend
     schema_translate_map handling."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import (
         create_legacy_tables,
         kya_delegation_policy_overrides,
