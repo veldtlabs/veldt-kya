@@ -29,6 +29,7 @@ swallows individual failures so one bad migration doesn't break the rest.
 """
 
 import logging
+from ._schema_gate import schema_init_enabled
 from collections.abc import Iterable
 
 try:
@@ -48,6 +49,9 @@ def apply_migrations(db, table_name: str, migrations: Iterable[str]) -> None:
     """Run additive migrations idempotently. Each statement should be
     safe to execute multiple times (use IF NOT EXISTS / IF EXISTS guards).
     Individual failures are logged at debug and don't stop the rest."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     for sql in migrations:
         try:
             db.execute(text(sql))

@@ -31,6 +31,7 @@ Return shape
 """
 
 import logging
+from ._schema_gate import schema_init_enabled
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,9 @@ def init_storage(db) -> dict[str, Any]:
     rollback) and return normally, so trusting the return value would be a
     lie. Asking the catalog is the only honest signal.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return {}
     try:
         from sqlalchemy import inspect as sa_inspect
     except ImportError:

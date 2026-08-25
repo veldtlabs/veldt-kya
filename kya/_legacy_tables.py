@@ -22,6 +22,8 @@ Tables defined:
 
 from __future__ import annotations
 
+from ._schema_gate import schema_init_enabled
+
 import threading
 
 from sqlalchemy import (
@@ -104,6 +106,9 @@ def create_legacy_tables(db, tables: list) -> None:
     same-NULL-treated-as-distinct semantics on DuckDB exactly as it
     already does on MySQL.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     bind = db.connection()
     schema = dialect_schema_qualifier()  # read env at CALL time
     dialect = bind.engine.dialect.name

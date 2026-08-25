@@ -39,6 +39,8 @@ time. Custom (tenant-defined) parsers are planned.
 """
 from __future__ import annotations
 
+from kya._schema_gate import schema_init_enabled
+
 import ipaddress as _ipaddress
 import json as _json
 import logging
@@ -142,6 +144,9 @@ _ENSURED_ENGINES: set[int] = set()
 def ensure_tables(db) -> None:
     """Idempotent — dialect-aware via _legacy_tables. PG keeps the
     advisory lock; non-PG dialects skip it (no contention there)."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     try:
         bind_for_id = db.get_bind()
         engine_key = id(bind_for_id.engine if hasattr(bind_for_id, "engine") else bind_for_id)

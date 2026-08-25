@@ -87,6 +87,7 @@ the same Sequence + variant pattern as kya_invocations.
 """
 
 import base64
+from ._schema_gate import schema_init_enabled
 import hashlib
 import hmac
 import json
@@ -583,6 +584,9 @@ def init_evidence_table(db) -> None:
     schema and issue a single additive ``ALTER TABLE`` when the column
     is missing. Nullable + no default so the ALTER is safe on any dialect.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)
