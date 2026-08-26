@@ -45,6 +45,8 @@ import time
 import uuid
 from typing import Any
 
+from kya._schema_gate import schema_init_enabled
+
 try:
     from sqlalchemy import text
 except ImportError:
@@ -121,6 +123,9 @@ def ensure_table(db) -> None:
     On PG, the advisory lock prevents the two-uvicorn-worker DDL race;
     on non-PG dialects the lock no-ops and create_all is naturally idempotent.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     try:
         bind_for_id = db.get_bind()
         engine_key = id(bind_for_id.engine if hasattr(bind_for_id, "engine") else bind_for_id)

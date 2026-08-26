@@ -43,6 +43,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ._schema_gate import schema_init_enabled
 from .compliance import REGIME_BREACH_NOTIFY
 from .external_emitters import emit_event
 
@@ -57,6 +58,9 @@ logger = logging.getLogger(__name__)
 
 def ensure_table(db: Session) -> None:
     """DDL bootstrap — dialect-aware via _legacy_tables.create_legacy_tables."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import create_legacy_tables, kya_breach_notifications
 
     create_legacy_tables(db, [kya_breach_notifications])

@@ -31,6 +31,8 @@ from __future__ import annotations
 import json as _json
 import logging
 
+from ._schema_gate import schema_init_enabled
+
 try:
     from sqlalchemy import text
 except ImportError:
@@ -62,6 +64,9 @@ def ensure_table(db) -> None:
     backends, fresh test databases) without the second engine being
     silently skipped if the first one succeeded.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     try:
         bind = db.get_bind()
         engine_key = id(bind.engine if hasattr(bind, "engine") else bind)

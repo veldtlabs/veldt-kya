@@ -57,6 +57,8 @@ from typing import Any, Literal
 from sqlalchemy import text as _sql
 from sqlalchemy.exc import IntegrityError
 
+from ._schema_gate import schema_init_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,7 +88,7 @@ body should not sit around forever."
 class PendingInvocation:
     """Read-side view of a kya_pending_invocations row.
 
-    Ciphertext is opaque bytes — decryption happens in Pro's resume
+    Ciphertext is opaque bytes — decryption happens in the resume
     router (which has access to the DEK). This view carries only what
     OSS callers legitimately need: identity + status + metadata.
     """
@@ -257,6 +259,9 @@ def ensure_table(engine) -> None:
     ``kya_gateway.server._boot_gateway``). Tracks engines it has
     already-ensured so repeat calls on the hot path are free.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     key = id(engine)
     if key in _ENSURED_ENGINES:
         return

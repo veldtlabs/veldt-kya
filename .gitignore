@@ -123,8 +123,21 @@ bench_results/
 /FUNDING_*
 TASK_*_HANDOFF.md
 # On case-insensitive filesystems (Windows/macOS) /KYA_* also matches
-# the lowercase reference-backend package. Explicit allow-list it back.
+# EVERY lowercase kya_* package, because git folds case when matching.
+# A [A-Z] character class does not help — it is case-folded too. So
+# each shipped package has to be allow-listed back explicitly.
+#
+# Symptom when one is missed: a NEW file added to that package on
+# Windows/macOS never appears in `git status`, is skipped by
+# `git add .`, and is silently absent from the published wheel —
+# while working perfectly on the machine that wrote it.
+#
+# Adding a new top-level kya_* package? Add it here too.
 !/kya_mcp_tools_ref/
+!/kya_gateway/
+!/kya_hooks/
+!/kya_otlp_bridge/
+!/kya_redteam/
 /private/
 /internal/
 /_private/
@@ -134,3 +147,7 @@ TASK_*_HANDOFF.md
 alice_*.py
 kya-demo/
 
+# Local agent tooling state. settings.local.json was tracked and shipped
+# in public tags; it recorded absolute local paths and per-command
+# permission entries that named internal projects. Never commit.
+.claude/

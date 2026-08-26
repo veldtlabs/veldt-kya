@@ -10,15 +10,15 @@ produces:
   - a `why` list of REGULATION-AGNOSTIC primitive-state strings
     (human-readable)
   - a `why_codes` list of STABLE enum-style identifiers parallel to
-    `why` — these are the join key Pro's regulator_pack YAML maps to
-    clauses. Wording changes to `why` strings never break Pro's
-    mappings because Pro keys on `why_codes`, not the English text.
+    `why` — the join key a compliance-mapping layer keys on. Wording
+    changes to `why` strings never break those mappings, because
+    they key on `why_codes`, not the English text.
   - an `evidence_links` list of evidence-record IDs the caller can
     cite when surfacing the score to an auditor
 
 The `why` strings are drawn from a **closed vocabulary** defined by
-``WHY_VOCABULARY`` below. This is the entire surface area that the Pro
-``regulator_pack.annotate()`` layer translates into regulator-clause
+``WHY_VOCABULARY`` below. This is the entire surface area a
+compliance-annotation layer translates into regulator-clause
 mappings. Three architectural enforcement properties hold (and are
 mechanically tested):
 
@@ -31,12 +31,12 @@ mechanically tested):
      SOX / PCI / DORA / etc. The forbidden-term list is derived
      dynamically from `kya.compliance.REGIMES` so adding a new regime
      to the REGIMES set automatically extends the check.
-  3. **Stable codes** — `why_codes` parallel `why` 1:1. Pro's YAML
+  3. **Stable codes** — `why_codes` parallel `why` 1:1. Mapping YAML
      mappings join on codes, so wording changes are safe (rename a
      `why` string, keep its code, and every Pro mapping still works).
 
 Together these properties guarantee that **adding a new regulation
-NEVER requires changing this code** — only Pro's YAML mapping table.
+NEVER requires changing this code** — only the YAML mapping table.
 
 Score arithmetic
 ----------------
@@ -62,8 +62,8 @@ from typing import Any
 
 # Each vocabulary entry has TWO identifiers:
 #   - the human-readable `why` string (subject to wording changes)
-#   - the stable `_CODE` enum-style identifier (NEVER changes — this
-#     is the join key Pro's regulator_pack YAML maps to clauses)
+#   - the stable `_CODE` enum-style identifier (NEVER changes — the
+#     join key a compliance-mapping layer uses to reach clauses)
 #
 # Convention: the constant name without the `WHY_` prefix IS the
 # stable code (e.g. WHY_EVIDENCE_VERIFIED → code `EVIDENCE_VERIFIED`).
@@ -101,9 +101,9 @@ WHY_RESPONSE_SAFETY_ERROR = "agent response safety check errored"
 WHY_FAITHFULNESS_ERROR = "agent faithfulness check errored"
 
 
-# Stable code <-> human string mapping. Pro's regulator_pack YAML
-# keys on the code (e.g. `EVIDENCE_VERIFIED`), so the human wording
-# can change in OSS without breaking any Pro compliance pack.
+# Stable code <-> human string mapping. Compliance mappings key on
+# the code (e.g. `EVIDENCE_VERIFIED`), so the human wording can
+# change without breaking them.
 WHY_CODE_TO_STRING: dict[str, str] = {
     "EVIDENCE_VERIFIED": WHY_EVIDENCE_VERIFIED,
     "DELEGATION_VERIFIED": WHY_DELEGATION_VERIFIED,
@@ -201,8 +201,8 @@ class ScoreWithWhy:
 
     `why` and `why_codes` are PARALLEL ARRAYS — `why_codes[i]` is the
     stable enum-style identifier for the human-readable `why[i]`.
-    Downstream layers (Pro's regulator_pack.annotate()) MUST join on
-    `why_codes` so wording changes to `why` are safe.
+    Downstream compliance-annotation layers MUST join on `why_codes`
+    so wording changes to `why` are safe.
 
     All three arrays (`why`, `why_codes`, `evidence_links`) are
     deterministically ordered (stable sort) so the same inputs always
@@ -347,7 +347,7 @@ def score_with_why(
         verdict = "BREACH"
 
     # Parallel `why_codes` array — same order, stable enum-style
-    # identifiers. Pro's YAML keys on these, not on `why`.
+    # identifiers. Mapping YAML keys on these, not on `why`.
     why_codes_ordered = [_WHY_STRING_TO_CODE[w] for w in why_ordered]
 
     return ScoreWithWhy(

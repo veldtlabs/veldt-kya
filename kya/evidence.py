@@ -97,6 +97,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
 from .canonicals import CANONICAL_EVIDENCE_KINDS as _CANONICAL_EVIDENCE_KINDS
 from .canonicals import EVIDENCE_KIND_CHAIN_GENESIS
 
@@ -583,6 +584,9 @@ def init_evidence_table(db) -> None:
     schema and issue a single additive ``ALTER TABLE`` when the column
     is missing. Nullable + no default so the ALTER is safe on any dialect.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)

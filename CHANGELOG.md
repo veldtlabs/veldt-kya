@@ -6,6 +6,31 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-08-25
+
+### Added
+- `KYA_SKIP_SCHEMA_INIT=1` switches off runtime DDL. Self-healing schema
+  creation stays the default, so an existing install that upgrades and
+  sets nothing behaves exactly as before. It matters on a shared
+  database: `ensure_invocations_table` issues `ALTER TABLE
+  kya_invocations ADD COLUMN`, and an `ALTER TABLE` waiting on ACCESS
+  EXCLUSIVE blocks every subsequent read on that table behind it, so one
+  queued migration can stall a process indefinitely.
+
+### Fixed
+- Gated every runtime DDL entry point, including emitters an
+  `ensure_*`-shaped sweep could not see — `init_evidence_table` runs
+  `create_all` plus an `ALTER TABLE kya_evidence` on every evidence
+  write. The regression guard now detects DDL by EMISSION rather than by
+  function name, so a new emitter cannot slip through by being named
+  something unexpected.
+
+### Changed
+- Local agent state (`.claude/`) and internal material are no longer
+  tracked, and a test fails CI if either is committed. `.gitignore`
+  alone does not cover this: it only affects untracked files, and
+  `git add -f` bypasses it entirely.
+
 ## [0.5.4] — 2026-08-20
 
 ### Added

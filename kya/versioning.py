@@ -38,6 +38,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
+
 # SQLAlchemy is OPTIONAL — `from kya import score_agent` works without it
 # in standalone SDK installs. Versioning functions raise on first call if
 # the dependency is missing.
@@ -151,6 +153,9 @@ def ensure_table(db) -> None:
     participates in the same transaction — required by backends like
     DuckDB that disallow nested transactions.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)

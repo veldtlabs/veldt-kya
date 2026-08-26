@@ -44,6 +44,8 @@ Public API
 
 import logging
 
+from ._schema_gate import schema_init_enabled
+
 # Lazy SQLAlchemy import for SDK pluggability
 try:
     from sqlalchemy import text as _sa_text
@@ -70,6 +72,9 @@ logger = logging.getLogger(__name__)
 
 def ensure_suggestions_table(db) -> None:
     """Idempotent — dialect-aware via _legacy_tables.create_legacy_tables."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import create_legacy_tables, kya_weight_suggestions
 
     create_legacy_tables(db, [kya_weight_suggestions])

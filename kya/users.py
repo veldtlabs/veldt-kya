@@ -54,6 +54,8 @@ Public API
 import logging
 from dataclasses import dataclass, field
 
+from ._schema_gate import schema_init_enabled
+
 # Lazy SQLAlchemy import — keep KYA SDK-friendly.
 try:
     from sqlalchemy import text as _sa_text
@@ -191,6 +193,9 @@ def ensure_user_trust_table(db) -> None:
     so existing deployments pick up idp_subject/idp_issuer/idp_kind/
     federated_id columns without dropping the table.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import create_legacy_tables, kya_user_trust
     from ._migrations import apply_migrations
     from ._portable import qual_for_raw_sql

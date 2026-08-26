@@ -48,6 +48,7 @@ from ._portable import (
     portable_bigint,
     uuid_or_string,
 )
+from ._schema_gate import schema_init_enabled
 
 # Serializes every create_all call against the legacy tables. Required
 # because the DuckDB branch DETACHES partial indexes from the
@@ -104,6 +105,9 @@ def create_legacy_tables(db, tables: list) -> None:
     same-NULL-treated-as-distinct semantics on DuckDB exactly as it
     already does on MySQL.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     bind = db.connection()
     schema = dialect_schema_qualifier()  # read env at CALL time
     dialect = bind.engine.dialect.name

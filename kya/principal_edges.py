@@ -65,6 +65,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
+
 try:
     from sqlalchemy import (
         JSON,
@@ -202,6 +204,9 @@ def ensure_principal_edges_table(db: Any) -> None:
     Idempotent. Cheap to call repeatedly (existence check by the
     ORM ``create_all``).
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     _Base.metadata.create_all(
         db.bind, tables=[_PrincipalEdgeRow.__table__],

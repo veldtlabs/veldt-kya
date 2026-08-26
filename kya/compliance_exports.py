@@ -1,9 +1,9 @@
 """Regulator-grade export formatters.
 
-Thin format adapters over the existing `_build_regulator_pack`
-(routes/admin_agents.py) — they reshape the same KYA data into the
-field layouts a model-risk officer (SR 11-7) or an AIMS auditor
-(ISO 42001) expects in their evidence file.
+Thin format adapters over the assembled evidence pack — they reshape
+the same KYA data into the field layouts a model-risk officer
+(SR 11-7) or an AIMS auditor (ISO 42001) expects in their evidence
+file.
 
 Two exports:
     sr_11_7_model_card(pack)        — Fed SR 11-7 §V model documentation

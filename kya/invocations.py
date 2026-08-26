@@ -38,6 +38,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
 from .canonicals import (
     CANONICAL_OUTCOMES as _CANONICAL_OUTCOMES,
 )
@@ -244,6 +245,9 @@ def ensure_invocations_table(db) -> None:
     Postgres / MySQL; SQLite has no enforced width and DuckDB's ALTER
     is best-effort.
     """
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     _require_sqlalchemy()
     conn = db.connection()
     _bind_schema(conn.engine)

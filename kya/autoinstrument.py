@@ -243,9 +243,8 @@ def _make_http_recorder(client, data_classes):
     def _record_cost(invocation_id, **kw):
         # KyaClient has no record_cost_event endpoint yet — cost tracking
         # is db_factory-mode only. Silently skip in HTTP mode so the LLM
-        # call itself always returns cleanly. Once the HTTP endpoint
-        # ships (companion task on veldt-kya-pro dashboard_api), this
-        # stub becomes a real POST.
+        # call itself always returns cleanly. Once a cost-event HTTP
+        # endpoint exists, this stub becomes a real POST.
         return
 
     return _record_inv, _record_ev, _record_cost

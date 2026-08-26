@@ -184,6 +184,18 @@ def _reset_between_tests() -> None:
     yield
 
 
+#: The tool the gateway config blunt-denies at the RBAC layer.
+#:
+#: The CONFIG owns this, not the test. ``governed_bash`` deliberately
+#: FALLS THROUGH RBAC so the argument-inspection layer can be exercised
+#: separately, so it is not a deny probe -- using it as one is what made
+#: these assertions stale while CI stayed green.
+_RBAC_DENIED_TOOL = "reference.governed_bash_canary"
+
+#: Backend counter key for the tool above.
+_RBAC_DENIED_COUNTER = "governed_bash_canary"
+
+
 def _tools_call(name: Any, arguments: dict | None = None, *, req_id: int = 1) -> dict:
     return {
         "jsonrpc": "2.0",
@@ -294,7 +306,7 @@ def test_deny_verdict_counter_stays_zero_and_writes_evidence(gateway_url, did_he
             gateway_url,
             headers=did_header,
             json=_tools_call(
-                "reference.governed_bash",
+                _RBAC_DENIED_TOOL,
                 {"command": "whoami"},
             ),
             timeout=5.0,
@@ -302,13 +314,13 @@ def test_deny_verdict_counter_stays_zero_and_writes_evidence(gateway_url, did_he
         assert resp.status_code == 403, resp.text
         assert resp.headers.get("X-KYA-Verdict") == "deny", dict(resp.headers)
         counters = _get_counters()
-        assert counters.get("governed_bash", 0) == 0, counters
+        assert counters.get(_RBAC_DENIED_COUNTER, 0) == 0, counters
 
         deadline = time.time() + 5.0
         evidence = None
         while time.time() < deadline:
             evidence = _fetch_recent_gateway_verdict_for_did(
-                conn, tool_substring="governed_bash",
+                conn, tool_substring=_RBAC_DENIED_COUNTER,
                 verdict="deny", since_id=baseline_id,
             )
             if evidence is not None:

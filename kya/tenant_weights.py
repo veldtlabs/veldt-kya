@@ -48,6 +48,8 @@ Public API
 
 import logging
 
+from ._schema_gate import schema_init_enabled
+
 # SQLAlchemy is OPTIONAL. Core KYA (scoring, adapter, format normalization)
 # has zero hard dependencies — importing this module never fails. Functions
 # that actually need a DB session raise a clear message at call time when
@@ -108,6 +110,9 @@ def known_scopes() -> list[str]:
 
 def ensure_tables(db) -> None:
     """Idempotent — dialect-aware via _legacy_tables.create_legacy_tables."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import (
         create_legacy_tables,
         kya_weight_changes,

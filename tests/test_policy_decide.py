@@ -58,6 +58,42 @@ _REQUIRED_KEYS = frozenset({
     "pending_id", "evidence_id", "evaluator_name", "policy_hash",
 })
 
+#: The tool the gateway config blunt-denies at the RBAC layer.
+#:
+#: The CONFIG owns this, not the test (see ops/demo/gateway.yaml in the
+#: pro repo). ``governed_bash`` deliberately FALLS THROUGH RBAC so the
+#: ABAC argument-inspection rule can be exercised separately — using it
+#: as the RBAC probe is what silently reddened this suite when the two
+#: demos were split. ``rbac_denied_tool`` below asserts the coupling on
+#: every run so the next re-scope fails with one clear message instead
+#: of seven confusing ones.
+_RBAC_DENIED_TOOL = "reference.governed_bash_canary"
+
+#: Falls through RBAC by design; reserved for ABAC-layer assertions.
+_RBAC_FALLTHROUGH_TOOL = "reference.governed_bash"
+
+
+def _bypass_variants(tool: str) -> list[tuple[str, str]]:
+    """Canonicalization-equivalent spellings of ``tool``.
+
+    Derived from the tool name rather than hard-coded, so re-pointing
+    ``_RBAC_DENIED_TOOL`` updates every variant. Hard-coded literals are
+    how the previous version drifted: the name moved and seven separate
+    strings silently kept probing the old one.
+    """
+    backend, _, name = tool.partition(".")
+    first_b = name.index("b")
+    fullwidth = name[:first_b] + "\uff42" + name[first_b + 1:]
+    return [
+        (tool, "baseline — canonical form"),
+        (f"{backend}.{name.capitalize()}", "capitalised tool segment"),
+        (f"{backend.upper()}.{name}", "upper-case backend segment"),
+        (f"{backend}.{name[:-1]}{name[-1].upper()}", "mixed case in tool"),
+        (f"{tool} ", "trailing ASCII space"),
+        (f" {tool}", "leading ASCII space"),
+        (f"{backend}.{fullwidth}", "full-width Latin b (U+FF42), NFKC-folds"),
+    ]
+
 
 # --- docker/curl helpers (mirror gateway-integration conventions) ------
 
@@ -99,6 +135,35 @@ def _reset_counters() -> dict[str, int]:
 @pytest.fixture(scope="module")
 def decide_url() -> str:
     return _DECIDE_URL
+
+
+@pytest.fixture(scope="module")
+def rbac_denied_tool(decide_url) -> str:
+    """Assert the RBAC deny rule is where the tests believe it is.
+
+    Runs once before the variant cases. If the gateway config moves the
+    blunt-deny again, this fails with a message naming the cause instead
+    of leaving seven canonicalization tests red for a reason that has
+    nothing to do with canonicalization.
+    """
+    resp = _decide(_RBAC_DENIED_TOOL, {"command": "whoami"})
+    if resp.status_code != 200:
+        pytest.fail(
+            f"precondition: {_RBAC_DENIED_TOOL} returned HTTP "
+            f"{resp.status_code}, expected 200. {resp.text[:200]}"
+        )
+    body = resp.json()
+    if body.get("verdict") != "deny" or "RBAC_DENY" not in body.get("reason_codes", []):
+        pytest.fail(
+            f"precondition FAILED: {_RBAC_DENIED_TOOL!r} is no longer "
+            f"RBAC-denied (got verdict={body.get('verdict')!r} "
+            f"reason_codes={body.get('reason_codes')!r}).\n"
+            "The gateway config owns which tool carries the blunt deny "
+            "(ops/demo/gateway.yaml). Update _RBAC_DENIED_TOOL to match "
+            "it — do NOT relax the canonicalization assertions, which "
+            "test a different thing entirely."
+        )
+    return _RBAC_DENIED_TOOL
 
 
 @pytest.fixture(scope="module")
@@ -193,9 +258,9 @@ def test_decide_allow_returns_full_envelope(decide_url, did_header):
     assert all(v == 0 for v in counters.values()), counters
 
 
-def test_decide_deny_returns_rbac_signal(decide_url, did_header):
-    """governed_bash -> deny, RBAC_DENY reason, rbac_refusal signal."""
-    resp = _decide("reference.governed_bash", {"command": "whoami"})
+def test_decide_deny_returns_rbac_signal(decide_url, did_header, rbac_denied_tool):
+    """The RBAC-denied tool -> deny, RBAC_DENY reason, rbac_refusal signal."""
+    resp = _decide(rbac_denied_tool, {"command": "whoami"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _assert_full_envelope(body)
@@ -355,34 +420,26 @@ def test_decide_response_shape_forward_compat(decide_url, did_header):
     # versions and clients MUST tolerate them.
 
 
-@pytest.mark.parametrize("tool_name,expected", [
-    # Baseline — canonical form still denies.
-    ("reference.governed_bash",        "deny"),
-    # Case-flip on tool segment.
-    ("reference.Governed_bash",        "deny"),
-    # Case-flip on backend segment.
-    ("REFERENCE.governed_bash",        "deny"),
-    # Mixed case on the tool.
-    ("reference.governed_bAsh",        "deny"),
-    # Trailing ASCII space — stripped by canonicalizer.
-    ("reference.governed_bash ",       "deny"),
-    # Leading ASCII space on backend.
-    (" reference.governed_bash",       "deny"),
-    # Full-width Latin ｂ (U+FF42) folds to b via NFKC.
-    ("reference.governed_ｂash",   "deny"),
-])
+@pytest.mark.parametrize(
+    "tool_name,label",
+    _bypass_variants(_RBAC_DENIED_TOOL),
+    ids=[lbl for _, lbl in _bypass_variants(_RBAC_DENIED_TOOL)],
+)
 def test_decide_canonicalization_prevents_bypass(
-    decide_url, did_header, tool_name, expected,
+    decide_url, did_header, rbac_denied_tool, tool_name, label,
 ):
-    """Deep-sabotage regression — case flips and NFKC-foldable variants
-    of a denied tool name MUST resolve to the canonical action string
-    and hit the same deny rule. Previously all of these returned allow."""
+    """Case flips and NFKC-foldable variants of a denied tool name MUST
+    resolve to the canonical action and hit the same deny rule.
+
+    ``rbac_denied_tool`` runs first and proves the rule is loaded, so a
+    failure here means canonicalization actually regressed — not that
+    the config moved underneath the test.
+    """
     resp = _decide(tool_name, {"command": "whoami"})
-    assert resp.status_code == 200, (tool_name, resp.text)
+    assert resp.status_code == 200, (label, tool_name, resp.text)
     body = resp.json()
-    assert body["verdict"] == expected, (tool_name, body)
-    if expected == "deny":
-        assert "RBAC_DENY" in body["reason_codes"], (tool_name, body)
+    assert body["verdict"] == "deny", (label, tool_name, body)
+    assert "RBAC_DENY" in body["reason_codes"], (label, tool_name, body)
 
 
 @pytest.mark.parametrize("tool_name", [
@@ -409,14 +466,14 @@ def test_decide_invisible_smuggle_rejected(decide_url, did_header, tool_name):
 
 
 
-def test_decide_nbsp_suffix_still_denied(decide_url, did_header):
+def test_decide_nbsp_suffix_still_denied(decide_url, did_header, rbac_denied_tool):
     """NBSP (U+00A0) is a Zs whitespace char — Python's ``str.strip()``
     treats it as whitespace and strips it during canonicalization. The
     resulting canonical form matches the RBAC deny rule → the attack
     is neutralized as a legitimate deny verdict (not an error). Both
     outcomes are safe; this test locks in the observed behavior so a
     future canonicalizer change doesn't accidentally open the bypass."""
-    resp = _decide("reference.governed_bash ", {"command": "whoami"})
+    resp = _decide(f"{rbac_denied_tool}\u00a0", {"command": "whoami"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["verdict"] == "deny", body

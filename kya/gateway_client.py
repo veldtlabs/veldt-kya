@@ -186,9 +186,10 @@ class KyaGatewayClient:
     # ─── Pending status polling ─────────────────────────────────────
 
     def poll_status(self, pending_id: str) -> PendingStatus:
-        """Fetch the current state of a pending invocation from Pro.
+        """Fetch the current state of a pending invocation.
 
-        Requires ``dashboard_url`` to be set (Pro-only endpoint).
+        Requires ``dashboard_url`` to be set — the endpoint lives on
+        the dashboard service, not the gateway.
         Raises ``KyaGatewayError`` if dashboard_url is unset.
         """
         if not self.dashboard_url:

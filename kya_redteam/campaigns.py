@@ -15,6 +15,8 @@ import json as _json
 import logging
 from typing import Any
 
+from kya._schema_gate import schema_init_enabled
+
 try:
     from sqlalchemy import text
 except ImportError:
@@ -193,6 +195,9 @@ _ENSURED_ENGINES: set[int] = set()
 def ensure_tables(db) -> None:
     """Idempotent — runs once per engine. Dialect-aware via _legacy_tables.
     Same portable Table objects used on PG/SQLite/DuckDB/MySQL."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     try:
         bind = db.get_bind()
         engine_key = id(bind.engine if hasattr(bind, "engine") else bind)

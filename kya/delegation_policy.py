@@ -54,6 +54,8 @@ import logging
 import os
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -437,5 +439,8 @@ def ensure_delegation_violations_table(db) -> None:
     """Idempotent create_all of kya_delegation_violations.
     Shares MetaData with the other legacy tables; portable across
     PG/SQLite/DuckDB/MySQL via the same schema_translate_map flow."""
+    # Runtime DDL gate — see kya/_schema_gate.py.
+    if not schema_init_enabled():
+        return
     from ._legacy_tables import create_legacy_tables, kya_delegation_violations
     create_legacy_tables(db, [kya_delegation_violations])
