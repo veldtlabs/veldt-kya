@@ -87,7 +87,6 @@ the same Sequence + variant pattern as kya_invocations.
 """
 
 import base64
-from ._schema_gate import schema_init_enabled
 import hashlib
 import hmac
 import json
@@ -98,6 +97,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
 from .canonicals import CANONICAL_EVIDENCE_KINDS as _CANONICAL_EVIDENCE_KINDS
 from .canonicals import EVIDENCE_KIND_CHAIN_GENESIS
 

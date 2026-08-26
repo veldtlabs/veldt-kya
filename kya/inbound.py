@@ -35,8 +35,6 @@ Security contract:
 
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import atexit
 import logging
 import threading
@@ -59,6 +57,7 @@ from ._legacy_tables import (
 from ._legacy_tables import (
     kya_inbound_recommendations as _T,
 )
+from ._schema_gate import schema_init_enabled
 
 logger = logging.getLogger(__name__)
 

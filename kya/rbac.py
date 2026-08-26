@@ -54,8 +54,6 @@ Public API
 
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import logging
 import os
 import re
@@ -63,6 +61,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import text
+
+from ._schema_gate import schema_init_enabled
 
 logger = logging.getLogger(__name__)
 

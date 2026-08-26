@@ -38,14 +38,14 @@ Storage notes
 """
 from __future__ import annotations
 
-from kya._schema_gate import schema_init_enabled
-
 import json as _json
 import logging
 import os
 import time
 import uuid
 from typing import Any
+
+from kya._schema_gate import schema_init_enabled
 
 try:
     from sqlalchemy import text

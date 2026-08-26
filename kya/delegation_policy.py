@@ -50,11 +50,11 @@ violation — that's the policy contract talking, not an error.
 
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import logging
 import os
 from typing import Any
+
+from ._schema_gate import schema_init_enabled
 
 logger = logging.getLogger(__name__)
 

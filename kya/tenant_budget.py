@@ -46,8 +46,6 @@ Public API
 
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import logging
 import os
 import threading
@@ -56,6 +54,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ._emit import emit
+from ._schema_gate import schema_init_enabled
 from .realtime import WINDOWS, _get_redis
 from .tenant_weights import OverrideLoosensError
 

@@ -47,6 +47,7 @@ Public API
 """
 
 import logging
+
 from ._schema_gate import schema_init_enabled
 
 # SQLAlchemy is OPTIONAL. Core KYA (scoring, adapter, format normalization)

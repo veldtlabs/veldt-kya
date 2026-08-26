@@ -49,7 +49,6 @@ Public API
 """
 
 import hashlib
-from ._schema_gate import schema_init_enabled
 import json
 import logging
 import os
@@ -59,6 +58,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
 from .canonicals import CANONICAL_PRINCIPAL_KINDS as _CANONICAL_PRINCIPAL_KINDS
 
 try:

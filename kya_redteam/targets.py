@@ -39,8 +39,6 @@ time. Custom (tenant-defined) parsers are planned.
 """
 from __future__ import annotations
 
-from kya._schema_gate import schema_init_enabled
-
 import ipaddress as _ipaddress
 import json as _json
 import logging
@@ -49,6 +47,8 @@ import socket as _socket
 import time
 import urllib.parse as _urlparse
 from typing import Any
+
+from kya._schema_gate import schema_init_enabled
 
 try:
     from sqlalchemy import text

@@ -29,8 +29,9 @@ swallows individual failures so one bad migration doesn't break the rest.
 """
 
 import logging
-from ._schema_gate import schema_init_enabled
 from collections.abc import Iterable
+
+from ._schema_gate import schema_init_enabled
 
 try:
     from sqlalchemy import text as _sa_text

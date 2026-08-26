@@ -36,8 +36,6 @@ Counters:
 
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -45,6 +43,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ._schema_gate import schema_init_enabled
 from .compliance import REGIME_BREACH_NOTIFY
 from .external_emitters import emit_event
 

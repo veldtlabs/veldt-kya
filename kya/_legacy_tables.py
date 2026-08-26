@@ -22,8 +22,6 @@ Tables defined:
 
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import threading
 
 from sqlalchemy import (
@@ -50,6 +48,7 @@ from ._portable import (
     portable_bigint,
     uuid_or_string,
 )
+from ._schema_gate import schema_init_enabled
 
 # Serializes every create_all call against the legacy tables. Required
 # because the DuckDB branch DETACHES partial indexes from the

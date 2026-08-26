@@ -31,8 +31,9 @@ Return shape
 """
 
 import logging
-from ._schema_gate import schema_init_enabled
 from typing import Any
+
+from ._schema_gate import schema_init_enabled
 
 logger = logging.getLogger(__name__)
 

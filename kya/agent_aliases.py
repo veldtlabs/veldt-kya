@@ -28,10 +28,10 @@ CONTRACT
 
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import json as _json
 import logging
+
+from ._schema_gate import schema_init_enabled
 
 try:
     from sqlalchemy import text

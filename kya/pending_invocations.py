@@ -46,8 +46,6 @@ layer just writes what it's given.
 """
 from __future__ import annotations
 
-from ._schema_gate import schema_init_enabled
-
 import hashlib
 import json
 import logging
@@ -58,6 +56,8 @@ from typing import Any, Literal
 
 from sqlalchemy import text as _sql
 from sqlalchemy.exc import IntegrityError
+
+from ._schema_gate import schema_init_enabled
 
 logger = logging.getLogger(__name__)
 

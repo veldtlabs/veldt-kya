@@ -52,8 +52,9 @@ Public API
 """
 
 import logging
-from ._schema_gate import schema_init_enabled
 from dataclasses import dataclass, field
+
+from ._schema_gate import schema_init_enabled
 
 # Lazy SQLAlchemy import — keep KYA SDK-friendly.
 try:

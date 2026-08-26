@@ -33,11 +33,12 @@ Public API
 """
 
 import json
-from ._schema_gate import schema_init_enabled
 import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
+
+from ._schema_gate import schema_init_enabled
 
 # SQLAlchemy is OPTIONAL — `from kya import score_agent` works without it
 # in standalone SDK installs. Versioning functions raise on first call if

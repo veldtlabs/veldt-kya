@@ -33,12 +33,12 @@ Portable across PostgreSQL, SQLite, DuckDB, MySQL via SQLAlchemy ORM.
 """
 
 import logging
-from ._schema_gate import schema_init_enabled
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ._schema_gate import schema_init_enabled
 from .canonicals import (
     CANONICAL_OUTCOMES as _CANONICAL_OUTCOMES,
 )
