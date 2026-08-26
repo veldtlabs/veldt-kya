@@ -72,6 +72,7 @@ REACHED_VIA_GATED_CALLER = {
     "kya/evidence.py::_ensure_evaluator_name_column",
     # via kya/invocations.py::ensure_invocations_table
     "kya/invocations.py::_migrate_agent_key_width",
+    "kya/invocations.py::_reconcile_invocations_id_default",
     "kya/invocations.py::_reconcile_evidence_row_count_column",
     "kya/invocations.py::_reconcile_evidence_row_count_signature_column",
     # via kya/pending_invocations.py::ensure_table
