@@ -85,13 +85,7 @@ def test_sqlite_still_autoincrements_untouched() -> None:
         eng.dispose()
 
 
-@pytest.mark.parametrize("_run", [1, 2], ids=["first", "idempotent"])
-def test_postgres_id_is_server_assignable(_run) -> None:
-    """The real proof, on real Postgres. Skips when unavailable.
-
-    Parametrized twice because the reconciler runs on every boot: the
-    second pass must be a no-op, not a second ALTER or a sequence reset.
-    """
+def _pg_engine():
     import os
 
     url = os.environ.get(
@@ -102,36 +96,68 @@ def test_postgres_id_is_server_assignable(_run) -> None:
         eng = create_engine(url, future=True)
         with eng.connect() as c:
             c.execute(text("SELECT 1"))
+        return eng
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"postgres unavailable: {str(exc)[:80]}")
 
+
+def _id_default(eng):
+    with eng.connect() as c:
+        return c.execute(text(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name='kya_invocations' AND column_name='id'"
+        )).scalar()
+
+
+def _drive_drift(eng):
+    """Put the column back into the state the emitted DDL produces.
+
+    Without this the test is vacuous: a database that was already
+    reconciled satisfies every assertion below whether or not the
+    reconciler runs. Sabotaging the reconciler proved exactly that --
+    three separate breakages went undetected.
+    """
+    with eng.begin() as c:
+        c.execute(text("ALTER TABLE kya_invocations ALTER COLUMN id DROP DEFAULT"))
+        c.execute(text("ALTER SEQUENCE kya_invocations_id_seq OWNED BY NONE"))
+
+
+@pytest.mark.parametrize("_run", [1, 2], ids=["first", "idempotent"])
+def test_postgres_id_is_server_assignable(_run) -> None:
+    """The real proof, on real Postgres. Skips when unavailable.
+
+    Drives the drift first, then reconciles, so the assertions can only
+    pass because the reconciler did the work.
+
+    Parametrized twice because this runs on every boot: the second pass
+    must be a no-op, not a second ALTER or a sequence reset.
+    """
     from kya.invocations import ensure_invocations_table
 
+    eng = _pg_engine()
     try:
+        _drive_drift(eng)
+        assert _id_default(eng) is None, "precondition: drift not applied"
+
         with Session(eng) as db:
             ensure_invocations_table(db)
             db.commit()
 
+        default = _id_default(eng)
         with eng.connect() as c:
-            default = c.execute(text(
-                "SELECT column_default FROM information_schema.columns "
-                "WHERE table_name='kya_invocations' AND column_name='id'"
-            )).scalar()
             owned = c.execute(text(
                 "SELECT pg_get_serial_sequence('kya_invocations','id')"
             )).scalar()
 
         assert default and "nextval" in default, (
-            "id has no server-side DEFAULT — only the ORM can insert into "
-            f"this table (got {default!r})"
+            "the reconciler did not attach a server-side DEFAULT — only "
+            f"the ORM can insert into this table (got {default!r})"
         )
         assert owned, (
             "the sequence is not OWNED BY the column, so dropping the "
             "column would strand it"
         )
 
-        # The behaviour the DEFAULT exists for, and no collision with
-        # rows written while ids came from the client.
         with eng.begin() as c:
             c.execute(text(
                 "INSERT INTO kya_invocations "
@@ -156,4 +182,11 @@ def test_postgres_id_is_server_assignable(_run) -> None:
                 "DELETE FROM kya_invocations WHERE agent_key='id-default-test'"
             ))
     finally:
+        # Never leave a shared dev database drifted, even on failure.
+        try:
+            with Session(eng) as db:
+                ensure_invocations_table(db)
+                db.commit()
+        except Exception:  # noqa: BLE001
+            pass
         eng.dispose()
