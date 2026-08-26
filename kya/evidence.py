@@ -944,7 +944,11 @@ def record_evidence(
             genesis_payload = {
                 "tenant_id": tenant_id,
                 "invocation_id": invocation_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                # The chain begins when its first event occurred, not
+                # when the anchor happened to be written. Using now()
+                # here put the anchor outside its own chain's time
+                # window; see the occurred_at note below.
+                "created_at": occurred_at.isoformat(),
                 "chain_version": 1,
             }
             genesis_payload_bytes = _canonicalize(genesis_payload)
@@ -964,7 +968,14 @@ def record_evidence(
                 prev_hash=None,
                 signed_hash=genesis_signed,
                 signing_key_id=key_id,
-                occurred_at=datetime.now(timezone.utc),
+                # Inherit the triggering evidence's timestamp rather than
+                # stamping wall-clock now(). An invocation whose events
+                # all fall OUTSIDE a compliance window was still
+                # contributing its anchor INTO that window, because the
+                # anchor carried today's date -- so a regulator pack
+                # scoped to a window contained a row from a chain the
+                # window does not cover.
+                occurred_at=occurred_at,
                 source=None,
                 data_classes=None,
                 retention_until=None,
