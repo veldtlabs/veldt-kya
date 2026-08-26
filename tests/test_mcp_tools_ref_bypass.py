@@ -38,6 +38,19 @@ pytestmark = pytest.mark.integration
 
 
 _GATEWAY_URL = "http://localhost:18080/mcp"
+
+#: The tool the gateway config blunt-denies at the RBAC layer.
+#:
+#: The CONFIG owns this, not the test. ``governed_bash`` deliberately
+#: FALLS THROUGH RBAC so the argument-inspection layer can be exercised
+#: separately, so it is not a deny probe -- using it as one is what made
+#: these assertions stale while CI stayed green.
+_RBAC_DENIED_TOOL = "reference.governed_bash_canary"
+
+#: Backend counter key for the tool above.
+_RBAC_DENIED_COUNTER = "governed_bash_canary"
+
+
 _REF_CONTAINER = "kya-mcp-tools-ref"
 # Stable did:key used across the wave tests. Public key, not a secret.
 _TEST_DID = "did:key:z6MkrBdNdwUPnXDVD1DCxedzVVBpaGi8aSmoXFAeKNgtAer8"
@@ -259,7 +272,7 @@ def test_legitimate_single_prefix_still_works(gateway_url, did_header):
 
 
 def test_x_kya_verdict_header_present_on_deny(gateway_url, did_header):
-    """The legit deny target ``reference.governed_bash`` returns 403.
+    """The blunt-deny target returns 403 and carries the verdict header.
 
     The 403 body already carries ``data.verdict=deny``; this test locks
     in the header parity so a consumer can branch on the header alone.
@@ -268,7 +281,7 @@ def test_x_kya_verdict_header_present_on_deny(gateway_url, did_header):
         gateway_url,
         headers=did_header,
         json=_tools_call(
-            "reference.governed_bash",
+            _RBAC_DENIED_TOOL,
             {"command": "whoami"},
         ),
         timeout=5.0,
@@ -280,6 +293,6 @@ def test_x_kya_verdict_header_present_on_deny(gateway_url, did_header):
         f"missing/unexpected X-KYA-Verdict header: {dict(resp.headers)}"
     )
     counters = _get_counters()
-    assert counters.get("governed_bash", 0) == 0, (
+    assert counters.get(_RBAC_DENIED_COUNTER, 0) == 0, (
         "deny should stop the request before it reaches the backend"
     )
