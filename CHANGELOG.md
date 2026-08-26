@@ -6,6 +6,26 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.6] — 2026-08-26
+
+### Fixed
+- `record_evidence` now releases its per-chain lock on every path. The
+  release was already in a `finally`, but the `acquire()` sat 124 lines
+  above the `try` that guaranteed it, with six statements in between
+  that can raise. Any exception in that window leaked the lock
+  permanently, and every SUBSEQUENT evidence write for that
+  `(tenant, invocation)` chain then blocked forever on `acquire()` — for
+  the life of the process, with no error, no log and no timeout.
+  Evidence is the audit trail, so stopping silently and permanently is
+  the worst available failure.
+- `kya_invocations.id` is now server-assignable on PostgreSQL and
+  DuckDB. The model passes an explicit `Sequence`, but SQLAlchemy
+  creates the sequence separately and pre-fetches `nextval` client-side,
+  emitting a bare `id BIGINT NOT NULL`. ORM writes therefore worked
+  while every other writer — raw SQL, `psql`, a bulk loader, a
+  migration — failed on NOT NULL. Reconciled idempotently at boot, with
+  the sequence advanced past `max(id)` before the DEFAULT is attached.
+
 ## [0.5.5] — 2026-08-25
 
 ### Added
