@@ -6,6 +6,19 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.7] — 2026-08-26
+
+### Fixed
+- The `chain_genesis` anchor now inherits the triggering evidence's
+  `occurred_at` instead of being stamped with wall-clock `now()`. The
+  anchor sat outside its own chain's time window, so an invocation whose
+  events fall entirely OUTSIDE a compliance window still contributed its
+  anchor INTO it — a regulator pack scoped to a window contained a row
+  from a chain that window does not cover. Chain integrity is unaffected:
+  the genesis signature is computed over the payload that is stored, so
+  it stays self-consistent, and `verify_chain` returns valid across the
+  full chain. Existing rows are untouched.
+
 ## [0.5.6] — 2026-08-26
 
 ### Fixed
