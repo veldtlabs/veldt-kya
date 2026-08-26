@@ -29,37 +29,74 @@ from kya.evidence import _get_chain_lock          # noqa: E402
 TENANT = "tenant-lock-release"
 
 
-def _acquire_and_fail(invocation_id: int) -> None:
-    """Take the chain lock, then raise the way the unguarded window did."""
-    lock = _get_chain_lock(TENANT, invocation_id)
-    lock.acquire()
-    try:
-        raise RuntimeError("failure inside the critical section")
-    finally:
-        lock.release()
+def _sqlite_session():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+
+    from kya.evidence import init_evidence_table
+
+    eng = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    with Session(eng) as db:
+        init_evidence_table(db)
+        db.commit()
+    return eng
 
 
-def test_chain_lock_is_reacquirable_after_a_failure() -> None:
-    """A later write on the same chain must not block.
+def test_chain_lock_is_released_when_record_evidence_raises(monkeypatch):
+    """Drive the REAL production path, not the lock primitive.
 
-    Without the fix this blocks forever rather than failing, so the
-    timeout is the assertion: `acquire(timeout=...)` returning False IS
-    the deadlock.
+    An earlier version of this test acquired and released the lock via a
+    local helper. Sabotage exposed it: deleting the ``release()`` from
+    record_evidence's finally left the test green, because the test
+    never went through that code. It asserted nothing.
+
+    This calls record_evidence for real, forces a failure inside the
+    critical section, then records again on the SAME chain. Without the
+    release the second call blocks forever, so the timeout is the
+    assertion.
     """
-    inv = 90001
-    with pytest.raises(RuntimeError):
-        _acquire_and_fail(inv)
+    from sqlalchemy.orm import Session
 
-    got = _get_chain_lock(TENANT, inv).acquire(timeout=5)
+    import kya.evidence as ev
+
+    eng = _sqlite_session()
+    inv = 90002
+
+    # Force the failure INSIDE the critical section -- after acquire(),
+    # in the window that used to sit outside the try. _hmac_sign is
+    # called only there (evidence.py:952 and :1000); _canonicalize was
+    # the wrong choice, it also runs at :863 BEFORE the acquire, so the
+    # injection fired before any lock was held and the test passed
+    # whether or not the release existed.
+    def _explode(*_a, **_k):
+        raise RuntimeError("failure inside the critical section")
+
+    monkeypatch.setattr(ev, "_hmac_sign", _explode)
+
+    with Session(eng) as db:
+        with pytest.raises(Exception):
+            ev.record_evidence(
+                db, tenant_id=TENANT, invocation_id=inv,
+                evidence_kind="system_message", role="record",
+                payload={"kind": "probe"},
+            )
+
+    # The chain must not be wedged.
+    got = ev._get_chain_lock(TENANT, inv).acquire(timeout=5)
     try:
         assert got, (
-            "the chain lock was not released after a failure — every "
-            "later record_evidence for this invocation would block "
+            "record_evidence left the chain lock held after failing — "
+            "every later evidence write for this invocation would block "
             "forever on acquire(), with no error and no timeout"
         )
     finally:
         if got:
-            _get_chain_lock(TENANT, inv).release()
+            ev._get_chain_lock(TENANT, inv).release()
 
 
 def test_acquire_is_inside_the_guarded_try() -> None:
