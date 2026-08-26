@@ -138,13 +138,21 @@ if _HAS_SQLALCHEMY:
         pass
 
     # Portable autoincrement via explicit Sequence + dialect-variant id type:
-    #   PG       — Sequence becomes BIGSERIAL behavior (idempotent)
-    #   SQLite   — Sequence is ignored; INTEGER PRIMARY KEY autoincrements
+    #   SQLite   — Sequence ignored; INTEGER PRIMARY KEY autoincrements
     #              via rowid alias (needs Integer, not BigInteger)
-    #   MySQL    — Sequence is ignored; BIGINT AUTO_INCREMENT
-    #   DuckDB   — Sequence becomes CREATE SEQUENCE + nextval() default
-    #              (avoids the BIGSERIAL keyword duckdb-engine emits by
-    #              default, which DuckDB rejects)
+    #   MySQL    — Sequence ignored; BIGINT AUTO_INCREMENT
+    #   PG       — emitted as a bare `id BIGINT NOT NULL`
+    #   DuckDB   — likewise
+    #
+    # On the last two the Sequence does NOT become a column DEFAULT.
+    # SQLAlchemy creates the sequence separately and pre-fetches nextval
+    # CLIENT-SIDE, so ORM inserts supply id themselves and work fine --
+    # which is exactly why this went unnoticed. Any other writer (raw
+    # SQL, psql, a bulk loader, another service, a migration) omitting
+    # id hits a NOT NULL violation.
+    #
+    # _reconcile_invocations_id_default() attaches the DEFAULT after
+    # create, for fresh and pre-existing databases alike.
     _INV_SEQ = Sequence("kya_invocations_id_seq")
 
     class Invocation(_Base):
@@ -253,6 +261,7 @@ def ensure_invocations_table(db) -> None:
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[Invocation.__table__])
     _migrate_agent_key_width(conn)
+    _reconcile_invocations_id_default(conn)
     _reconcile_evidence_row_count_column(conn)
     _reconcile_evidence_row_count_signature_column(conn)
 
@@ -371,6 +380,102 @@ def _migrate_agent_key_width(conn) -> None:
                 "DID-shaped principals may be rejected on next insert: %s",
                 table, column, exc,
             )
+
+
+#: Dialects where the id Sequence needs to be wired up as a column
+#: DEFAULT by hand. SQLite (rowid alias) and MySQL (AUTO_INCREMENT)
+#: autoincrement natively and must be left alone.
+_SEQUENCE_DIALECTS = ("postgresql", "duckdb")
+
+
+def _reconcile_invocations_id_default(conn) -> None:
+    """Make ``kya_invocations.id`` server-assignable on sequence dialects.
+
+    Idempotent, and covers both cases in one path: a fresh ``create_all``
+    (which emits ``id BIGINT NOT NULL`` with no default) and a database
+    created by any earlier version.
+
+    Without this, only the ORM can insert -- it pre-fetches nextval and
+    supplies id itself. Everything else fails on NOT NULL, which makes
+    the table unwritable from psql, bulk loaders, other services, and
+    migrations, while looking perfectly healthy from the application.
+
+    The sequence is advanced to ``max(id)`` before the DEFAULT is
+    attached. On a database whose rows were written with client-side
+    nextval the sequence can trail the data, and handing out a colliding
+    id on the first server-side insert would be a worse failure than the
+    one being fixed. ``OWNED BY`` ties the sequence's lifetime to the
+    column so a later DROP does not strand it.
+
+    Fails soft: this runs on the boot path, and a database that cannot
+    be reconciled must still serve ORM traffic exactly as before.
+    """
+    import logging as _logging
+
+    from sqlalchemy import inspect as _inspect
+    from sqlalchemy import text as _text
+
+    log = _logging.getLogger(__name__)
+    try:
+        dialect = conn.engine.dialect.name
+        if dialect not in _SEQUENCE_DIALECTS:
+            return
+        insp = _inspect(conn)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[KYA-INV] id-default introspection failed: %s", exc)
+        return
+
+    schema = _PG_SCHEMA if dialect == "postgresql" else None
+    prefix = f"{schema}." if schema else ""
+    table = "kya_invocations"
+    seq = f"{prefix}kya_invocations_id_seq"
+
+    try:
+        if not insp.has_table(table, schema=schema):
+            return
+        cols = {c["name"]: c for c in insp.get_columns(table, schema=schema)}
+        col = cols.get("id")
+        if col is None:
+            return
+        if col.get("default") is not None:
+            return  # already reconciled
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[KYA-INV] id-default column probe failed: %s", exc)
+        return
+
+    try:
+        conn.execute(_text(f"CREATE SEQUENCE IF NOT EXISTS {seq}"))
+        # Advance past existing rows before the DEFAULT goes live.
+        current = conn.execute(
+            _text(f"SELECT COALESCE(MAX(id), 0) FROM {prefix}{table}")
+        ).scalar() or 0
+        if dialect == "postgresql":
+            conn.execute(
+                _text("SELECT setval(:s, :v, true)"),
+                {"s": seq, "v": int(current) + 1},
+            )
+            conn.execute(_text(
+                f"ALTER TABLE {prefix}{table} "
+                f"ALTER COLUMN id SET DEFAULT nextval('{seq}')"
+            ))
+            conn.execute(_text(
+                f"ALTER SEQUENCE {seq} OWNED BY {prefix}{table}.id"
+            ))
+        else:  # duckdb
+            conn.execute(_text(
+                f"ALTER TABLE {table} "
+                f"ALTER COLUMN id SET DEFAULT nextval('{seq}')"
+            ))
+        log.info(
+            "[KYA-INV] kya_invocations.id is now server-assignable "
+            "(dialect=%s, sequence advanced past id=%s)", dialect, current,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "[KYA-INV] could not attach id DEFAULT on %s: %s -- ORM writes "
+            "are unaffected, but inserts that omit id will keep failing",
+            dialect, exc,
+        )
 
 
 def _reconcile_evidence_row_count_column(conn) -> None:
