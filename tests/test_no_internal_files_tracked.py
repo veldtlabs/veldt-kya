@@ -43,15 +43,10 @@ FORBIDDEN = [
 ]
 
 #: Tracked paths that match a pattern above but are legitimately public.
-#: Each needs a reason.
-ALLOWED: dict[str, str] = {
-    # Conformance tests for the PUBLISHED KYP v0.1 wire format. They pin
-    # byte-identical output against vectors that ship with the spec, so
-    # they have to travel with the reference implementation. The
-    # directory name is a misnomer; the content is public by design.
-    "_internal/tests/test_kyp_spec_v0_1_vectors.py":
-        "KYP v0.1 spec conformance against published test vectors",
-}
+#: Each needs a reason. Empty is the correct steady state -- an entry
+#: here is an exception to a rule that exists for a reason, so it should
+#: be justified in review rather than added to make a run go green.
+ALLOWED: dict[str, str] = {}
 
 
 def _tracked_files() -> list[str]:
