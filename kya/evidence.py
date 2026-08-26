@@ -904,130 +904,142 @@ def record_evidence(
         _inproc_lock = _get_chain_lock(tenant_id, invocation_id)
         _inproc_lock.acquire()
 
-    prev_stmt = (
-        select(_EvidenceRow.signed_hash)
-        .where(_EvidenceRow.tenant_id == tenant_id)
-        .where(_EvidenceRow.invocation_id == invocation_id)
-        .order_by(_EvidenceRow.id.desc())
-        .limit(1)
-    )
-    if dialect == "mysql":
-        try:
-            prev_stmt = prev_stmt.with_for_update()
-        except Exception:
-            pass
-    prev_hash = db.execute(prev_stmt).scalar() or ""
+    # The release below is in a `finally`, but acquire() above sat 124
+    # lines outside it. Any exception in that window leaked the chain
+    # lock permanently, and the NEXT record_evidence for the same
+    # (tenant, invocation) blocked forever on acquire() -- every later
+    # evidence write for that chain deadlocking for the life of the
+    # process. Evidence is the audit trail; failing silently and
+    # permanently is the worst shape that failure can take.
+    #
+    # Starting the try HERE puts the whole critical section under the
+    # same finally. The old `try:` on the tail block is dropped: its
+    # body already sits at this indent and is now covered by it.
+    try:
 
-    key, key_id = _get_signing_key()
+        prev_stmt = (
+            select(_EvidenceRow.signed_hash)
+            .where(_EvidenceRow.tenant_id == tenant_id)
+            .where(_EvidenceRow.invocation_id == invocation_id)
+            .order_by(_EvidenceRow.id.desc())
+            .limit(1)
+        )
+        if dialect == "mysql":
+            try:
+                prev_stmt = prev_stmt.with_for_update()
+            except Exception:
+                pass
+        prev_hash = db.execute(prev_stmt).scalar() or ""
 
-    # Auto-insert the genesis anchor row on first write to any
-    # (tenant, invocation) chain. The genesis row lets verify_chain
-    # detect head-truncation: an attacker who deletes rows starting
-    # from position 0 leaves a chain whose first surviving row is no
-    # longer a genesis, which verify_chain flags. Skipped when the
-    # caller is explicitly writing a genesis row itself (e.g. tests
-    # or an ingest path that constructs its own anchor).
-    if prev_hash == "" and evidence_kind != EVIDENCE_KIND_CHAIN_GENESIS:
-        genesis_payload = {
-            "tenant_id": tenant_id,
-            "invocation_id": invocation_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "chain_version": 1,
-        }
-        genesis_payload_bytes = _canonicalize(genesis_payload)
-        genesis_payload_hash = hashlib.sha256(genesis_payload_bytes).hexdigest()
-        genesis_signed = _hmac_sign(key, "", genesis_payload_hash)
-        genesis_row = _EvidenceRow(
+        key, key_id = _get_signing_key()
+
+        # Auto-insert the genesis anchor row on first write to any
+        # (tenant, invocation) chain. The genesis row lets verify_chain
+        # detect head-truncation: an attacker who deletes rows starting
+        # from position 0 leaves a chain whose first surviving row is no
+        # longer a genesis, which verify_chain flags. Skipped when the
+        # caller is explicitly writing a genesis row itself (e.g. tests
+        # or an ingest path that constructs its own anchor).
+        if prev_hash == "" and evidence_kind != EVIDENCE_KIND_CHAIN_GENESIS:
+            genesis_payload = {
+                "tenant_id": tenant_id,
+                "invocation_id": invocation_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "chain_version": 1,
+            }
+            genesis_payload_bytes = _canonicalize(genesis_payload)
+            genesis_payload_hash = hashlib.sha256(genesis_payload_bytes).hexdigest()
+            genesis_signed = _hmac_sign(key, "", genesis_payload_hash)
+            genesis_row = _EvidenceRow(
+                tenant_id=tenant_id,
+                invocation_id=invocation_id,
+                correlation_id=correlation_id,
+                parent_invocation_id=parent_invocation_id,
+                span_id=span_id,
+                evidence_kind=EVIDENCE_KIND_CHAIN_GENESIS,
+                role=None,
+                payload=genesis_payload,
+                payload_hash=genesis_payload_hash,
+                payload_size_bytes=len(genesis_payload_bytes),
+                prev_hash=None,
+                signed_hash=genesis_signed,
+                signing_key_id=key_id,
+                occurred_at=datetime.now(timezone.utc),
+                source=None,
+                data_classes=None,
+                retention_until=None,
+                evaluator_name=None,
+            )
+            db.add(genesis_row)
+            # Best-effort counter bump for the genesis row. The UPDATE lives
+            # inside a SAVEPOINT so a missing kya_invocations table or a
+            # legacy schema without evidence_row_count rolls back only the
+            # counter bump, not the row insert. Missing parent invocation
+            # row is expected in some ingest paths — degrades to legacy
+            # verify semantics via the NULL counter path.
+            #
+            # Also refreshes the counter-forgery signature over the new
+            # counter value in the SAME SAVEPOINT so an attacker cannot
+            # observe an intermediate rows-without-signature (or
+            # counter-without-matching-signature) state.
+            try:
+                with db.begin_nested():
+                    _bump_counter_and_resign(
+                        db, tenant_id, invocation_id, key,
+                    )
+            except Exception as exc:
+                logger.debug("[KYA-EVIDENCE] genesis counter bump skipped: %s", exc)
+            # Single commit publishes the genesis row AND the counter bump
+            # atomically — a concurrent verify_chain reader can never see
+            # rows-without-counter (false-positive tamper).
+            db.commit()
+            db.refresh(genesis_row)
+            # The caller's row now chains off the just-inserted genesis.
+            prev_hash = genesis_signed
+
+        signed_hash = _hmac_sign(key, prev_hash, payload_hash)
+
+        # Retention computation
+        retention_until: datetime | None = None
+        if retention_days is not None:
+            retention_until = datetime.now(timezone.utc) + timedelta(days=retention_days)
+        elif data_classes:
+            # Map each data class through _DATA_CLASS_REGIMES → regimes →
+            # retention days. Pick the longest applicable retention so the
+            # strictest regulator's window wins.
+            applicable_days: list[int] = []
+            for cls in data_classes:
+                cls_lc = (cls or "").lower()
+                for regime in _DATA_CLASS_REGIMES.get(cls_lc, []):
+                    if regime in _REGIME_RETENTION_DAYS:
+                        applicable_days.append(_REGIME_RETENTION_DAYS[regime])
+            if applicable_days:
+                retention_until = datetime.now(timezone.utc) + timedelta(days=max(applicable_days))
+
+        row = _EvidenceRow(
             tenant_id=tenant_id,
             invocation_id=invocation_id,
             correlation_id=correlation_id,
             parent_invocation_id=parent_invocation_id,
             span_id=span_id,
-            evidence_kind=EVIDENCE_KIND_CHAIN_GENESIS,
-            role=None,
-            payload=genesis_payload,
-            payload_hash=genesis_payload_hash,
-            payload_size_bytes=len(genesis_payload_bytes),
-            prev_hash=None,
-            signed_hash=genesis_signed,
+            evidence_kind=evidence_kind,
+            role=role,
+            payload=payload,
+            payload_hash=payload_hash,
+            payload_size_bytes=payload_size_bytes,
+            prev_hash=prev_hash or None,
+            signed_hash=signed_hash,
             signing_key_id=key_id,
-            occurred_at=datetime.now(timezone.utc),
-            source=None,
-            data_classes=None,
-            retention_until=None,
-            evaluator_name=None,
+            occurred_at=occurred_at,
+            source=source,
+            data_classes=list(data_classes) if data_classes else None,
+            retention_until=retention_until,
+            # Evaluator attribution for VERDICT-PRODUCING rows.
+            # ``None`` for non-verdict evidence kinds (fine — the
+            # column is nullable + the audit-slice query filters
+            # ``WHERE evaluator_name IS NOT NULL``).
+            evaluator_name=evaluator_name,
         )
-        db.add(genesis_row)
-        # Best-effort counter bump for the genesis row. The UPDATE lives
-        # inside a SAVEPOINT so a missing kya_invocations table or a
-        # legacy schema without evidence_row_count rolls back only the
-        # counter bump, not the row insert. Missing parent invocation
-        # row is expected in some ingest paths — degrades to legacy
-        # verify semantics via the NULL counter path.
-        #
-        # Also refreshes the counter-forgery signature over the new
-        # counter value in the SAME SAVEPOINT so an attacker cannot
-        # observe an intermediate rows-without-signature (or
-        # counter-without-matching-signature) state.
-        try:
-            with db.begin_nested():
-                _bump_counter_and_resign(
-                    db, tenant_id, invocation_id, key,
-                )
-        except Exception as exc:
-            logger.debug("[KYA-EVIDENCE] genesis counter bump skipped: %s", exc)
-        # Single commit publishes the genesis row AND the counter bump
-        # atomically — a concurrent verify_chain reader can never see
-        # rows-without-counter (false-positive tamper).
-        db.commit()
-        db.refresh(genesis_row)
-        # The caller's row now chains off the just-inserted genesis.
-        prev_hash = genesis_signed
-
-    signed_hash = _hmac_sign(key, prev_hash, payload_hash)
-
-    # Retention computation
-    retention_until: datetime | None = None
-    if retention_days is not None:
-        retention_until = datetime.now(timezone.utc) + timedelta(days=retention_days)
-    elif data_classes:
-        # Map each data class through _DATA_CLASS_REGIMES → regimes →
-        # retention days. Pick the longest applicable retention so the
-        # strictest regulator's window wins.
-        applicable_days: list[int] = []
-        for cls in data_classes:
-            cls_lc = (cls or "").lower()
-            for regime in _DATA_CLASS_REGIMES.get(cls_lc, []):
-                if regime in _REGIME_RETENTION_DAYS:
-                    applicable_days.append(_REGIME_RETENTION_DAYS[regime])
-        if applicable_days:
-            retention_until = datetime.now(timezone.utc) + timedelta(days=max(applicable_days))
-
-    row = _EvidenceRow(
-        tenant_id=tenant_id,
-        invocation_id=invocation_id,
-        correlation_id=correlation_id,
-        parent_invocation_id=parent_invocation_id,
-        span_id=span_id,
-        evidence_kind=evidence_kind,
-        role=role,
-        payload=payload,
-        payload_hash=payload_hash,
-        payload_size_bytes=payload_size_bytes,
-        prev_hash=prev_hash or None,
-        signed_hash=signed_hash,
-        signing_key_id=key_id,
-        occurred_at=occurred_at,
-        source=source,
-        data_classes=list(data_classes) if data_classes else None,
-        retention_until=retention_until,
-        # Evaluator attribution for VERDICT-PRODUCING rows.
-        # ``None`` for non-verdict evidence kinds (fine — the
-        # column is nullable + the audit-slice query filters
-        # ``WHERE evaluator_name IS NOT NULL``).
-        evaluator_name=evaluator_name,
-    )
-    try:
         db.add(row)
         # Counter bump lives inside a SAVEPOINT so it can fail-soft
         # (missing table, legacy schema, missing parent row) without
