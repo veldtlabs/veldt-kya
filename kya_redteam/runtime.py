@@ -283,13 +283,10 @@ local key = KEYS[1]
 local rate = tonumber(ARGV[1])
 local cap = tonumber(ARGV[2])
 local ttl = tonumber(ARGV[3])
--- Clock comes from the SERVER, never the caller. With a caller-supplied
--- timestamp, replicas whose clocks differ push the stored `ts` back and
--- forth and each backwards step reads as elapsed time to the next
--- caller, refilling the bucket from skew instead of from real time.
--- Measured with 50ms of skew (ordinary NTP spread): 21 calls admitted
--- where 10 is correct. Redis >=5 replicates effects rather than the
--- script body, so TIME needs no replicate_commands() here.
+-- Clock comes from the SERVER, never the caller: with per-caller
+-- timestamps, replicas whose clocks differ would refill the bucket
+-- from skew rather than elapsed time. Redis >=5 replicates effects
+-- rather than the script body, so TIME needs no replicate_commands().
 local t = redis.call('TIME')
 local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
 local st = redis.call('HMGET', key, 'tokens', 'ts')

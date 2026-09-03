@@ -169,12 +169,10 @@ def maybe_rate_limit(
 
 
 
-#: Smallest multiplier a throttle may apply. The guard below is an OPEN
-#: lower bound, so without a floor a value like 1e-300 passes every
-#: check and reduces the effective rate to zero -- a total outage for
-#: that principal, presented as a graduated response and invisible in
-#: the deny metrics. A throttle meaning "stop entirely" should be a
-#: deny, which is auditable as one. 0.01 still allows a 100x slowdown.
+#: Smallest multiplier a throttle may apply. A floor keeps a tightening
+#: from collapsing the effective rate to zero, which would be a denial
+#: in all but name; a rule meaning "stop entirely" should return a deny
+#: so it is auditable as one. 0.01 still allows a 100x slowdown.
 MIN_RATE_MULTIPLIER = 0.01
 
 

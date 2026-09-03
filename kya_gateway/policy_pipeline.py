@@ -776,11 +776,10 @@ def evaluate(
     # ─── grant + trust gate ────────────────────────────────────
     # Called unconditionally. ``require_action`` self-gates on
     # ``KYA_RBAC_ENFORCEMENT`` (default "off"), so this is a no-op
-    # until an operator enables it. Previously it ran only when
-    # ``min_trust > 0``, which meant a grant revoked in
-    # ``kya_role_grants`` still passed here unless an unrelated trust
-    # threshold happened to be configured. Existing reason codes are
-    # kept so operator alerting keyed on them continues to match.
+    # until an operator enables it. Trust thresholds and grants are
+    # independent questions and are evaluated independently. Existing
+    # reason codes are kept so operator alerting keyed on them
+    # continues to match.
     try:
         from kya import AccessDeniedError, require_action
     except ImportError:
