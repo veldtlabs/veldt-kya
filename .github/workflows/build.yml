@@ -158,6 +158,25 @@ jobs:
   # in GH-hosted runners, so this job covers the SQLite-only smoke
   # path (which is also the default zero-config customer experience).
   # ────────────────────────────────────────────────────────────────────
+  # .gitignore stops accidental adds and nothing else -- `git add -f`
+  # walks straight past it. This repo is public, so a tracked agent or
+  # editor working directory would publish prompt history and local
+  # paths. Checks what is actually TRACKED, where a local bypass cannot
+  # hide it.
+  agent-artifact-guard:
+    timeout-minutes: 10
+    name: no agent/editor artifacts tracked
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Guard self-tests (prove it catches a forced add)
+        run: python scripts/ci/test_agent_artifact_guard.py
+      - name: Enforce no tracked agent artifacts
+        run: python scripts/ci/agent_artifact_guard.py
+
   cleanroom:
     name: Cleanroom · ${{ matrix.os }} · Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
