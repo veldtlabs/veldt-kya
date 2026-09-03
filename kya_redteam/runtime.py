@@ -271,6 +271,98 @@ def acquire_rate_token(target_id: str, rate_limit_rps: float,
     return total_wait
 
 
+def _rate_bucket_key(target_id: str) -> str:
+    return f"kya:redteam:rl_bucket:{target_id}"
+
+
+#: Atomic refill-and-consume. Kept in Lua because the read, the refill
+#: and the write must be one operation -- done in Python, two concurrent
+#: callers both read the same token count and both spend it.
+_BUCKET_LUA = """
+local key = KEYS[1]
+local rate = tonumber(ARGV[1])
+local cap = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+-- Clock comes from the SERVER, never the caller: with per-caller
+-- timestamps, replicas whose clocks differ would refill the bucket
+-- from skew rather than elapsed time. Redis >=5 replicates effects
+-- rather than the script body, so TIME needs no replicate_commands().
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+local st = redis.call('HMGET', key, 'tokens', 'ts')
+local tokens = tonumber(st[1])
+local ts = tonumber(st[2])
+if tokens == nil or ts == nil then
+  tokens = cap
+  ts = now
+end
+local elapsed = now - ts
+if elapsed > 0 then
+  tokens = math.min(cap, tokens + elapsed * rate)
+end
+local allowed = 0
+if tokens >= 1.0 then
+  tokens = tokens - 1.0
+  allowed = 1
+end
+redis.call('HMSET', key, 'tokens', tokens, 'ts', now)
+redis.call('EXPIRE', key, ttl)
+return allowed
+"""
+
+
+def check_rate_token_precise(
+    target_id: str,
+    rate_limit_rps: float,
+    *,
+    capacity: float | None = None,
+) -> bool:
+    """Fractional token bucket -- no integer quantisation.
+
+    ``check_rate_token`` derives a per-second allowance with
+    ``cap = max(1, int(rate_limit_rps))``. Truncating to an integer
+    destroys any rate that is not a whole number per second, which
+    matters because a throttle multiplier is continuous: 1.5 rps at
+    0.7x is 1.05 rps, and ``int()`` turns that back into the
+    un-throttled 1. The same truncation can also over-throttle -- 2.0
+    rps at 0.9x becomes 1, a 50% cut for a 10% request.
+
+    Here tokens are floats and refill continuously::
+
+        tokens = min(capacity, tokens + elapsed * rate)
+
+    A request costs 1.0 token, so 1.05 rps admits 1.05 calls per second
+    on average rather than 1.
+
+    ``capacity`` is the burst allowance, defaulting to one second of
+    budget (minimum 1.0, or no single request could ever proceed).
+
+    Fail-open, like every other limiter path here: if the store is
+    unreachable the call proceeds.
+    """
+    if rate_limit_rps <= 0:
+        return True
+    rds = _get_valkey()
+    if rds is None:
+        return True   # fail open
+    cap = capacity if capacity is not None else max(1.0, rate_limit_rps)
+    # Hold state well past one refill period so a bursty-then-idle
+    # caller is not silently handed a full bucket on its next call.
+    ttl = max(2, int(cap / rate_limit_rps) + 2)
+    try:
+        allowed = rds.eval(
+            _BUCKET_LUA, 1, _rate_bucket_key(target_id),
+            rate_limit_rps, cap, ttl,
+        )
+        return bool(int(allowed))
+    except Exception as exc:
+        logger.debug(
+            "[REDTEAM-RT] precise bucket unavailable (%s); "
+            "falling back to the integer bucket", exc,
+        )
+        return check_rate_token(target_id, rate_limit_rps)
+
+
 def check_rate_token(target_id: str, rate_limit_rps: float) -> bool:
     """Non-blocking variant of :func:`acquire_rate_token`.
 

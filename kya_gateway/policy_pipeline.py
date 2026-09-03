@@ -773,45 +773,50 @@ def evaluate(
                     daily_cap_usd=cfg.tenant_budget.daily_usd,
                 )
 
-    # ─── min_trust gate ────────────────────────────────────────
-    if cfg.min_trust > 0:
+    # ─── grant + trust gate ────────────────────────────────────
+    # Called unconditionally. ``require_action`` self-gates on
+    # ``KYA_RBAC_ENFORCEMENT`` (default "off"), so this is a no-op
+    # until an operator enables it. Trust thresholds and grants are
+    # independent questions and are evaluated independently. Existing
+    # reason codes are kept so operator alerting keyed on them
+    # continues to match.
+    try:
+        from kya import AccessDeniedError, require_action
+    except ImportError:
+        logger.debug("[KYA-GATEWAY] kya.require_action unavailable; skipping")
+        AccessDeniedError = None  # type: ignore[assignment]
+        require_action = None     # type: ignore[assignment]
+    if require_action is not None:
         try:
-            from kya import AccessDeniedError, require_action
-        except ImportError:
-            logger.debug("[KYA-GATEWAY] kya.require_action unavailable; skipping")
-            AccessDeniedError = None  # type: ignore[assignment]
-            require_action = None     # type: ignore[assignment]
-        if require_action is not None:
-            try:
-                require_action(
-                    db,
-                    tenant_id=tenant_id,
-                    principal_kind=principal.principal_kind,
-                    principal_id=principal.principal_id,
-                    action=action,
-                    min_trust=cfg.min_trust,
-                )
-            except AccessDeniedError:
-                return _dispatch(
-                    "min_trust",
-                    Verdict(
-                        verdict="deny",
-                        reason_codes=["MIN_TRUST_NOT_MET"],
-                        signal_kind="governance_block",
-                    ),
-                    min_trust=cfg.min_trust,
-                )
-            except Exception as exc:
-                logger.warning("[KYA-GATEWAY] require_action raised: %s", exc)
-                return _dispatch(
-                    "min_trust_error",
-                    Verdict(
-                        verdict="deny",
-                        reason_codes=["MIN_TRUST_ERROR"],
-                        signal_kind="governance_block",
-                    ),
-                    primitive_error=str(exc),
-                )
+            require_action(
+                db,
+                tenant_id=tenant_id,
+                principal_kind=principal.principal_kind,
+                principal_id=principal.principal_id,
+                action=action,
+                min_trust=cfg.min_trust or None,
+            )
+        except AccessDeniedError:
+            return _dispatch(
+                "min_trust",
+                Verdict(
+                    verdict="deny",
+                    reason_codes=["MIN_TRUST_NOT_MET", "RBAC_GRANT_DENIED"],
+                    signal_kind="governance_block",
+                ),
+                min_trust=cfg.min_trust,
+            )
+        except Exception as exc:
+            logger.warning("[KYA-GATEWAY] require_action raised: %s", exc)
+            return _dispatch(
+                "min_trust_error",
+                Verdict(
+                    verdict="deny",
+                    reason_codes=["MIN_TRUST_ERROR", "RBAC_GRANT_ERROR"],
+                    signal_kind="governance_block",
+                ),
+                primitive_error=str(exc),
+            )
 
     # ─── All checks passed ─────────────────────────────────────
     if "REQUIRES_HUMAN" in reasons:

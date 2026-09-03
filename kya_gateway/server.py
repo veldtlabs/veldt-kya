@@ -691,6 +691,32 @@ def build_app(gw: Gateway) -> FastAPI:
     """Construct the FastAPI app and bind handlers to the Gateway instance."""
     app = FastAPI(title="KYA Gateway", version="0.1.0")
 
+    @app.on_event("startup")
+    async def _log_enforcement_posture() -> None:  # noqa: RUF029
+        # Both layers default to non-blocking, so a gateway that sets
+        # neither records verdicts without applying them. Logged at
+        # WARNING in that state so it is visible in deploy logs.
+        try:
+            from kya.rbac import active_rbac_mode
+            rbac_mode = active_rbac_mode()
+        except Exception:  # noqa: BLE001
+            rbac_mode = "unknown"
+        gw_mode = getattr(
+            getattr(gw.cfg, "enforcement", None), "mode", "unknown",
+        )
+        line = (
+            "ENFORCEMENT POSTURE: gateway.mode=%s "
+            "KYA_RBAC_ENFORCEMENT=%s"
+        )
+        if gw_mode == "enforce" or rbac_mode == "block":
+            logger.info(line + " — enforcing.", gw_mode, rbac_mode)
+        else:
+            logger.warning(
+                line + " — NOTHING IS DENIED. Verdicts are recorded but "
+                "not applied, and revoked grants still pass.",
+                gw_mode, rbac_mode,
+            )
+
     @app.on_event("shutdown")
     async def _shutdown() -> None:
         await gw.forwarder.aclose()

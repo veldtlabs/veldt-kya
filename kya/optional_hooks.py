@@ -53,6 +53,15 @@ callable** here — see the identity layer's usage site for the exact
 call signature it invokes.
 """
 
+HOOK_RATE_MULTIPLIER_RESOLVER = "rate_multiplier_resolver"
+"""Resolver that scales a principal's effective rate limit.
+
+Expected shape: ``resolver(db, *, tenant_id, principal_kind,
+principal_id) -> float | None``. A value in (0, 1] tightens the limit
+for that principal; ``None`` leaves it unchanged. Unregistered is a
+supported deployment shape.
+"""
+
 HOOK_REVOCATION_CHECKER_FACTORY = "revocation_checker_factory"
 """Factory callable that constructs a revocation checker on demand.
 
@@ -126,6 +135,7 @@ def _clear_hooks_for_tests() -> None:
 __all__ = [
     "HOOK_HITL_ENCRYPT",
     "HOOK_REVOCATION_CHECKER",
+    "HOOK_RATE_MULTIPLIER_RESOLVER",
     "HOOK_REVOCATION_CHECKER_FACTORY",
     "HOOK_REVOCATION_ERROR",
     "get_hook",

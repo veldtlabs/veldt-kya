@@ -321,3 +321,49 @@ def test_replay_detected_when_check_returns_false(monkeypatch):
     )
     assert v.verdict == "deny"
     assert "REPLAY_DETECTED" in v.reason_codes
+
+
+def test_grant_check_runs_without_min_trust(monkeypatch):
+    """The grant check must not depend on an unrelated trust threshold.
+
+    ``require_action`` was called only when ``min_trust > 0``, so a
+    principal whose grant had been revoked in ``kya_role_grants`` still
+    passed the gateway unless an operator happened to have configured a
+    trust threshold as well.
+    """
+    import sys
+    import types
+
+    class _FakeAccessDeniedError(Exception):
+        pass
+
+    calls = []
+
+    def _deny(*args, **kw):
+        calls.append(kw)
+        raise _FakeAccessDeniedError("no grant")
+
+    fake_kya = types.ModuleType("kya")
+    fake_kya.AccessDeniedError = _FakeAccessDeniedError
+    fake_kya.require_action = _deny
+    monkeypatch.setitem(sys.modules, "kya", fake_kya)
+
+    cfg = PolicyConfig(min_trust=0)
+    v = evaluate(
+        db=None,
+        tenant_id="tenant-alpha",
+        principal=_principal(),
+        action="mcp.x.read",
+        payload_bytes=100,
+        cfg=cfg,
+        invocation_id=1,
+    )
+    assert calls, "require_action was never called with min_trust=0"
+    assert calls[0]["min_trust"] is None, (
+        "min_trust=0 must not be passed as a trust threshold"
+    )
+    assert v.verdict == "deny"
+    assert "RBAC_GRANT_DENIED" in v.reason_codes
+    # the pre-existing code is preserved so operator alerting keyed on
+    # it keeps matching
+    assert "MIN_TRUST_NOT_MET" in v.reason_codes

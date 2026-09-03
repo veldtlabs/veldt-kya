@@ -168,6 +168,68 @@ def maybe_rate_limit(
     return True
 
 
+
+#: Smallest multiplier a throttle may apply. A floor keeps a tightening
+#: from collapsing the effective rate to zero, which would be a denial
+#: in all but name; a rule meaning "stop entirely" should return a deny
+#: so it is auditable as one. 0.01 still allows a 100x slowdown.
+MIN_RATE_MULTIPLIER = 0.01
+
+
+def _apply_rate_multiplier(
+    rps: float,
+    db: Any,
+    *,
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str,
+) -> float:
+    """Scale ``rps`` by a registered multiplier. Fail-open.
+
+    Returns ``(rps, tightened)``. ``tightened`` selects the fractional
+    bucket, so an un-throttled request keeps the existing integer
+    bucket byte-for-byte.
+    """
+    from .optional_hooks import HOOK_RATE_MULTIPLIER_RESOLVER, get_hook
+
+    resolver = get_hook(HOOK_RATE_MULTIPLIER_RESOLVER)
+    if resolver is None:
+        return rps, False
+    try:
+        multiplier = resolver(
+            db, tenant_id=tenant_id, principal_kind=principal_kind,
+            principal_id=principal_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[KYA-RL] rate multiplier resolver raised (%s)", exc)
+        return rps, False
+    if multiplier is None:
+        return rps, False
+    try:
+        multiplier = float(multiplier)
+    except (TypeError, ValueError):
+        return rps, False
+    # Only ever tightens. Above 1.0 would widen the configured limit;
+    # below the floor is an outage wearing a throttle's clothes.
+    if not (MIN_RATE_MULTIPLIER <= multiplier <= 1.0):
+        logger.warning(
+            "[KYA-RL] rate multiplier %r outside [%s, 1.0] — ignored",
+            multiplier, MIN_RATE_MULTIPLIER,
+        )
+        return rps, False
+    if multiplier == 1.0:
+        # Not a tightening. Reporting it as one would flip the limiter
+        # onto the other bucket for no benefit, and that switch hands
+        # out a fresh allowance.
+        return rps, False
+    scaled = rps * multiplier
+    logger.info(
+        "[KYA-RL] rate limit tightened for %s:%s — %.4f rps -> %.4f rps "
+        "(x%.3f)", principal_kind, principal_id, rps, scaled, multiplier,
+    )
+    return scaled, True
+
+
 def check_rate(
     db: Any,
     *,
@@ -234,6 +296,17 @@ def check_rate(
         if min_interval_seconds <= 0:
             return True
         rps = 1.0 / float(min_interval_seconds)
+    # Apply a per-principal multiplier when one is registered. The
+    # static config value is the ceiling; a resolver may only tighten
+    # it. Without this the limit is fixed at config time, so a policy
+    # verdict that asks for a tighter limit is recorded and never
+    # applied.
+    rps, tightened = _apply_rate_multiplier(
+        rps, db,
+        tenant_id=tenant_id,
+        principal_kind=principal_kind,
+        principal_id=principal_id,
+    )
     # Bucket key MUST hash the identity tuple. Colon-delimited
     # f-string is unsafe because principal_id can be a DID
     # (`did:key:zABC` -- itself contains colons), so two distinct
@@ -254,7 +327,14 @@ def check_rate(
     try:
         # Non-blocking check -- gateway path is HTTP-synchronous and
         # must never sleep on rate-limit backoff.
-        within_budget = check_rate_token(target_id, rps)
+        if tightened:
+            # A multiplier is a continuous value; the default bucket
+            # allows a whole number of calls per second, so truncation
+            # would either erase the tightening or overshoot it.
+            from kya_redteam.runtime import check_rate_token_precise
+            within_budget = check_rate_token_precise(target_id, rps)
+        else:
+            within_budget = check_rate_token(target_id, rps)
     except Exception as exc:
         logger.debug(
             "[KYA-RL] check_rate_token raised (%s); fail-open", exc,
@@ -275,6 +355,11 @@ def check_rate(
                 detail={
                     "rps_limit": rps,
                     "requests_per_minute": requests_per_minute,
+                    # rps_limit is post-multiplier; without this a
+                    # consumer computing rps_limit*60 disagrees with
+                    # requests_per_minute and neither is wrong.
+                    "effective_requests_per_minute": round(rps * 60, 4),
+                    "throttle_applied": tightened,
                 },
             )
         except Exception as exc:
