@@ -43,6 +43,20 @@ def pg_schema():
             c.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"postgres unreachable: {exc}")
+    from kya._schema_gate import schema_init_enabled
+    from kya.invocations import _PG_SCHEMA
+
+    assert schema_init_enabled(), (
+        "KYA_SKIP_SCHEMA_INIT is set: ensure_invocations_table returns "
+        "before touching anything, so every assertion in this file "
+        "would hold for the wrong reason"
+    )
+    assert _PG_SCHEMA is None, (
+        f"KYA_VERSIONS_SCHEMA={_PG_SCHEMA!r} overrides the search_path "
+        "this fixture sets, so the reconcilers target a different schema "
+        "than the one under test"
+    )
+
     schema = f"recon_{uuid.uuid4().hex[:10]}"
     with admin.begin() as c:
         c.execute(text(f'CREATE SCHEMA "{schema}"'))
@@ -124,6 +138,83 @@ def test_no_reconcile_failure_is_logged_on_a_healthy_table(pg_schema, caplog):
     assert not noisy, (
         f"the tamper-detection channel fired on a healthy table: {noisy}"
     )
+
+
+def _mysql_url() -> str:
+    return os.environ.get(
+        "KYA_TEST_MYSQL_URL",
+        "mysql+pymysql://root:kya_test_2026@localhost:13306/kya_test",
+    )
+
+
+@pytest.fixture()
+def mysql_engine():
+    url = _mysql_url()
+    try:
+        eng = create_engine(url)
+        with eng.connect() as c:
+            c.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"mysql unreachable: {exc}")
+    yield eng
+    eng.dispose()
+
+
+def test_mysql_does_not_abort_its_transaction_on_a_failed_statement(
+    mysql_engine,
+):
+    """The reason MySQL needs no savepoint at all.
+
+    InnoDB rolls back the failed STATEMENT, not the transaction, so a
+    fail-soft schema step there cannot poison the caller. Postgres is
+    the opposite, which is the whole reason _failsoft_step exists.
+    """
+    tbl = f"sp_probe_{uuid.uuid4().hex[:8]}"
+    with mysql_engine.begin() as c:
+        c.execute(text(f"CREATE TABLE {tbl} (id INT PRIMARY KEY)"))
+    try:
+        with mysql_engine.begin() as c:
+            c.execute(text(f"INSERT INTO {tbl} VALUES (1)"))
+            with pytest.raises(Exception):
+                c.execute(text(f"INSERT INTO {tbl} VALUES (1)"))  # dup PK
+            # The load-bearing line: the transaction is still usable.
+            c.execute(text(f"INSERT INTO {tbl} VALUES (2)"))
+        with mysql_engine.connect() as c:
+            n = c.execute(text(f"SELECT COUNT(*) FROM {tbl}")).scalar()
+        assert n == 2, (
+            "MySQL aborted the transaction after a failed statement; it "
+            "would then need the containment postgres needs"
+        )
+    finally:
+        with mysql_engine.begin() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
+
+
+def test_a_savepoint_around_mysql_ddl_breaks_on_release(mysql_engine):
+    """Why MySQL must stay OUT of _SAVEPOINT_DIALECTS.
+
+    MySQL DDL implicitly commits, destroying any open savepoint, so
+    RELEASE fails on the HAPPY path. Wrapping a reconciler there made
+    the fail-loud tamper alert fire on every MySQL deployment forever.
+    """
+    tbl = f"sp_ddl_{uuid.uuid4().hex[:8]}"
+    with mysql_engine.begin() as c:
+        c.execute(text(f"CREATE TABLE {tbl} (id INT PRIMARY KEY)"))
+    try:
+        with mysql_engine.connect() as c:
+            trans = c.begin()
+            sp = c.begin_nested()
+            c.execute(text(f"ALTER TABLE {tbl} ADD COLUMN note TEXT"))
+            with pytest.raises(Exception) as exc:
+                sp.commit()          # RELEASE SAVEPOINT
+            assert "SAVEPOINT" in str(exc.value).upper(), str(exc.value)
+            try:
+                trans.commit()
+            except Exception:
+                pass
+    finally:
+        with mysql_engine.begin() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
 
 
 def test_savepoint_dialects_excludes_mysql():
