@@ -50,6 +50,21 @@ def db(request):
             # Reset prov_schema so PG runs are isolated.
             conn.execute(text("DROP SCHEMA IF EXISTS prov_schema CASCADE"))
             conn.execute(text("CREATE SCHEMA prov_schema"))
+            # The weight tables live in the default schema, so dropping
+            # prov_schema does not clear them. Rows left by an earlier
+            # run move the platform baseline and make the only-tighten
+            # assertions fail against state this test never wrote.
+        for tbl in ("kya_weight_changes", "kya_weight_overrides"):
+            # Own transaction each: on PG a failed statement aborts the
+            # whole transaction, so a not-yet-created table would take
+            # the rest of the reset down with it.
+            try:
+                with eng.begin() as conn:
+                    conn.execute(text(
+                        f"DELETE FROM {tbl} WHERE scope = 'class_weights'"
+                    ))
+            except Exception:  # noqa: BLE001 -- table not created yet
+                pass
     Session = sessionmaker(bind=eng)
     session = Session()
     try:

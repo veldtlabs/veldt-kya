@@ -35,6 +35,7 @@ Portable across PostgreSQL, SQLite, DuckDB, MySQL via SQLAlchemy ORM.
 import logging
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -387,6 +388,47 @@ def _migrate_agent_key_width(conn) -> None:
 #: autoincrement natively and must be left alone.
 _SEQUENCE_DIALECTS = ("postgresql", "duckdb")
 
+# Dialects whose failed statement aborts the enclosing transaction, so
+# every later statement fails too. A fail-soft schema step on these must
+# run inside a SAVEPOINT or it poisons the caller's transaction.
+_ABORT_ON_ERROR_DIALECTS = ("postgresql", "duckdb")
+
+# Dialects that accept SAVEPOINT. DuckDB aborts on error but has no
+# SAVEPOINT grammar, so its fail-soft steps must be pre-flighted instead.
+_SAVEPOINT_DIALECTS = ("postgresql", "mysql", "sqlite")
+
+
+@contextmanager
+def _failsoft_step(conn):
+    """Confine a fail-soft schema step to its own SAVEPOINT.
+
+    Without this, a probe or ALTER that fails on PostgreSQL leaves the
+    caller's transaction aborted and every subsequent statement --
+    including the caller's own writes -- fails too.
+    """
+    if conn.dialect.name in _SAVEPOINT_DIALECTS:
+        with conn.begin_nested():
+            yield
+    else:
+        yield
+
+
+def _duckdb_has_dependents(conn, table: str) -> bool:
+    """True when DuckDB would reject ALTER COLUMN on ``table``.
+
+    DuckDB refuses to alter a table that has dependent entries (an index
+    counts), and the rejection aborts the transaction with no SAVEPOINT
+    to recover from. Pre-flight instead of catching.
+    """
+    from sqlalchemy import text as _text
+    try:
+        n = conn.execute(_text(
+            "SELECT count(*) FROM duckdb_indexes() WHERE table_name = :t"
+        ), {"t": table}).scalar()
+        return bool(n)
+    except Exception:  # noqa: BLE001
+        return True  # Cannot prove it is safe -- do not risk the abort.
+
 
 def _reconcile_invocations_id_default(conn) -> None:
     """Make ``kya_invocations.id`` server-assignable on sequence dialects.
@@ -431,41 +473,53 @@ def _reconcile_invocations_id_default(conn) -> None:
     seq = f"{prefix}kya_invocations_id_seq"
 
     try:
-        if not insp.has_table(table, schema=schema):
-            return
-        cols = {c["name"]: c for c in insp.get_columns(table, schema=schema)}
-        col = cols.get("id")
-        if col is None:
-            return
-        if col.get("default") is not None:
-            return  # already reconciled
+        with _failsoft_step(conn):
+            if not insp.has_table(table, schema=schema):
+                return
+            cols = {c["name"]: c for c in insp.get_columns(table, schema=schema)}
+            col = cols.get("id")
+            if col is None:
+                return
+            if col.get("default") is not None:
+                return  # already reconciled
     except Exception as exc:  # noqa: BLE001
         log.warning("[KYA-INV] id-default column probe failed: %s", exc)
         return
 
+    if dialect == "duckdb" and _duckdb_has_dependents(conn, table):
+        # DuckDB rejects ALTER COLUMN while an index depends on the
+        # table, and the rejection aborts the transaction with no
+        # SAVEPOINT to recover from. ORM writes supply id themselves.
+        log.info(
+            "[KYA-INV] skipping id DEFAULT on duckdb: %s has dependent "
+            "indexes -- ORM writes are unaffected", table,
+        )
+        return
+
     try:
-        conn.execute(_text(f"CREATE SEQUENCE IF NOT EXISTS {seq}"))
-        # Advance past existing rows before the DEFAULT goes live.
-        current = conn.execute(
-            _text(f"SELECT COALESCE(MAX(id), 0) FROM {prefix}{table}")
-        ).scalar() or 0
-        if dialect == "postgresql":
-            conn.execute(
-                _text("SELECT setval(:s, :v, true)"),
-                {"s": seq, "v": int(current) + 1},
-            )
-            conn.execute(_text(
-                f"ALTER TABLE {prefix}{table} "
-                f"ALTER COLUMN id SET DEFAULT nextval('{seq}')"
-            ))
-            conn.execute(_text(
-                f"ALTER SEQUENCE {seq} OWNED BY {prefix}{table}.id"
-            ))
-        else:  # duckdb
-            conn.execute(_text(
-                f"ALTER TABLE {table} "
-                f"ALTER COLUMN id SET DEFAULT nextval('{seq}')"
-            ))
+        with _failsoft_step(conn):
+            conn.execute(_text(f"CREATE SEQUENCE IF NOT EXISTS {seq}"))
+            # Advance past existing rows before the DEFAULT goes live.
+            current = conn.execute(
+                _text(f"SELECT COALESCE(MAX(id), 0) FROM {prefix}{table}")
+            ).scalar() or 0
+            if dialect == "postgresql":
+                conn.execute(
+                    _text("SELECT setval(:s, :v, true)"),
+                    {"s": seq, "v": int(current) + 1},
+                )
+                conn.execute(_text(
+                    f"ALTER TABLE {prefix}{table} "
+                    f"ALTER COLUMN id SET DEFAULT nextval('{seq}')"
+                ))
+                conn.execute(_text(
+                    f"ALTER SEQUENCE {seq} OWNED BY {prefix}{table}.id"
+                ))
+            else:  # duckdb
+                conn.execute(_text(
+                    f"ALTER TABLE {table} "
+                    f"ALTER COLUMN id SET DEFAULT nextval('{seq}')"
+                ))
         log.info(
             "[KYA-INV] kya_invocations.id is now server-assignable "
             "(dialect=%s, sequence advanced past id=%s)", dialect, current,
@@ -507,44 +561,45 @@ def _reconcile_evidence_row_count_column(conn) -> None:
     column = "evidence_row_count"
 
     try:
-        if not insp.has_table(table, schema=schema):
-            return
-        cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
-        if column in cols:
-            return  # Already present — no-op.
+        with _failsoft_step(conn):
+            if not insp.has_table(table, schema=schema):
+                return
+            cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
+            if column in cols:
+                return  # Already present — no-op.
 
-        qualified = f"{qualified_prefix}{table}"
-        # Every supported dialect accepts an additive nullable INTEGER
-        # column with ``ADD COLUMN`` — no type coercion, no default,
-        # no lock-heavy rewrite. The MySQL grammar wants no NULL clause
-        # (nullable is the default).
-        if dialect == "postgresql":
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
-            ))
-        elif dialect == "mysql":
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER NULL"
-            ))
-        elif dialect in ("sqlite", "duckdb"):
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
-            ))
-        else:
-            try:
+            qualified = f"{qualified_prefix}{table}"
+            # Every supported dialect accepts an additive nullable INTEGER
+            # column with ``ADD COLUMN`` — no type coercion, no default,
+            # no lock-heavy rewrite. The MySQL grammar wants no NULL clause
+            # (nullable is the default).
+            if dialect == "postgresql":
                 conn.execute(text(
                     f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
                 ))
-            except Exception as exc:
-                log.warning(
-                    "[KYA-INV] could not add %s.%s on dialect=%s: %s",
-                    table, column, dialect, exc,
-                )
-                return
-        log.info(
-            "[KYA-INV] added %s.%s tamper-anchor column on dialect=%s",
-            table, column, dialect,
-        )
+            elif dialect == "mysql":
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER NULL"
+                ))
+            elif dialect in ("sqlite", "duckdb"):
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
+                ))
+            else:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {qualified} ADD COLUMN {column} INTEGER"
+                    ))
+                except Exception as exc:
+                    log.warning(
+                        "[KYA-INV] could not add %s.%s on dialect=%s: %s",
+                        table, column, dialect, exc,
+                    )
+                    return
+            log.info(
+                "[KYA-INV] added %s.%s tamper-anchor column on dialect=%s",
+                table, column, dialect,
+            )
     except Exception as exc:
         # Fail-soft: if the ALTER can't be issued the write path
         # gracefully degrades — record_evidence's UPDATE will raise
@@ -593,58 +648,59 @@ def _reconcile_evidence_row_count_signature_column(conn) -> None:
     column = "evidence_row_count_signature"
 
     try:
-        if not insp.has_table(table, schema=schema):
-            return
-        cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
-        if column in cols:
-            # CRITICAL: return early. Backfill MUST run only on the
-            # fresh-ALTER path — running it on every ensure_*_tables
-            # call would silently re-heal an attacker's nulled
-            # signature on the next read (verify_chain calls
-            # init_evidence_table which calls this reconciler if wired
-            # through init_storage). Post-migration all writes populate
-            # sig fresh, so any legitimate null-sig row means either
-            # (a) the row is pre-migration and needs backfill (this
-            # path caught at fresh-ALTER above), or (b) it was nulled
-            # by an attacker (must fail-closed at verify time).
-            return
-        qualified = f"{qualified_prefix}{table}"
-        # Every supported dialect accepts an additive nullable TEXT
-        # column with ``ADD COLUMN`` — no type coercion, no default,
-        # no lock-heavy rewrite. The MySQL grammar wants no NULL clause
-        # (nullable is the default). SQLite/DuckDB treat TEXT as an
-        # unbounded string type; MySQL/Postgres accept TEXT directly.
-        if dialect == "postgresql":
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
-            ))
-        elif dialect == "mysql":
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT NULL"
-            ))
-        elif dialect in ("sqlite", "duckdb"):
-            conn.execute(text(
-                f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
-            ))
-        else:
-            try:
+        with _failsoft_step(conn):
+            if not insp.has_table(table, schema=schema):
+                return
+            cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
+            if column in cols:
+                # CRITICAL: return early. Backfill MUST run only on the
+                # fresh-ALTER path — running it on every ensure_*_tables
+                # call would silently re-heal an attacker's nulled
+                # signature on the next read (verify_chain calls
+                # init_evidence_table which calls this reconciler if wired
+                # through init_storage). Post-migration all writes populate
+                # sig fresh, so any legitimate null-sig row means either
+                # (a) the row is pre-migration and needs backfill (this
+                # path caught at fresh-ALTER above), or (b) it was nulled
+                # by an attacker (must fail-closed at verify time).
+                return
+            qualified = f"{qualified_prefix}{table}"
+            # Every supported dialect accepts an additive nullable TEXT
+            # column with ``ADD COLUMN`` — no type coercion, no default,
+            # no lock-heavy rewrite. The MySQL grammar wants no NULL clause
+            # (nullable is the default). SQLite/DuckDB treat TEXT as an
+            # unbounded string type; MySQL/Postgres accept TEXT directly.
+            if dialect == "postgresql":
                 conn.execute(text(
                     f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
                 ))
-            except Exception as exc:
-                log.warning(
-                    "[KYA-INV] could not add %s.%s on dialect=%s: %s",
-                    table, column, dialect, exc,
-                )
-                return
-        log.info(
-            "[KYA-INV] added %s.%s counter-signature column on dialect=%s",
-            table, column, dialect,
-        )
-        # Backfill runs exactly once, immediately after the ALTER.
-        # After this point, the column exists, so subsequent calls
-        # return early above.
-        _backfill_evidence_row_count_signature(conn, qualified)
+            elif dialect == "mysql":
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT NULL"
+                ))
+            elif dialect in ("sqlite", "duckdb"):
+                conn.execute(text(
+                    f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
+                ))
+            else:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {qualified} ADD COLUMN {column} TEXT"
+                    ))
+                except Exception as exc:
+                    log.warning(
+                        "[KYA-INV] could not add %s.%s on dialect=%s: %s",
+                        table, column, dialect, exc,
+                    )
+                    return
+            log.info(
+                "[KYA-INV] added %s.%s counter-signature column on dialect=%s",
+                table, column, dialect,
+            )
+            # Backfill runs exactly once, immediately after the ALTER.
+            # After this point, the column exists, so subsequent calls
+            # return early above.
+            _backfill_evidence_row_count_signature(conn, qualified)
     except Exception as exc:
         # Fail-loud: if the ALTER can't be issued the counter-forgery
         # guard is inactive. verify_chain fails-closed on missing
