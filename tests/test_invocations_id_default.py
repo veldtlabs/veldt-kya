@@ -90,8 +90,19 @@ def _pg_engine():
 
     url = os.environ.get(
         "KYA_TEST_PG_URL",
-        "postgresql+psycopg2://veldt:veldt_kya_2026@localhost:18432/veldt_kya",
+        # NOT the live `veldt_kya` database. This test drops the id
+        # DEFAULT and calls setval() on kya_invocations; run against a
+        # database taking real traffic it can mint duplicate ids, and
+        # kya_evidence.invocation_id has no uniqueness constraint, so
+        # two evidence chains merge under one id.
+        "postgresql+psycopg2://veldt:veldt_kya_2026@localhost:18432"
+        "/veldt_kya_pending_test",
     )
+    if url.rsplit("/", 1)[-1] == "veldt_kya":
+        raise RuntimeError(
+            "refusing to run schema-drift tests against the live "
+            "`veldt_kya` database; point KYA_TEST_PG_URL at a test DB"
+        )
     try:
         eng = create_engine(url, future=True)
         with eng.connect() as c:

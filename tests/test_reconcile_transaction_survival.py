@@ -1,0 +1,278 @@
+"""A fail-soft schema step must not poison the caller's transaction.
+
+Postgres aborts the ENTIRE transaction on any failed statement; sqlite
+does not. So a reconciler that probes for a column, fails, and swallows
+the error leaves every later statement failing with
+InFailedSqlTransaction -- and the caller's own write is lost.
+
+Measured before the fix: 32 "Current transaction is aborted" lines in a
+full suite run, 0 after.
+
+The load-bearing assertion in every case below is the CALLER'S WRITE
+AFTER the reconciler. Asserting only that the reconciler "did not
+raise" passes even when the transaction is dead, which is exactly how
+this shipped: a sabotage reverting the savepoint wholesale left the ten
+most relevant test files green.
+"""
+from __future__ import annotations
+
+import os
+import uuid
+
+import pytest
+from sqlalchemy import create_engine, text
+
+
+def _pg_url() -> str:
+    return os.environ.get(
+        "KYA_TEST_POSTGRES_URL",
+        "postgresql+psycopg2://veldt:veldt_kya_2026@localhost:18432"
+        "/veldt_kya_pending_test",
+    )
+
+
+@pytest.fixture()
+def pg_schema():
+    """A private schema: these deliberately break DDL, and the shared
+    tables are used by ~44 other files."""
+    url = _pg_url()
+    assert "_test" in url.rsplit("/", 1)[-1], "refusing a non-test database"
+    try:
+        admin = create_engine(url)
+        with admin.connect() as c:
+            c.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"postgres unreachable: {exc}")
+    from kya._schema_gate import schema_init_enabled
+    from kya.invocations import _PG_SCHEMA
+
+    assert schema_init_enabled(), (
+        "KYA_SKIP_SCHEMA_INIT is set: ensure_invocations_table returns "
+        "before touching anything, so every assertion in this file "
+        "would hold for the wrong reason"
+    )
+    assert _PG_SCHEMA is None, (
+        f"KYA_VERSIONS_SCHEMA={_PG_SCHEMA!r} overrides the search_path "
+        "this fixture sets, so the reconcilers target a different schema "
+        "than the one under test"
+    )
+
+    schema = f"recon_{uuid.uuid4().hex[:10]}"
+    with admin.begin() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    eng = create_engine(url, connect_args={
+        "options": f"-csearch_path={schema}"})
+    try:
+        yield eng
+    finally:
+        eng.dispose()
+        with admin.begin() as c:
+            c.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        admin.dispose()
+
+
+def test_a_failing_reconcile_leaves_the_caller_able_to_write(pg_schema):
+    """The whole point of the savepoint.
+
+    Drive a reconciler against a table shaped so its probe fails, then
+    assert the caller can still COMMIT. Without containment the INSERT
+    dies with InFailedSqlTransaction and the row is silently lost.
+    """
+    from sqlalchemy.orm import Session
+    from kya.invocations import ensure_invocations_table
+
+    eng = pg_schema
+    # A table that exists but is missing everything the reconcilers
+    # probe for -- the pre-anchor schema shape.
+    with eng.begin() as c:
+        c.execute(text("""
+            CREATE TABLE kya_invocations (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id VARCHAR(64),
+                agent_key VARCHAR(512))"""))
+        c.execute(text("""
+            CREATE TABLE probe_target (id SERIAL PRIMARY KEY, note TEXT)"""))
+
+    with Session(eng) as db:
+        ensure_invocations_table(db)
+        # THE assertion: the caller's own write, after the reconcilers
+        # ran. A poisoned transaction fails here, not above.
+        db.execute(text("INSERT INTO probe_target (note) VALUES ('after')"))
+        db.commit()
+
+    with eng.connect() as c:
+        n = c.execute(text("SELECT COUNT(*) FROM probe_target")).scalar()
+    assert n == 1, (
+        "the caller's write was lost: a fail-soft schema step aborted "
+        "the transaction and every later statement failed"
+    )
+
+
+def test_no_reconcile_failure_is_logged_on_a_healthy_table(pg_schema, caplog):
+    """Guard the guard: containment must not become a false alarm.
+
+    The reconcile-failed log is the tamper-detection channel -- its own
+    comment says operators diagnose from it "before customers see
+    verify failures". If it fires on a healthy deployment it is
+    worthless. That is exactly what a savepoint around MySQL's
+    implicitly-committing DDL caused.
+    """
+    import logging
+
+    from sqlalchemy.orm import Session
+    from kya.invocations import ensure_invocations_table
+
+    eng = pg_schema
+    with Session(eng) as db:
+        ensure_invocations_table(db)
+        db.commit()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="kya.invocations"):
+        with Session(eng) as db:
+            ensure_invocations_table(db)
+            db.commit()
+
+    noisy = [r.getMessage() for r in caplog.records
+             if "reconcile FAILED" in r.getMessage()]
+    assert not noisy, (
+        f"the tamper-detection channel fired on a healthy table: {noisy}"
+    )
+
+
+def _mysql_url() -> str:
+    return os.environ.get(
+        "KYA_TEST_MYSQL_URL",
+        "mysql+pymysql://root:kya_test_2026@localhost:13306/kya_test",
+    )
+
+
+@pytest.fixture()
+def mysql_engine():
+    url = _mysql_url()
+    try:
+        eng = create_engine(url)
+        with eng.connect() as c:
+            c.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"mysql unreachable: {exc}")
+    yield eng
+    eng.dispose()
+
+
+def test_mysql_does_not_abort_its_transaction_on_a_failed_statement(
+    mysql_engine,
+):
+    """The reason MySQL needs no savepoint at all.
+
+    InnoDB rolls back the failed STATEMENT, not the transaction, so a
+    fail-soft schema step there cannot poison the caller. Postgres is
+    the opposite, which is the whole reason _failsoft_step exists.
+    """
+    tbl = f"sp_probe_{uuid.uuid4().hex[:8]}"
+    with mysql_engine.begin() as c:
+        c.execute(text(f"CREATE TABLE {tbl} (id INT PRIMARY KEY)"))
+    try:
+        with mysql_engine.begin() as c:
+            c.execute(text(f"INSERT INTO {tbl} VALUES (1)"))
+            with pytest.raises(Exception):
+                c.execute(text(f"INSERT INTO {tbl} VALUES (1)"))  # dup PK
+            # The load-bearing line: the transaction is still usable.
+            c.execute(text(f"INSERT INTO {tbl} VALUES (2)"))
+        with mysql_engine.connect() as c:
+            n = c.execute(text(f"SELECT COUNT(*) FROM {tbl}")).scalar()
+        assert n == 2, (
+            "MySQL aborted the transaction after a failed statement; it "
+            "would then need the containment postgres needs"
+        )
+    finally:
+        with mysql_engine.begin() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
+
+
+def test_a_savepoint_around_mysql_ddl_breaks_on_release(mysql_engine):
+    """Why MySQL must stay OUT of _SAVEPOINT_DIALECTS.
+
+    MySQL DDL implicitly commits, destroying any open savepoint, so
+    RELEASE fails on the HAPPY path. Wrapping a reconciler there made
+    the fail-loud tamper alert fire on every MySQL deployment forever.
+    """
+    tbl = f"sp_ddl_{uuid.uuid4().hex[:8]}"
+    with mysql_engine.begin() as c:
+        c.execute(text(f"CREATE TABLE {tbl} (id INT PRIMARY KEY)"))
+    try:
+        with mysql_engine.connect() as c:
+            trans = c.begin()
+            sp = c.begin_nested()
+            c.execute(text(f"ALTER TABLE {tbl} ADD COLUMN note TEXT"))
+            with pytest.raises(Exception) as exc:
+                sp.commit()          # RELEASE SAVEPOINT
+            assert "SAVEPOINT" in str(exc.value).upper(), str(exc.value)
+            try:
+                trans.commit()
+            except Exception:
+                pass
+    finally:
+        with mysql_engine.begin() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
+
+
+def test_savepoint_dialects_excludes_mysql():
+    """MySQL DDL implicitly commits, which destroys an open savepoint.
+
+    Wrapping a reconciler there made RELEASE SAVEPOINT fail on the happy
+    path, firing the operator alert on every MySQL deployment forever.
+    MySQL does not abort on error, so it never needed containment.
+    """
+    from kya.invocations import _SAVEPOINT_DIALECTS
+    assert "mysql" not in _SAVEPOINT_DIALECTS, (
+        "MySQL DDL implicitly commits; a savepoint around it fails on "
+        "RELEASE and turns the tamper-detection log into a false alarm"
+    )
+    assert "postgresql" in _SAVEPOINT_DIALECTS
+
+
+def test_a_failing_backfill_does_not_undo_the_column_it_backfills(pg_schema):
+    """The ALTER and the backfill need SEPARATE savepoints.
+
+    Sharing one means a backfill failure rolls the ALTER back with it --
+    verified directly: after a savepoint rollback the added column is
+    gone. The next boot then re-ALTERs and re-runs the backfill with
+    more rows present, which the reconciler's own note forbids, because
+    it would restore a counter signature an attacker had nulled.
+    """
+    from sqlalchemy.orm import Session
+
+    import kya.invocations as inv
+
+    eng = pg_schema
+    with eng.begin() as c:
+        c.execute(text("""
+            CREATE TABLE kya_invocations (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id VARCHAR(64),
+                agent_key VARCHAR(512),
+                evidence_row_count BIGINT)"""))
+
+    def _boom(conn, qualified_table):
+        raise RuntimeError("signing key unavailable")
+
+    original = inv._backfill_evidence_row_count_signature
+    inv._backfill_evidence_row_count_signature = _boom
+    try:
+        with Session(eng) as db:
+            conn = db.connection()
+            inv._reconcile_evidence_row_count_signature_column(conn)
+            db.commit()
+    finally:
+        inv._backfill_evidence_row_count_signature = original
+
+    with eng.connect() as c:
+        cols = {r[0] for r in c.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='kya_invocations' "
+            "AND table_schema = current_schema()"))}
+    assert "evidence_row_count_signature" in cols, (
+        "the backfill failure rolled back the ALTER; the next boot will "
+        "re-add the column and re-run the backfill over more rows"
+    )

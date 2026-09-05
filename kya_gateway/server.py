@@ -981,6 +981,9 @@ def build_app(gw: Gateway) -> FastAPI:
         invocation_id = _record_invocation_pre_policy(
             gw=gw, principal=principal, action=action,
         )
+        # Scope, not a response header: the id is sequential and a
+        # header would leak invocation volume to any caller.
+        request.state.kya_invocation_id = invocation_id
 
         if identity_failure is None:
             # Thread params.arguments through so arg-aware policy rules
@@ -1389,6 +1392,7 @@ def build_app(gw: Gateway) -> FastAPI:
             invocation_id = _record_invocation_pre_policy(
                 gw=gw, principal=principal, action=action,
             )
+            request.state.kya_invocation_id = invocation_id  # see /mcp
             # Thread tool_input through — see the /mcp counterpart at
             # server.py:960. Same reason: enables arg-aware policy rules
             # on ``attributes.tool.input.*`` via ``_build_eval_input``.
