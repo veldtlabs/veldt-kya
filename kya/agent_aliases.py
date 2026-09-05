@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import weakref
+from typing import Any
 
 from ._schema_gate import schema_init_enabled
 
@@ -53,7 +55,10 @@ _MIGRATIONS = [
     # additive evolution slot
 ]
 
-_ENSURED_ENGINES: set[int] = set()
+# Weak, so a disposed engine drops out. Keying on ``id()`` was unsound:
+# CPython recycles the id of a collected engine, and the next engine to
+# land on it was treated as already-ensured and never got its tables.
+_ENSURED_ENGINES: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
 def ensure_table(db) -> None:
@@ -69,11 +74,11 @@ def ensure_table(db) -> None:
         return
     try:
         bind = db.get_bind()
-        engine_key = id(bind.engine if hasattr(bind, "engine") else bind)
+        engine_key = bind.engine if hasattr(bind, "engine") else bind
     except Exception:
-        engine_key = -1
+        engine_key = None
 
-    if engine_key in _ENSURED_ENGINES:
+    if engine_key is not None and engine_key in _ENSURED_ENGINES:
         return
     try:
         from ._legacy_tables import create_legacy_tables, kya_agent_aliases
@@ -81,7 +86,8 @@ def ensure_table(db) -> None:
         create_legacy_tables(db, [kya_agent_aliases])
         apply_migrations(db, "kya_agent_aliases", _MIGRATIONS)
         db.commit()
-        _ENSURED_ENGINES.add(engine_key)
+        if engine_key is not None:
+            _ENSURED_ENGINES.add(engine_key)
     except Exception as exc:
         logger.warning("[KYA-ALIAS] ensure_table failed: %s", exc)
         db.rollback()

@@ -49,6 +49,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import weakref
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -118,7 +119,10 @@ class PendingInvocation:
 # ── Table creation ──────────────────────────────────────────────────
 
 
-_ENSURED_ENGINES: set[int] = set()
+# Weak, so a disposed engine drops out. Keying on ``id()`` was unsound:
+# CPython recycles the id of a collected engine, and the next engine to
+# land on it was treated as already-ensured and never got its tables.
+_ENSURED_ENGINES: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
 def _create_index_if_missing(
@@ -262,8 +266,7 @@ def ensure_table(engine) -> None:
     # Runtime DDL gate — see kya/_schema_gate.py.
     if not schema_init_enabled():
         return
-    key = id(engine)
-    if key in _ENSURED_ENGINES:
+    if engine in _ENSURED_ENGINES:
         return
     dialect = engine.dialect.name
     # BLOB is universal enough — postgres BYTEA, mysql BLOB, sqlite BLOB,
@@ -326,7 +329,7 @@ def ensure_table(engine) -> None:
         # Fresh deploys hit this and find the column already there
         # (CREATE TABLE now includes it), so it's a no-op.
         _add_tool_arguments_column_if_missing(conn, dialect, json_type)
-    _ENSURED_ENGINES.add(key)
+    _ENSURED_ENGINES.add(engine)
 
 
 # ── Policy config hashing ───────────────────────────────────────────
