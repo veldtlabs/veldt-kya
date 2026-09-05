@@ -49,8 +49,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import weakref
 import uuid
+import weakref
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -122,7 +122,7 @@ class PendingInvocation:
 # Weak, so a disposed engine drops out. Keying on ``id()`` was unsound:
 # CPython recycles the id of a collected engine, and the next engine to
 # land on it was treated as already-ensured and never got its tables.
-_ENSURED_ENGINES: "weakref.WeakSet[Any]" = weakref.WeakSet()
+_ENSURED_ENGINES: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def _create_index_if_missing(

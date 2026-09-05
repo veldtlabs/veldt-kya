@@ -312,66 +312,76 @@ def _migrate_agent_key_width(conn) -> None:
 
     for table, column, mysql_null in _AGENT_KEY_MIGRATIONS:
         try:
-            # `has_table` first: on DuckDB, calling `get_columns` against
-            # a missing table raises CatalogException AND poisons the
-            # connection's transaction context, so every subsequent
-            # statement on the same conn fails with TransactionException.
-            # PG/MySQL silently return [], but the explicit gate keeps
-            # the dialects consistent.
-            if not insp.has_table(table, schema=schema):
-                continue
-            cols = {c["name"]: c for c in insp.get_columns(table, schema=schema)}
-            existing = cols.get(column)
-            if existing is None:
-                continue   # Column doesn't exist — skip.
-            cur_len = getattr(existing.get("type"), "length", None)
-            if cur_len is not None and cur_len >= 512:
-                continue   # Already wide enough.
+            # This is a fail-soft schema step like the three
+            # reconcilers below, and it runs BEFORE all of them.
+            # Unwrapped, a failed ALTER here aborts the caller's
+            # transaction on postgres, the caller's own write is
+            # lost, and the reconcilers that follow cannot even
+            # open a savepoint -- so their fail-loud tamper alert
+            # fires spuriously on top of it. Realistic triggers: a
+            # dependent view on the column, or DDL denied to the
+            # app role.
+            with _failsoft_step(conn):
+                # `has_table` first: on DuckDB, calling `get_columns` against
+                # a missing table raises CatalogException AND poisons the
+                # connection's transaction context, so every subsequent
+                # statement on the same conn fails with TransactionException.
+                # PG/MySQL silently return [], but the explicit gate keeps
+                # the dialects consistent.
+                if not insp.has_table(table, schema=schema):
+                    continue
+                cols = {c["name"]: c for c in insp.get_columns(table, schema=schema)}
+                existing = cols.get(column)
+                if existing is None:
+                    continue   # Column doesn't exist — skip.
+                cur_len = getattr(existing.get("type"), "length", None)
+                if cur_len is not None and cur_len >= 512:
+                    continue   # Already wide enough.
 
-            qualified = f"{qualified_prefix}{table}"
-            if dialect == "postgresql":
-                conn.execute(text(
-                    f"ALTER TABLE {qualified} "
-                    f"ALTER COLUMN {column} TYPE VARCHAR(512)"
-                ))
-                log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
-                         table, column, cur_len)
-            elif dialect == "mysql":
-                # ALGORITHM=INPLACE keeps the lock light when supported
-                # (VARCHAR widening past 255 still needs a table rebuild
-                # in some engines; we let MySQL fall back automatically
-                # by not pinning the algorithm).
-                conn.execute(text(
-                    f"ALTER TABLE {qualified} "
-                    f"MODIFY {column} VARCHAR(512) {mysql_null}"
-                ))
-                log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
-                         table, column, cur_len)
-            elif dialect == "sqlite":
-                # SQLite does not enforce VARCHAR width — no-op.
-                pass
-            elif dialect == "duckdb":
-                # DuckDB also does not enforce VARCHAR length (a
-                # VARCHAR(100) column accepts a 500-char string with
-                # no truncation), so there is nothing to widen. We
-                # explicitly skip rather than fall through to the
-                # generic ALTER branch because DuckDB rejects
-                # ALTER COLUMN TYPE on indexed columns ("Catalog
-                # Error: an index depends on it"), which poisons the
-                # connection's transaction context for every
-                # subsequent statement.
-                pass
-            else:
-                try:
+                qualified = f"{qualified_prefix}{table}"
+                if dialect == "postgresql":
                     conn.execute(text(
                         f"ALTER TABLE {qualified} "
                         f"ALTER COLUMN {column} TYPE VARCHAR(512)"
                     ))
-                except Exception as exc:
-                    log.warning(
-                        "[KYA-INV] could not widen %s.%s on dialect=%s: %s",
-                        table, column, dialect, exc,
-                    )
+                    log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
+                             table, column, cur_len)
+                elif dialect == "mysql":
+                    # ALGORITHM=INPLACE keeps the lock light when supported
+                    # (VARCHAR widening past 255 still needs a table rebuild
+                    # in some engines; we let MySQL fall back automatically
+                    # by not pinning the algorithm).
+                    conn.execute(text(
+                        f"ALTER TABLE {qualified} "
+                        f"MODIFY {column} VARCHAR(512) {mysql_null}"
+                    ))
+                    log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
+                             table, column, cur_len)
+                elif dialect == "sqlite":
+                    # SQLite does not enforce VARCHAR width — no-op.
+                    pass
+                elif dialect == "duckdb":
+                    # DuckDB also does not enforce VARCHAR length (a
+                    # VARCHAR(100) column accepts a 500-char string with
+                    # no truncation), so there is nothing to widen. We
+                    # explicitly skip rather than fall through to the
+                    # generic ALTER branch because DuckDB rejects
+                    # ALTER COLUMN TYPE on indexed columns ("Catalog
+                    # Error: an index depends on it"), which poisons the
+                    # connection's transaction context for every
+                    # subsequent statement.
+                    pass
+                else:
+                    try:
+                        conn.execute(text(
+                            f"ALTER TABLE {qualified} "
+                            f"ALTER COLUMN {column} TYPE VARCHAR(512)"
+                        ))
+                    except Exception as exc:
+                        log.warning(
+                            "[KYA-INV] could not widen %s.%s on dialect=%s: %s",
+                            table, column, dialect, exc,
+                        )
         except Exception as exc:
             # Log at ERROR so operators see a clear "migration didn't
             # take effect" signal — subsequent inserts of long DIDs will
@@ -391,10 +401,17 @@ _SEQUENCE_DIALECTS = ("postgresql", "duckdb")
 # Dialects whose failed statement aborts the enclosing transaction, so
 # every later statement fails too. A fail-soft schema step on these must
 # run inside a SAVEPOINT or it poisons the caller's transaction.
-# Verified by execution, not assumed: on duckdb a failed SELECT, a
-# failed ALTER and a failed inspector call all leave the transaction
-# usable -- the follow-up INSERT succeeds. Only postgres aborts.
-_ABORT_ON_ERROR_DIALECTS = ("postgresql",)
+# Measured, and the error CLASS decides it. On duckdb 1.4.x a failed
+# SELECT, a failed ALTER and a failed inspector call (Binder/Catalog
+# errors) all leave the transaction usable -- but a Constraint or
+# Dependency error aborts it with "TransactionContext Error: Current
+# transaction is aborted". Sampling only the first group is how this
+# was previously mis-stated as postgres-only.
+#
+# It matters here: the signature backfill issues an UPDATE, and a
+# constraint violation there aborts a duckdb transaction that has no
+# SAVEPOINT grammar to recover with.
+_ABORT_ON_ERROR_DIALECTS = ("postgresql", "duckdb")
 
 # Dialects that accept SAVEPOINT *and* need one. DuckDB aborts on error
 # but has no SAVEPOINT grammar, so its fail-soft steps are pre-flighted
@@ -410,6 +427,21 @@ _ABORT_ON_ERROR_DIALECTS = ("postgresql",)
 _SAVEPOINT_DIALECTS = ("postgresql", "sqlite")
 
 
+_UNCONTAINABLE_FAILSOFT_WARNED: set = set()
+
+
+def _warn_uncontainable_failsoft_once(dialect: str) -> None:
+    if dialect in _UNCONTAINABLE_FAILSOFT_WARNED:
+        return
+    _UNCONTAINABLE_FAILSOFT_WARNED.add(dialect)
+    logger.warning(
+        "[KYA-INV] dialect=%s aborts its transaction on constraint and "
+        "dependency errors but has no SAVEPOINT; a fail-soft schema step "
+        "that hits one will take the caller's write with it",
+        dialect,
+    )
+
+
 @contextmanager
 def _failsoft_step(conn):
     """Confine a fail-soft schema step to its own SAVEPOINT.
@@ -418,11 +450,18 @@ def _failsoft_step(conn):
     caller's transaction aborted and every subsequent statement --
     including the caller's own writes -- fails too.
     """
-    if conn.dialect.name in _SAVEPOINT_DIALECTS:
+    dialect = conn.dialect.name
+    if dialect in _SAVEPOINT_DIALECTS:
         with conn.begin_nested():
             yield
-    else:
-        yield
+        return
+    if dialect in _ABORT_ON_ERROR_DIALECTS:
+        # Aborts on error but offers no SAVEPOINT to contain it. The
+        # step still runs -- refusing would be worse -- but the gap is
+        # named once per process rather than left silent, so a lost
+        # caller write is diagnosable.
+        _warn_uncontainable_failsoft_once(dialect)
+    yield
 
 
 def _duckdb_has_dependents(conn, table: str) -> bool:

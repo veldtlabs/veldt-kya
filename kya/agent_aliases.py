@@ -58,7 +58,7 @@ _MIGRATIONS = [
 # Weak, so a disposed engine drops out. Keying on ``id()`` was unsound:
 # CPython recycles the id of a collected engine, and the next engine to
 # land on it was treated as already-ensured and never got its tables.
-_ENSURED_ENGINES: "weakref.WeakSet[Any]" = weakref.WeakSet()
+_ENSURED_ENGINES: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def ensure_table(db) -> None:
@@ -76,6 +76,12 @@ def ensure_table(db) -> None:
         bind = db.get_bind()
         engine_key = bind.engine if hasattr(bind, "engine") else bind
     except Exception:
+        # Don't memoise what we can't identify. A shared sentinel lets
+        # the first unidentifiable caller mark the work done for a
+        # genuinely different bind; keying on the Session narrows that
+        # blast radius but does not remove it, and buys nothing -- a
+        # Session whose get_bind() raises also fails the DDL below, so
+        # it never reaches the memo either way.
         engine_key = None
 
     if engine_key is not None and engine_key in _ENSURED_ENGINES:
@@ -87,7 +93,12 @@ def ensure_table(db) -> None:
         apply_migrations(db, "kya_agent_aliases", _MIGRATIONS)
         db.commit()
         if engine_key is not None:
-            _ENSURED_ENGINES.add(engine_key)
+            try:
+                _ENSURED_ENGINES.add(engine_key)
+            except TypeError:
+                # Not weak-referenceable; correctness is unaffected,
+                # the next call repeats the idempotent DDL.
+                pass
     except Exception as exc:
         logger.warning("[KYA-ALIAS] ensure_table failed: %s", exc)
         db.rollback()
