@@ -391,7 +391,10 @@ _SEQUENCE_DIALECTS = ("postgresql", "duckdb")
 # Dialects whose failed statement aborts the enclosing transaction, so
 # every later statement fails too. A fail-soft schema step on these must
 # run inside a SAVEPOINT or it poisons the caller's transaction.
-_ABORT_ON_ERROR_DIALECTS = ("postgresql", "duckdb")
+# Verified by execution, not assumed: on duckdb a failed SELECT, a
+# failed ALTER and a failed inspector call all leave the transaction
+# usable -- the follow-up INSERT succeeds. Only postgres aborts.
+_ABORT_ON_ERROR_DIALECTS = ("postgresql",)
 
 # Dialects that accept SAVEPOINT *and* need one. DuckDB aborts on error
 # but has no SAVEPOINT grammar, so its fail-soft steps are pre-flighted
@@ -655,6 +658,8 @@ def _reconcile_evidence_row_count_signature_column(conn) -> None:
     qualified_prefix = f"{schema}." if schema else ""
     table = "kya_invocations"
     column = "evidence_row_count_signature"
+    qualified = f"{qualified_prefix}{table}"
+    added = False
 
     try:
         with _failsoft_step(conn):
@@ -673,7 +678,6 @@ def _reconcile_evidence_row_count_signature_column(conn) -> None:
                 # path caught at fresh-ALTER above), or (b) it was nulled
                 # by an attacker (must fail-closed at verify time).
                 return
-            qualified = f"{qualified_prefix}{table}"
             # Every supported dialect accepts an additive nullable TEXT
             # column with ``ADD COLUMN`` — no type coercion, no default,
             # no lock-heavy rewrite. The MySQL grammar wants no NULL clause
@@ -706,10 +710,20 @@ def _reconcile_evidence_row_count_signature_column(conn) -> None:
                 "[KYA-INV] added %s.%s counter-signature column on dialect=%s",
                 table, column, dialect,
             )
-            # Backfill runs exactly once, immediately after the ALTER.
-            # After this point, the column exists, so subsequent calls
-            # return early above.
-            _backfill_evidence_row_count_signature(conn, qualified)
+            added = True
+        # The backfill gets its OWN savepoint, opened after the ALTER's
+        # has been released.
+        #
+        # Sharing one savepoint means a backfill failure rolls the ALTER
+        # back with it -- verified on postgres: the column is absent
+        # after the rollback. The next boot then re-ALTERs and re-runs
+        # the backfill with more rows present, which is exactly the
+        # re-heal the note above forbids: it would restore a signature
+        # an attacker had nulled. Separate savepoints keep a successful
+        # ALTER durable and confine a backfill failure to itself.
+        if added:
+            with _failsoft_step(conn):
+                _backfill_evidence_row_count_signature(conn, qualified)
     except Exception as exc:
         # Fail-loud: if the ALTER can't be issued the counter-forgery
         # guard is inactive. verify_chain fails-closed on missing

@@ -139,3 +139,49 @@ def test_savepoint_dialects_excludes_mysql():
         "RELEASE and turns the tamper-detection log into a false alarm"
     )
     assert "postgresql" in _SAVEPOINT_DIALECTS
+
+
+def test_a_failing_backfill_does_not_undo_the_column_it_backfills(pg_schema):
+    """The ALTER and the backfill need SEPARATE savepoints.
+
+    Sharing one means a backfill failure rolls the ALTER back with it --
+    verified directly: after a savepoint rollback the added column is
+    gone. The next boot then re-ALTERs and re-runs the backfill with
+    more rows present, which the reconciler's own note forbids, because
+    it would restore a counter signature an attacker had nulled.
+    """
+    from sqlalchemy.orm import Session
+
+    import kya.invocations as inv
+
+    eng = pg_schema
+    with eng.begin() as c:
+        c.execute(text("""
+            CREATE TABLE kya_invocations (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id VARCHAR(64),
+                agent_key VARCHAR(512),
+                evidence_row_count BIGINT)"""))
+
+    def _boom(conn, qualified_table):
+        raise RuntimeError("signing key unavailable")
+
+    original = inv._backfill_evidence_row_count_signature
+    inv._backfill_evidence_row_count_signature = _boom
+    try:
+        with Session(eng) as db:
+            conn = db.connection()
+            inv._reconcile_evidence_row_count_signature_column(conn)
+            db.commit()
+    finally:
+        inv._backfill_evidence_row_count_signature = original
+
+    with eng.connect() as c:
+        cols = {r[0] for r in c.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='kya_invocations' "
+            "AND table_schema = current_schema()"))}
+    assert "evidence_row_count_signature" in cols, (
+        "the backfill failure rolled back the ALTER; the next boot will "
+        "re-add the column and re-run the backfill over more rows"
+    )
