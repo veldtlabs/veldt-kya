@@ -329,7 +329,13 @@ def ensure_table(engine) -> None:
         # Fresh deploys hit this and find the column already there
         # (CREATE TABLE now includes it), so it's a no-op.
         _add_tool_arguments_column_if_missing(conn, dialect, json_type)
-    _ENSURED_ENGINES.add(engine)
+    try:
+        _ENSURED_ENGINES.add(engine)
+    except TypeError:
+        # A bind that cannot be weak-referenced. __contains__ swallows
+        # the same TypeError and returns False, so the check above
+        # passes and this add would be the only thing that raises.
+        pass
 
 
 # ── Policy config hashing ───────────────────────────────────────────

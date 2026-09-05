@@ -393,9 +393,18 @@ _SEQUENCE_DIALECTS = ("postgresql", "duckdb")
 # run inside a SAVEPOINT or it poisons the caller's transaction.
 _ABORT_ON_ERROR_DIALECTS = ("postgresql", "duckdb")
 
-# Dialects that accept SAVEPOINT. DuckDB aborts on error but has no
-# SAVEPOINT grammar, so its fail-soft steps must be pre-flighted instead.
-_SAVEPOINT_DIALECTS = ("postgresql", "mysql", "sqlite")
+# Dialects that accept SAVEPOINT *and* need one. DuckDB aborts on error
+# but has no SAVEPOINT grammar, so its fail-soft steps are pre-flighted
+# instead.
+#
+# MySQL is deliberately absent. It does not abort the transaction on a
+# failed statement, so it never needed containment -- and its DDL
+# implicitly commits, which destroys any open savepoint. Wrapping a
+# reconciler there made RELEASE SAVEPOINT fail on the HAPPY path, so the
+# fail-loud operator alert fired on every MySQL deployment forever. That
+# channel is the tamper-detection signal; making it cry wolf is worse
+# than the abort it was guarding against.
+_SAVEPOINT_DIALECTS = ("postgresql", "sqlite")
 
 
 @contextmanager
