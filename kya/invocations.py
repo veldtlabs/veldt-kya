@@ -60,6 +60,11 @@ from .canonicals import (
 #: in one index. See the ``mysql_length`` prefixes in _legacy_tables.
 AGENT_KEY_LEN = 512
 
+#: Prefix used when an index over an agent-key column would exceed
+#: MySQL's 3072-byte key limit. Past the method prefix of every DID
+#: in use, so the index stays selective.
+_INDEX_PREFIX_LEN = 64
+
 
 try:
     from sqlalchemy import (
@@ -334,17 +339,51 @@ def _reprefix_mysql_indexes(conn, qualified, table, column, log) -> None:
         if not any(c["Column_name"] == column for c in cols):
             continue
         cols.sort(key=lambda c: c["Seq_in_index"])
+
+        # UNIQUE is a CONSTRAINT, not a hint. Rebuilding a unique index
+        # as an ordinary one silently permits duplicate rows -- and a
+        # prefix index enforces uniqueness on the PREFIX, which is a
+        # different and weaker guarantee than the operator declared.
+        # Refuse rather than quietly weaken it: leaving the ALTER to
+        # fail is recoverable and loud, a lost constraint is neither.
+        is_unique = any(int(c["Non_unique"]) == 0 for c in cols)
+        if is_unique:
+            log.error(
+                "[KYA-INV] REFUSING to rebuild UNIQUE index %s on %s: "
+                "re-creating it with a %d-char prefix would enforce "
+                "uniqueness on the prefix rather than the whole value. "
+                "%s.%s stays narrow and long identifiers will still be "
+                "rejected. Widen it by hand, or drop the constraint "
+                "deliberately.",
+                name, table, _INDEX_PREFIX_LEN, table, column,
+            )
+            continue
+
         parts = []
         for c in cols:
             # Prefix every agent-key-shaped member, not just the one
             # being widened: its siblings are usually just as wide.
             if "agent_key" in c["Column_name"]:
-                parts.append(f"`{c['Column_name']}`(64)")
+                parts.append(f"`{c['Column_name']}`({_INDEX_PREFIX_LEN})")
             else:
                 parts.append(f"`{c['Column_name']}`")
         conn.execute(_text(f"DROP INDEX `{name}` ON {qualified}"))
-        conn.execute(_text(
-            f"CREATE INDEX `{name}` ON {qualified} ({', '.join(parts)})"))
+        try:
+            conn.execute(_text(
+                f"CREATE INDEX `{name}` ON {qualified} ({', '.join(parts)})"))
+        except Exception:
+            # DROP and CREATE are separate statements and MySQL commits
+            # each implicitly, so a failure here leaves the table
+            # without the index. Say so: the next boot finds the column
+            # already wide and skips this path entirely, so nothing
+            # rebuilds it on its own.
+            log.error(
+                "[KYA-INV] index %s on %s was DROPPED and could not be "
+                "re-created. The table is missing that index and no "
+                "later boot will restore it -- re-create it by hand.",
+                name, table,
+            )
+            raise
         log.info("[KYA-INV] rebuilt %s.%s with prefixes to fit the "
                  "MySQL key limit", table, name)
 
@@ -412,7 +451,7 @@ def _migrate_agent_key_width(conn) -> None:
                         f"ALTER COLUMN {column} TYPE VARCHAR({AGENT_KEY_LEN})"
                     ))
                     log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(%s)",
-                             table, column, cur_len)
+                             table, column, cur_len, AGENT_KEY_LEN)
                 elif dialect == "mysql":
                     # ALGORITHM=INPLACE keeps the lock light when supported
                     # (VARCHAR widening past 255 still needs a table rebuild

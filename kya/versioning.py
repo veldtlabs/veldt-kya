@@ -38,6 +38,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from .invocations import AGENT_KEY_LEN
 from ._schema_gate import schema_init_enabled
 
 # SQLAlchemy is OPTIONAL — `from kya import score_agent` works without it
@@ -97,12 +98,12 @@ if _HAS_SQLALCHEMY:
         # no dialect-specific autoincrement (SERIAL on PG, AUTOINCREMENT on
         # SQLite, IDENTITY on DuckDB) — the schema is portable as-is.
         tenant_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-        # 512, matching _AGENT_KEY_MIGRATIONS. 50 predates DID
-        # identifiers: a `did:key:` is 56+ chars, so every
-        # DID-identified agent failed to register. Postgres and MySQL
-        # raise DataError; SQLite ignores VARCHAR lengths entirely,
-        # which is why a sqlite-only suite never saw it.
-        agent_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+        # 50 predates DID identifiers: a `did:key:` is 56+ chars, so
+        # every DID-identified agent failed to register. Postgres and
+        # MySQL raise DataError; SQLite ignores VARCHAR lengths
+        # entirely, which is why a sqlite-only suite never saw it.
+        agent_key: Mapped[str] = mapped_column(
+            String(AGENT_KEY_LEN), primary_key=True)
         version_no: Mapped[int] = mapped_column(Integer, primary_key=True)
         definition: Mapped[dict] = mapped_column(_JsonType, nullable=False)
         note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -224,12 +225,13 @@ def _compose_principal_key(principal_kind: str, principal_id: str) -> str:
             f"separator {_PRINCIPAL_KEY_SEPARATOR!r}; the composed "
             f"key would be ambiguous to decompose. Choose an id "
             f"without colons (e.g. use dots, dashes, or underscores).")
-    if len(principal_kind) + 1 + len(principal_id) > 50:
+    if len(principal_kind) + 1 + len(principal_id) > AGENT_KEY_LEN:
         raise ValueError(
             f"composed principal key '{principal_kind}:{principal_id}' "
-            f"exceeds the 50-char agent_key column width. Shorten the "
-            f"principal_id (must be <= {50 - len(principal_kind) - 1} "
-            f"chars for kind {principal_kind!r}).")
+            f"exceeds the {AGENT_KEY_LEN}-char agent_key column width. "
+            f"Shorten the principal_id (must be <= "
+            f"{AGENT_KEY_LEN - len(principal_kind) - 1} chars for kind "
+            f"{principal_kind!r}).")
     return f"{principal_kind}{_PRINCIPAL_KEY_SEPARATOR}{principal_id}"
 
 

@@ -33,7 +33,11 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from kya.invocations import _AGENT_KEY_MIGRATIONS
+from kya.invocations import (
+    AGENT_KEY_LEN,
+    _AGENT_KEY_MIGRATIONS,
+    _migrate_agent_key_width,
+)
 from kya.versioning import AgentVersion, ensure_table, snapshot_on_first_sight
 
 # 56 chars. The shortest DID method in common use -- if this one fails,
@@ -60,6 +64,16 @@ _NARROW = {
 }
 
 
+#: Set in CI to turn "backend absent" from a skip into a failure.
+#:
+#: Without it this file reports GREEN on four assertions when Postgres
+#: and MySQL are missing -- and the four that actually prove the fix are
+#: the ones that vanish. That is the same "sqlite is not evidence"
+#: failure the module docstring warns about, one layer up.
+_REQUIRE_BACKENDS = os.environ.get("KYA_REQUIRE_BACKENDS", "").strip() in (
+    "1", "true", "yes", "on")
+
+
 def _engine(url):
     try:
         eng = create_engine(url)
@@ -67,7 +81,14 @@ def _engine(url):
             c.execute(text("SELECT 1"))
         return eng
     except Exception as exc:
-        pytest.skip(f"backend unavailable ({type(exc).__name__})")
+        msg = f"backend unavailable ({type(exc).__name__}): {url}"
+        if _REQUIRE_BACKENDS:
+            pytest.fail(
+                f"{msg}. KYA_REQUIRE_BACKENDS is set, so a missing "
+                f"backend is a failure: skipping here would report "
+                f"green while the tests that prove this fix never ran."
+            )
+        pytest.skip(msg)
 
 
 def _width(engine):
@@ -89,16 +110,40 @@ def test_the_model_is_wide_enough_for_a_did():
         f"agent_key is VARCHAR({width}); did:jwk is {len(DID_JWK)} chars "
         f"and did:key is {len(DID_KEY)}"
     )
+    # Bound to the constant, not a literal. Shrinking AGENT_KEY_LEN to
+    # 256 left eight of nine tests green -- the upgrade tests only
+    # assert >= len(DID_JWK) (178), which 256 satisfies.
+    assert width == AGENT_KEY_LEN, (
+        f"the model says VARCHAR({width}) but AGENT_KEY_LEN is "
+        f"{AGENT_KEY_LEN}; the two have drifted"
+    )
 
 
 def test_the_table_is_registered_for_widening():
     """An existing install is only fixed by the migration list. The
     model change alone helps new deployments and nobody else."""
-    tables = {t for t, _c, _n in _AGENT_KEY_MIGRATIONS}
-    assert "agent_versions" in tables, (
-        "agent_versions is not in _AGENT_KEY_MIGRATIONS, so a deployed "
-        "install keeps its VARCHAR(50) column and DID agents still "
-        "cannot register"
+    pairs = {(t, c) for t, c, _n in _AGENT_KEY_MIGRATIONS}
+    # The whole set, not just agent_versions: with only that one
+    # asserted, any of the other eleven could be dropped silently.
+    expected = {
+        ("kya_invocations", "agent_key"),
+        ("agent_versions", "agent_key"),
+        ("kya_agent_aliases", "canonical_agent_key"),
+        ("kya_redteam_campaigns", "agent_key"),
+        ("kya_redteam_findings", "agent_key"),
+        ("kya_redteam_runs", "agent_key"),
+        ("kya_redteam_targets", "agent_key"),
+        ("kya_weight_suggestions", "agent_key"),
+        ("kya_delegation_violations", "parent_agent_key"),
+        ("kya_delegation_violations", "sub_agent_key"),
+        ("kya_delegation_policy_overrides", "parent_agent_key"),
+        ("kya_delegation_policy_overrides", "sub_agent_key"),
+    }
+    missing = expected - pairs
+    assert not missing, (
+        f"dropped from _AGENT_KEY_MIGRATIONS: {sorted(missing)}. Those "
+        f"columns stay VARCHAR(50) on a deployed install and long "
+        f"identifiers keep being rejected there."
     )
 
 
@@ -235,3 +280,215 @@ def test_MYSQL_widening_survives_an_over_wide_index():
         with eng.begin() as c:
             c.execute(text(f"DROP TABLE IF EXISTS {table}"))
         eng.dispose()
+
+
+# -- gaps found by independent sabotage --------------------------------
+
+def test_the_composite_primary_key_is_intact():
+    """S7, the most severe miss.
+
+    Dropping ``primary_key=True`` from ``agent_key`` collapses the PK to
+    (tenant_id, version_no). Every test above uses one agent per tenant,
+    so the collision is unreachable and all nine stayed green -- while
+    the SECOND DID agent in any tenant would fail to register. That is
+    the exact class of bug this file exists to prevent.
+    """
+    assert [c.name for c in AgentVersion.__table__.primary_key] == [
+        "tenant_id", "agent_key", "version_no"
+    ], "the composite primary key changed shape"
+
+
+def test_two_distinct_agents_coexist_in_one_tenant(tmp_path):
+    """The behavioural half of the same gap."""
+    eng = create_engine(f"sqlite:///{(tmp_path / 'pk.db').as_posix()}")
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    with Session(eng) as db:
+        ensure_table(db)
+        db.commit()
+        for key in (DID_KEY, DID_JWK):
+            snapshot_on_first_sight(
+                db=db, tenant_id=tenant, agent_key=key,
+                definition={"agent_key": key}, created_by="test")
+        db.commit()
+        n = db.execute(text(
+            "SELECT COUNT(DISTINCT agent_key) FROM agent_versions "
+            "WHERE tenant_id = :t"), {"t": tenant}).scalar()
+    assert n == 2, (
+        f"expected 2 distinct agents in one tenant, found {n} -- a "
+        f"collapsed primary key merges them"
+    )
+
+
+def test_widening_is_idempotent_across_boots():
+    """S4: without the ``cur_len >= AGENT_KEY_LEN`` guard the migration
+    re-ALTERs eleven columns on EVERY process start. On MySQL that is a
+    table rebuild under lock, per boot."""
+    eng = _engine(_BACKENDS["postgres"])
+    statements: list[str] = []
+
+    from sqlalchemy import event
+
+    def _record(conn, cursor, stmt, params, ctx, many):
+        if "ALTER TABLE" in stmt.upper():
+            statements.append(stmt)
+
+    try:
+        with eng.connect() as conn:
+            _migrate_agent_key_width(conn)     # first boot: may ALTER
+            conn.commit()
+        event.listen(eng, "before_cursor_execute", _record)
+        with eng.connect() as conn:
+            _migrate_agent_key_width(conn)     # second boot: must not
+            conn.commit()
+    finally:
+        try:
+            event.remove(eng, "before_cursor_execute", _record)
+        except Exception:
+            pass
+        eng.dispose()
+
+    assert statements == [], (
+        f"the second pass issued {len(statements)} ALTER statement(s) "
+        f"though every column was already wide: {statements[:2]}"
+    )
+
+
+def test_the_index_rebuild_stays_behind_the_ddl_gate(monkeypatch):
+    """S6: the inner ``schema_init_enabled()`` check.
+
+    Both current callers are gated, so this is defence in depth -- but
+    this very file calls ``_migrate_agent_key_width`` directly, which is
+    exactly the ungated entry point a saas deployment must be able to
+    switch off.
+    """
+    from kya.invocations import _reprefix_mysql_indexes
+
+    monkeypatch.setenv("KYA_SKIP_SCHEMA_INIT", "1")
+    executed: list[str] = []
+
+    class _Conn:
+        def execute(self, stmt, *a, **k):
+            executed.append(str(stmt))
+            raise AssertionError("DDL issued with schema init disabled")
+
+    import logging
+    _reprefix_mysql_indexes(_Conn(), "t", "t", "agent_key",
+                            logging.getLogger("test"))
+    assert executed == [], executed
+
+
+def test_MYSQL_a_unique_index_is_never_silently_downgraded():
+    """The critical finding: a rebuilt index must not lose UNIQUE.
+
+    The rebuild read SHOW INDEX, skipped only PRIMARY, and issued a
+    plain CREATE INDEX -- so a UNIQUE index came back ordinary and
+    duplicate rows were accepted where they previously raised 1062.
+    A prefix index would also enforce uniqueness on the PREFIX, a
+    weaker guarantee than the operator declared.
+
+    The migration now refuses and says so, leaving the column narrow.
+    Narrow-and-loud is recoverable; a lost constraint is not.
+    """
+    from kya.invocations import _migrate_agent_key_width
+
+    eng = _engine(_BACKENDS["mysql"])
+    table = "kya_delegation_policy_overrides"
+    try:
+        with eng.begin() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS {table}"))
+            c.execute(text(
+                f"CREATE TABLE {table} ("
+                " id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+                " tenant_id VARCHAR(36) NOT NULL,"
+                " parent_agent_key VARCHAR(100),"
+                " sub_agent_key VARCHAR(100),"
+                " violation_kind VARCHAR(40),"
+                " mode VARCHAR(20) NOT NULL)"))
+            c.execute(text(
+                "CREATE UNIQUE INDEX uq_delpol_ovr_pair "
+                f"ON {table} (tenant_id, parent_agent_key, sub_agent_key)"))
+
+        with eng.connect() as conn:
+            _migrate_agent_key_width(conn)
+            conn.commit()
+
+        with eng.connect() as c:
+            still_unique = any(
+                int(r._mapping["Non_unique"]) == 0
+                for r in c.execute(text(f"SHOW INDEX FROM {table}"))
+                if r._mapping["Key_name"] == "uq_delpol_ovr_pair"
+            )
+        assert still_unique, (
+            "uq_delpol_ovr_pair came back non-unique -- duplicate rows "
+            "are now accepted where they previously raised 1062"
+        )
+
+        # And the constraint still bites.
+        with eng.begin() as c:
+            c.execute(text(f"INSERT INTO {table} (tenant_id, "
+                           "parent_agent_key, sub_agent_key, mode) "
+                           "VALUES ('t','p','s','observe')"))
+        with pytest.raises(Exception):
+            with eng.begin() as c:
+                c.execute(text(f"INSERT INTO {table} (tenant_id, "
+                               "parent_agent_key, sub_agent_key, mode) "
+                               "VALUES ('t','p','s','observe')"))
+    finally:
+        with eng.begin() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        eng.dispose()
+
+
+def test_every_migration_log_line_actually_formats():
+    """A malformed log call shipped in this very commit.
+
+    The Postgres success branch was changed to say ``-> VARCHAR(%s)``
+    without extending the argument list: four placeholders, three
+    arguments. ``logging`` swallows that into a stderr traceback rather
+    than raising, so a SUCCESSFUL widening emitted no success line and a
+    logging error instead -- on the primary backend, inverting the one
+    signal an operator has for "did the fix take?".
+
+    Asserting on log output is unusual, but a migration's log IS its
+    interface: there is no return value to check.
+    """
+    import logging
+
+    eng = _engine(_BACKENDS["postgres"])
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    logger = logging.getLogger("kya.invocations")
+    handler = _Capture()
+    logger.addHandler(handler)
+    prev = logger.level
+    logger.setLevel(logging.DEBUG)
+    try:
+        # Narrow one column so the success branch genuinely runs.
+        with eng.begin() as c:
+            c.execute(text("DROP TABLE IF EXISTS agent_versions"))
+        with Session(eng) as db:
+            ensure_table(db)
+            db.commit()
+        with eng.begin() as c:
+            c.execute(text(_NARROW["postgres"]))
+        with eng.connect() as conn:
+            _migrate_agent_key_width(conn)
+            conn.commit()
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev)
+        eng.dispose()
+
+    assert records, "the migration logged nothing at all"
+    for r in records:
+        try:
+            r.getMessage()
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(
+                f"log call does not format: {r.msg!r} with {r.args!r} "
+                f"-> {type(exc).__name__}: {exc}"
+            )
