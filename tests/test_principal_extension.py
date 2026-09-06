@@ -407,19 +407,35 @@ class TestSnapshotPrincipal:
             )
 
     def test_oversized_composed_key_rejected(self):
+        """The guard tracks the column, which is now AGENT_KEY_LEN.
+
+        This asserted a 50-char limit. `agent_key` was widened to fit
+        DID identifiers (a did:key is 56 chars, a did:jwk ~175), so a
+        45-char principal_id is now legitimate and must NOT raise --
+        that was the whole point of the change. The guard still exists;
+        it fires at the real width.
+        """
         from kya import snapshot_principal
+        from kya.invocations import AGENT_KEY_LEN
+
         db = _fresh_db()
+        kind = "machine_identity"
+
+        # Comfortably inside the widened column: no longer an error.
+        snapshot_principal(
+            db, tenant_id="t", principal_kind=kind,
+            principal_id="x" * 45, definition={},
+        )
+
+        # Past it: still rejected, and the message names the real width.
         with pytest.raises(ValueError) as excinfo:
             snapshot_principal(
-                db, tenant_id="t",
-                principal_kind="machine_identity",
-                principal_id="x" * 45,
-                definition={},
+                db, tenant_id="t", principal_kind=kind,
+                principal_id="x" * (AGENT_KEY_LEN + 1), definition={},
             )
-        # Error message names the column width + the kind
         msg = str(excinfo.value)
-        assert "50-char" in msg
-        assert "machine_identity" in msg
+        assert f"{AGENT_KEY_LEN}-char" in msg, msg
+        assert kind in msg
 
     def test_concurrent_snapshot_principal_race(self):
         """Two threads snapshotting the same principal concurrently

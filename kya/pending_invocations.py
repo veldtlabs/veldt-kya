@@ -59,6 +59,7 @@ from sqlalchemy import text as _sql
 from sqlalchemy.exc import IntegrityError
 
 from ._schema_gate import schema_init_enabled
+from .invocations import AGENT_KEY_LEN
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +287,7 @@ def ensure_table(engine) -> None:
             CREATE TABLE IF NOT EXISTS kya_pending_invocations (
                 id VARCHAR(36) PRIMARY KEY,
                 tenant_id VARCHAR(36) NOT NULL,
-                agent_key VARCHAR(512) NOT NULL,
+                agent_key VARCHAR({AGENT_KEY_LEN}) NOT NULL,
                 principal_kind VARCHAR(20) NOT NULL,
                 principal_id VARCHAR(200) NOT NULL,
                 action VARCHAR(200) NOT NULL,

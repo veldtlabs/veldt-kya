@@ -49,6 +49,7 @@ from ._portable import (
     uuid_or_string,
 )
 from ._schema_gate import schema_init_enabled
+from .invocations import AGENT_KEY_LEN
 
 # Serializes every create_all call against the legacy tables. Required
 # because the DuckDB branch DETACHES partial indexes from the
@@ -196,7 +197,7 @@ kya_agent_aliases = Table(
     # String(255) instead of Text — MySQL can't index TEXT in UNIQUE
     # constraints without an explicit key length prefix.
     Column("alias", String(255), nullable=False),
-    Column("canonical_agent_key", String(50), nullable=False),
+    Column("canonical_agent_key", String(AGENT_KEY_LEN), nullable=False),
     Column("note", Text, nullable=True),
     Column("created_by", uuid_or_string(), nullable=True),
     Column("created_at", DateTime(timezone=True),
@@ -311,7 +312,7 @@ kya_weight_suggestions = Table(
     # 512 chars: same widening as kya_invocations.agent_key. DID URIs
     # are too long for 100; the migration in kya.invocations widens both
     # on next init_storage().
-    Column("agent_key", String(512), nullable=True),
+    Column("agent_key", String(AGENT_KEY_LEN), nullable=True),
     Column("scope", String(50), nullable=False),
     Column("key", String(100), nullable=False),
     Column("current_value", BigInteger, nullable=True),
@@ -356,7 +357,7 @@ kya_redteam_campaigns = Table(
     _LEGACY_MD,
     autoinc_id("kya_redteam_campaigns_id_seq"),
     Column("tenant_id", uuid_or_string(), nullable=False),
-    Column("agent_key", String(50), nullable=False),
+    Column("agent_key", String(AGENT_KEY_LEN), nullable=False),
     Column("name", String(255), nullable=False),
     Column("description", Text, nullable=True),
     Column("orchestrator_kind", String(50), nullable=False),
@@ -392,7 +393,7 @@ kya_redteam_findings = Table(
     Column("tenant_id", uuid_or_string(), nullable=False),
     Column("campaign_id", BigInteger, nullable=True),  # FK target lives in same metadata
     Column("run_id", uuid_or_string(), nullable=False),
-    Column("agent_key", String(50), nullable=False),
+    Column("agent_key", String(AGENT_KEY_LEN), nullable=False),
     Column("orchestrator", Text, nullable=True),
     Column("attack_category", String(100), nullable=True),
     Column("finding_class", String(100), nullable=True),
@@ -437,7 +438,7 @@ kya_redteam_runs = Table(
     Column("tenant_id", uuid_or_string(), nullable=False),
     Column("run_id", uuid_or_string(), nullable=False, unique=True),
     Column("campaign_id", BigInteger, nullable=True),
-    Column("agent_key", String(50), nullable=False),
+    Column("agent_key", String(AGENT_KEY_LEN), nullable=False),
     Column("orchestrator", Text, nullable=False),
     Column("target_id", BigInteger, nullable=True),
     Column("target_endpoint_redacted", Text, nullable=True),
@@ -470,7 +471,7 @@ kya_redteam_targets = Table(
     _LEGACY_MD,
     autoinc_id("kya_redteam_targets_id_seq"),
     Column("tenant_id", uuid_or_string(), nullable=False),
-    Column("agent_key", String(50), nullable=False),
+    Column("agent_key", String(AGENT_KEY_LEN), nullable=False),
     # `name` is UNIQUE-constrained — must have explicit length for MySQL
     Column("name", String(255), nullable=False),
     Column("description", Text, nullable=True),
@@ -749,9 +750,20 @@ kya_delegation_policy_overrides = Table(
     Column("expires_at", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True),
            server_default=func.now(), nullable=False),
+    # MySQL index prefixes on the two agent-key columns.
+    #
+    # At AGENT_KEY_LEN=512 and utf8mb4, each is 2048 bytes; two of them
+    # plus tenant_id and violation_kind is 4400, over MySQL's 3072-byte
+    # limit. Without a prefix the widening ALTER fails with errno 1071
+    # and the columns silently stay narrow, so DID-shaped principals are
+    # still rejected here.
+    #
+    # 64 chars is past the method prefix of every DID in use, so the
+    # index stays selective. Ignored by Postgres and SQLite.
     Index("idx_kya_delpol_ovr_tenant_scope",
           "tenant_id", "parent_agent_key",
-          "sub_agent_key", "violation_kind"),
+          "sub_agent_key", "violation_kind",
+          mysql_length={"parent_agent_key": 64, "sub_agent_key": 64}),
     Index("idx_kya_delpol_ovr_tenant_effective",
           "tenant_id", "effective_at"),
 )
