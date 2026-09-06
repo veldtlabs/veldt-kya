@@ -38,8 +38,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from .invocations import AGENT_KEY_LEN
 from ._schema_gate import schema_init_enabled
+from .invocations import AGENT_KEY_LEN
 
 # SQLAlchemy is OPTIONAL — `from kya import score_agent` works without it
 # in standalone SDK installs. Versioning functions raise on first call if

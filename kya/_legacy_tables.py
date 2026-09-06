@@ -48,8 +48,8 @@ from ._portable import (
     portable_bigint,
     uuid_or_string,
 )
-from .invocations import AGENT_KEY_LEN
 from ._schema_gate import schema_init_enabled
+from .invocations import AGENT_KEY_LEN
 
 # Serializes every create_all call against the legacy tables. Required
 # because the DuckDB branch DETACHES partial indexes from the
