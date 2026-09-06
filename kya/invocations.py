@@ -48,6 +48,19 @@ from .canonicals import (
     OUTCOME_PENDING,  # noqa: F401 — re-exported by kya/__init__.py
 )
 
+#: Width of every ``agent_key``-shaped column.
+#:
+#: Sized for the widest DID method in practical use: ``did:jwk`` runs
+#: ~175 chars, ``did:web`` with deep paths longer still. ``did:key`` --
+#: the common case -- is 56. The original 100 rejected all of them on
+#: Postgres and MySQL.
+#:
+#: Note the cost on MySQL: at utf8mb4 this is 2048 bytes, two thirds of
+#: the 3072-byte index limit, so two such columns cannot sit unprefixed
+#: in one index. See the ``mysql_length`` prefixes in _legacy_tables.
+AGENT_KEY_LEN = 512
+
+
 try:
     from sqlalchemy import (
         BigInteger,
@@ -171,7 +184,7 @@ if _HAS_SQLALCHEMY:
         # and any UUID/short-hash internal identifier. 100 chars was the
         # original tight default and rejected DID-shaped principals
         # outright on Postgres / MySQL (SQLite silently accepted).
-        agent_key: Mapped[str] = mapped_column(String(512), nullable=False)
+        agent_key: Mapped[str] = mapped_column(String(AGENT_KEY_LEN), nullable=False)
         principal_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
         principal_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -274,12 +287,66 @@ def ensure_invocations_table(db) -> None:
 # Tuple: (table, column, mysql_null_clause)
 _AGENT_KEY_MIGRATIONS = [
     ("kya_invocations", "agent_key", "NOT NULL"),
+    # Part of the composite PK (tenant_id, agent_key, version_no), so
+    # the ALTER rebuilds that index -- fine, the fail-soft step below
+    # contains a failure. Omitted here originally, which is why DID
+    # agents never appeared in the catalogue.
+    ("agent_versions", "agent_key", "NOT NULL"),
+    ("kya_agent_aliases", "canonical_agent_key", "NOT NULL"),
+    ("kya_redteam_campaigns", "agent_key", "NOT NULL"),
+    ("kya_redteam_findings", "agent_key", "NOT NULL"),
+    ("kya_redteam_runs", "agent_key", "NOT NULL"),
+    ("kya_redteam_targets", "agent_key", "NOT NULL"),
     ("kya_weight_suggestions", "agent_key", "NULL"),
     ("kya_delegation_violations", "parent_agent_key", "NULL"),
     ("kya_delegation_violations", "sub_agent_key", "NULL"),
     ("kya_delegation_policy_overrides", "parent_agent_key", "NULL"),
     ("kya_delegation_policy_overrides", "sub_agent_key", "NULL"),
 ]
+
+
+def _reprefix_mysql_indexes(conn, qualified, table, column, log) -> None:
+    """Re-create any index over ``column`` with a 64-char prefix.
+
+    MySQL caps an index key at 3072 bytes. At utf8mb4 an
+    ``AGENT_KEY_LEN`` column is 2048, so two of them in one index blow
+    the cap and the widening ALTER fails with errno 1071 -- leaving the
+    column narrow and DID principals rejected, quietly.
+
+    64 chars is past the method prefix of every DID in use, so the
+    rebuilt index stays selective.
+    """
+    # Gated directly, not just via the caller: this issues DDL, and a
+    # saas deployment must be able to switch every DDL path off.
+    if not schema_init_enabled():
+        return
+    from sqlalchemy import text as _text
+
+    rows = conn.execute(_text(f"SHOW INDEX FROM {qualified}")).fetchall()
+    by_name: dict[str, list] = {}
+    for r in rows:
+        m = r._mapping
+        if m["Key_name"] == "PRIMARY":
+            continue
+        by_name.setdefault(m["Key_name"], []).append(m)
+
+    for name, cols in by_name.items():
+        if not any(c["Column_name"] == column for c in cols):
+            continue
+        cols.sort(key=lambda c: c["Seq_in_index"])
+        parts = []
+        for c in cols:
+            # Prefix every agent-key-shaped member, not just the one
+            # being widened: its siblings are usually just as wide.
+            if "agent_key" in c["Column_name"]:
+                parts.append(f"`{c['Column_name']}`(64)")
+            else:
+                parts.append(f"`{c['Column_name']}`")
+        conn.execute(_text(f"DROP INDEX `{name}` ON {qualified}"))
+        conn.execute(_text(
+            f"CREATE INDEX `{name}` ON {qualified} ({', '.join(parts)})"))
+        log.info("[KYA-INV] rebuilt %s.%s with prefixes to fit the "
+                 "MySQL key limit", table, name)
 
 
 def _migrate_agent_key_width(conn) -> None:
@@ -335,28 +402,42 @@ def _migrate_agent_key_width(conn) -> None:
                 if existing is None:
                     continue   # Column doesn't exist — skip.
                 cur_len = getattr(existing.get("type"), "length", None)
-                if cur_len is not None and cur_len >= 512:
+                if cur_len is not None and cur_len >= AGENT_KEY_LEN:
                     continue   # Already wide enough.
 
                 qualified = f"{qualified_prefix}{table}"
                 if dialect == "postgresql":
                     conn.execute(text(
                         f"ALTER TABLE {qualified} "
-                        f"ALTER COLUMN {column} TYPE VARCHAR(512)"
+                        f"ALTER COLUMN {column} TYPE VARCHAR({AGENT_KEY_LEN})"
                     ))
-                    log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
+                    log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(%s)",
                              table, column, cur_len)
                 elif dialect == "mysql":
                     # ALGORITHM=INPLACE keeps the lock light when supported
                     # (VARCHAR widening past 255 still needs a table rebuild
                     # in some engines; we let MySQL fall back automatically
                     # by not pinning the algorithm).
-                    conn.execute(text(
+                    alter = text(
                         f"ALTER TABLE {qualified} "
-                        f"MODIFY {column} VARCHAR(512) {mysql_null}"
-                    ))
-                    log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(512)",
-                             table, column, cur_len)
+                        f"MODIFY {column} VARCHAR({AGENT_KEY_LEN}) {mysql_null}"
+                    )
+                    try:
+                        conn.execute(alter)
+                    except Exception as exc:
+                        # errno 1071: the column sits in an index whose
+                        # key would exceed 3072 bytes at this width. New
+                        # installs avoid it via mysql_length prefixes,
+                        # but a deployed one already has the unprefixed
+                        # index, so re-create it with prefixes and retry.
+                        # Without this the column silently stays narrow
+                        # and DID principals keep being rejected.
+                        if "1071" not in str(exc):
+                            raise
+                        _reprefix_mysql_indexes(conn, qualified, table, column, log)
+                        conn.execute(alter)
+                    log.info("[KYA-INV] migrated %s.%s VARCHAR(%s) -> VARCHAR(%s)",
+                             table, column, cur_len, AGENT_KEY_LEN)
                 elif dialect == "sqlite":
                     # SQLite does not enforce VARCHAR width — no-op.
                     pass
@@ -375,7 +456,7 @@ def _migrate_agent_key_width(conn) -> None:
                     try:
                         conn.execute(text(
                             f"ALTER TABLE {qualified} "
-                            f"ALTER COLUMN {column} TYPE VARCHAR(512)"
+                            f"ALTER COLUMN {column} TYPE VARCHAR({AGENT_KEY_LEN})"
                         ))
                     except Exception as exc:
                         log.warning(

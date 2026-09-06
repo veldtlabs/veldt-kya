@@ -97,7 +97,12 @@ if _HAS_SQLALCHEMY:
         # no dialect-specific autoincrement (SERIAL on PG, AUTOINCREMENT on
         # SQLite, IDENTITY on DuckDB) — the schema is portable as-is.
         tenant_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-        agent_key: Mapped[str] = mapped_column(String(50), primary_key=True)
+        # 512, matching _AGENT_KEY_MIGRATIONS. 50 predates DID
+        # identifiers: a `did:key:` is 56+ chars, so every
+        # DID-identified agent failed to register. Postgres and MySQL
+        # raise DataError; SQLite ignores VARCHAR lengths entirely,
+        # which is why a sqlite-only suite never saw it.
+        agent_key: Mapped[str] = mapped_column(String(512), primary_key=True)
         version_no: Mapped[int] = mapped_column(Integer, primary_key=True)
         definition: Mapped[dict] = mapped_column(_JsonType, nullable=False)
         note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -160,6 +165,15 @@ def ensure_table(db) -> None:
     conn = db.connection()
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[AgentVersion.__table__])
+    # Widen an existing narrow column. Called here as well as from
+    # ensure_invocations_table so this table is not silently dependent
+    # on another table's bootstrap having run first.
+    try:
+        from kya.invocations import _migrate_agent_key_width
+
+        _migrate_agent_key_width(conn)
+    except Exception:  # noqa: BLE001 — best-effort, same as the caller
+        pass
 
 
 def _next_version_no(db, tenant_id: str, agent_key: str) -> int:
