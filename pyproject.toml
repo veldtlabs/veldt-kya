@@ -149,6 +149,12 @@ did      = [
 # veldt-kya[gateway,did]` get an MCP-aware policy + audit plane in front of
 # any backend MCP server.
 gateway  = [
+    # DPoP proof validation is a gateway feature and imports pyjwt, so
+    # it belongs here. It lived only in [did]/[all], which meant
+    # `pip install veldt-kya[gateway]` produced a gateway that 500s on
+    # any identity failure instead of returning 401 -- while the error
+    # text told the operator to install the extra they already had.
+    "pyjwt>=2.8",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "httpx>=0.27",

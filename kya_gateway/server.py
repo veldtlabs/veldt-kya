@@ -194,7 +194,10 @@ def _identity_failure_sec_event(exc: Exception) -> str | None:
     """
     try:
         from kya_gateway._dpop import DPoPError
-    except ImportError:
+    except (ImportError, RuntimeError):
+        # RuntimeError as well: _dpop re-raises a missing pyjwt as
+        # RuntimeError, so an ImportError-only guard let it escape and
+        # turned an identity FAILURE -- a 401 -- into a 500.
         DPoPError = None  # type: ignore[assignment]
     if DPoPError is not None and isinstance(exc, DPoPError):
         code = getattr(exc, "code", None)
