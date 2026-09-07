@@ -196,7 +196,7 @@ all      = [
 ]
 
 [project.urls]
-Homepage      = "https://www.veldtlabs.ai"
+Homepage      = "https://www.veldtlabs.ai/developers/"
 Documentation = "https://www.veldtlabs.ai/docs"
 Paper         = "https://arxiv.org/abs/2605.25376"
 Source        = "https://github.com/veldtlabs/veldt-kya"

