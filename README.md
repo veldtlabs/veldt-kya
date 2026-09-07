@@ -126,10 +126,10 @@ attributable to, and can the record be trusted weeks or months later?*
 
 ## Links
 
-- [Full documentation](https://docs.veldtlabs.ai) — every primitive, with examples
+- [Full documentation](https://www.veldtlabs.ai/docs) — every primitive, with examples
 - [arXiv paper](https://arxiv.org/abs/2605.25376) — formal model of the seven
   systems primitives behind KYA
-- [veldt-kya-pro](https://veldtlabs.ai/pro) — commercial overlay with signed
+- [veldt-kya-pro](https://app.veldtlabs.ai) — commercial overlay with signed
   verdicts, regulator pack, and controls mapped to major healthcare,
   government, and AI governance frameworks
 

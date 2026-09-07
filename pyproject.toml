@@ -196,8 +196,9 @@ all      = [
 ]
 
 [project.urls]
-Homepage      = "https://veldtlabs.ai/kya"
-Documentation = "https://veldtlabs.ai/kya/docs"
+Homepage      = "https://www.veldtlabs.ai"
+Documentation = "https://www.veldtlabs.ai/docs"
+Paper         = "https://arxiv.org/abs/2605.25376"
 Source        = "https://github.com/veldtlabs/veldt-kya"
 Issues        = "https://github.com/veldtlabs/veldt-kya/issues"
 Changelog     = "https://github.com/veldtlabs/veldt-kya/blob/main/CHANGELOG.md"
