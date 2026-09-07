@@ -457,14 +457,19 @@ def test_pyproject_ships_the_bundled_rules():
     is how the regression happened. It cannot see a broken build.
     """
     import pathlib
+    import re
 
-    import tomllib
-
+    # Read as text: tomllib is 3.11+ and this suite runs on 3.10.
     root = pathlib.Path(__file__).resolve().parents[1]
-    cfg = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    data = cfg["tool"]["setuptools"]["package-data"]
-    assert any("rules/*.yml" in v for v in data.get("kya.attack_chains", [])), (
-        f"bundled attack-chain rules are not declared as package data: {data}"
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    section = re.search(
+        r"\[tool\.setuptools\.package-data\](.*?)(?=\n\[|\Z)", text, re.S)
+    assert section, "no [tool.setuptools.package-data] section in pyproject"
+    assert re.search(
+        r'"kya\.attack_chains"\s*=\s*\[[^\]]*rules/\*\.yml', section.group(1)
+    ), (
+        "bundled attack-chain rules are not declared as package data: "
+        f"{section.group(1).strip()!r}"
     )
 
 
