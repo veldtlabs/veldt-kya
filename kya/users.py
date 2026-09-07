@@ -82,6 +82,18 @@ MIN_TRUST = 0
 MAX_TRUST = 100
 
 # How much each signal moves the score (negative = trust loss).
+DEFAULT_SIGNAL_DELTA = -2
+
+# Trust cost by declared severity, for signals whose kind is not in
+# SIGNAL_DELTAS (attack-chain rules name their own signal kinds).
+SEVERITY_DELTAS = {
+    "informational": 0,
+    "low": -2,
+    "medium": -5,
+    "high": -10,
+    "critical": -15,
+}
+
 SIGNAL_DELTAS = {
     "rbac_refusal": -2,
     "oos_tool": -3,

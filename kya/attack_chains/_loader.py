@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kya.users import SEVERITY_DELTAS
+
 from ._matchers import MatcherError, validate_matcher_spec
 
 logger = logging.getLogger(__name__)
@@ -144,9 +146,9 @@ def register_loader(
 # ── v1 schema loader (the only shipped version today) ────────────
 
 
-_VALID_SEVERITIES = frozenset({
-    "informational", "low", "medium", "high", "critical",
-})
+# Single-sourced from the trust-delta table: a severity with no delta
+# would silently lose its weighting.
+_VALID_SEVERITIES = frozenset(SEVERITY_DELTAS)
 
 
 def _load_v1(raw: dict, source_label: str) -> AttackChainRule:

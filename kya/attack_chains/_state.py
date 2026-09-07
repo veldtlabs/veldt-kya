@@ -69,6 +69,10 @@ class PartialMatch:
     # For linear rules this stays empty -- their order is implied by
     # ``current_step_idx``.
     completed_step_ids: tuple[str, ...] = field(default_factory=tuple)
+    # Principal that performed each matched step, in the same order as
+    # ``steps_ts``. A cross-agent chain has a different principal per
+    # step, and every one of them participated in the attack.
+    steps_principal_ids: list[str] = field(default_factory=list)
     # Process-time created/updated for expiry of stale partial matches.
     created_at: float = field(default_factory=time.monotonic)
     updated_at: float = field(default_factory=time.monotonic)
@@ -324,6 +328,7 @@ class ValkeyStateStore(StateStore):
                 # DAG bookkeeping; persisted as a list because JSON has
                 # no tuple type. Empty list = linear-mode partial match.
                 "completed_step_ids": list(pm.completed_step_ids),
+                "steps_principal_ids": list(pm.steps_principal_ids),
                 "created_at": pm.created_at,
                 "updated_at": pm.updated_at,
             },
@@ -347,6 +352,9 @@ class ValkeyStateStore(StateStore):
             ],
             completed_step_ids=tuple(
                 d.get("completed_step_ids") or ()),
+            steps_principal_ids=[
+                str(x) for x in d.get("steps_principal_ids") or []
+            ],
             created_at=float(d.get("created_at", 0.0)),
             updated_at=float(d.get("updated_at", 0.0)),
         )

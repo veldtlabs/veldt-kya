@@ -193,7 +193,14 @@ logger = logging.getLogger(__name__)
 #: to. No new "operation_id" / "session_id" column is needed —
 #: ``correlation_id`` already covers cross-principal session
 #: grouping.
-from .users import MAX_TRUST, MIN_TRUST, SIGNAL_DELTAS, STARTING_TRUST, bucket_for_trust
+from .users import (
+    DEFAULT_SIGNAL_DELTA,
+    MAX_TRUST,
+    MIN_TRUST,
+    SIGNAL_DELTAS,
+    STARTING_TRUST,
+    bucket_for_trust,
+)
 
 PRINCIPAL_KINDS: tuple[str, ...] = _CANONICAL_PRINCIPAL_KINDS
 
@@ -1176,6 +1183,7 @@ def record_principal_signal(
     attributes: dict | None = None,
     occurred_at: datetime | None = None,
     allow_create: bool = True,
+    trust_delta: int | None = None,
 ) -> int:
     """Record a rogue signal attributed to a principal. Returns the new
     trust score, or ``-1`` when ``allow_create=False`` and no row exists
@@ -1215,7 +1223,13 @@ def record_principal_signal(
     _require_sqlalchemy()
     ensure_principal_table(db)
 
-    delta = SIGNAL_DELTAS.get(signal_kind, -2)
+    # A rogue signal may only ever cost trust. Clamping the result
+    # bounds the score but not the sign, so an override is floored at 0
+    # here rather than trusted to be negative.
+    delta = (
+        SIGNAL_DELTAS.get(signal_kind, DEFAULT_SIGNAL_DELTA)
+        if trust_delta is None else min(0, int(trust_delta))
+    )
 
     # SELECT-then-INSERT/UPDATE has a race: under concurrent mirror
     # writes (e.g. many record_oos_tool_attempt calls via the
