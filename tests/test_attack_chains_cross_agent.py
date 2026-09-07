@@ -145,7 +145,12 @@ def test_chain_advances_across_principals_sharing_correlation_id():
     )
 
     assert m2 == ["cross_agent_exfil"]
-    assert fired == [("cross_agent_exfil", "rogue_cross_agent_exfil")]
+    # One emission per participant: agent_a did the recon, agent_b the
+    # exfil, and both took part in the chain.
+    assert fired == [
+        ("cross_agent_exfil", "rogue_cross_agent_exfil"),
+        ("cross_agent_exfil", "rogue_cross_agent_exfil"),
+    ]
 
 
 def test_chain_does_not_advance_across_different_correlation_ids():
@@ -520,6 +525,8 @@ def test_helper_plus_engine_full_loop_via_real_invocations(sqlite_db):
         occurred_at_ts=110.0, correlation_id=child_corr,
     )
     assert m2 == ["cross_agent_exfil"]
+    # Parent and child each performed a step, so each is penalised.
     assert fired == [
+        ("cross_agent_exfil", "rogue_cross_agent_exfil"),
         ("cross_agent_exfil", "rogue_cross_agent_exfil"),
     ]

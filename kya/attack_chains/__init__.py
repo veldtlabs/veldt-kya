@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from ._engine import (
     AttackChainEngine,
+    bundled_rules_dir,
     get_default_engine,
     reset_default_engine,
     resolve_state_store,
@@ -87,6 +88,7 @@ from .delegation_correlation import (
 )
 
 __all__ = [
+    "bundled_rules_dir",
     # Rules + loader
     "AttackChainRule",
     "RuleLoadError",

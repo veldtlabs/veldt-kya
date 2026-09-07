@@ -260,6 +260,7 @@ kya-mcp-tools-ref = "kya_mcp_tools_ref.cli:main"
 
 [tool.setuptools.package-data]
 kya = ["py.typed"]
+"kya.attack_chains" = ["rules/*.yml"]
 
 # ─── Pytest ─────────────────────────────────────────────────────────
 # Register the `integration` marker so tests decorated with

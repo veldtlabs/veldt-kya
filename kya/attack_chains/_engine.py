@@ -24,8 +24,10 @@ Extension points (the "avoid the redesign trap" surface):
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
+import pathlib
 import time
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -49,10 +51,32 @@ logger = logging.getLogger(__name__)
 # Type alias for the pluggable signal emitter. Engine calls this with
 # context when a chain fully matches; the default implementation does
 # record_principal_signal, but operators can swap in anything.
+# Emitters may additionally accept a keyword-only ``principal_kind``;
+# see _emitter_accepts_kind. Six-positional-arg emitters remain valid.
 SignalEmitter = Callable[
     [Any, str, str, str, int | None, AttackChainRule],  # db, tenant, principal, signal_kind, trigger_evidence_id, rule
     None,
 ]
+
+
+DEFAULT_PRINCIPAL_KIND = "user"
+
+
+def _emitter_accepts_kind(emitter: Any) -> bool:
+    """Whether ``emitter`` can be passed ``principal_kind``.
+
+    Legacy emitters take six positional args; a partial that already
+    binds the kind keeps the operator's choice. Introspection fails on
+    builtins and Mocks, so any error means "call the legacy way".
+    """
+    if "principal_kind" in (getattr(emitter, "keywords", None) or {}):
+        return False
+    try:
+        params = inspect.signature(emitter).parameters
+    except Exception:  # noqa: BLE001 -- proxies raise anything here
+        return False
+    return "principal_kind" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def default_signal_emitter(
@@ -62,6 +86,8 @@ def default_signal_emitter(
     signal_kind: str,
     trigger_evidence_id: int | None,
     rule: AttackChainRule,
+    *,
+    principal_kind: str = DEFAULT_PRINCIPAL_KIND,
 ) -> None:
     """Out-of-the-box emitter: wraps record_principal_signal.
 
@@ -81,10 +107,15 @@ def default_signal_emitter(
         # earlier -- downstream of any upstream cross-tenant
         # pollution. The gateway identity-failure injection point
         # is closed by the cross-tenant attribution guard.
+        from kya.users import SEVERITY_DELTAS, SIGNAL_DELTAS
+        severity_delta = (
+            None if signal_kind in SIGNAL_DELTAS
+            else SEVERITY_DELTAS.get(rule.severity))
         record_principal_signal(
             db,
+            trust_delta=severity_delta,
             tenant_id=tenant_id,
-            principal_kind="user",  # default; rules can override later
+            principal_kind=principal_kind,
             principal_id=principal_id,
             signal_kind=signal_kind,
             attributes={
@@ -145,6 +176,7 @@ class AttackChainEngine:
         evidence_id: int | None = None,
         occurred_at_ts: float | None = None,
         correlation_id: str | None = None,
+        principal_kind: str = DEFAULT_PRINCIPAL_KIND,
     ) -> list[str]:
         """Advance any partial matches against this evidence.
 
@@ -183,6 +215,7 @@ class AttackChainEngine:
         event_ctx = {
             "tenant_id": tenant_id,
             "principal_id": principal_id,
+            "principal_kind": principal_kind,
             "correlation_id": correlation_id,
             "evidence_kind": evidence_kind,
             "payload": payload,
@@ -248,10 +281,12 @@ class AttackChainEngine:
                 steps_ts=[now_ts],
                 steps_evidence_ids=[evidence_id]
                     if evidence_id is not None else [],
+                steps_principal_ids=[event_ctx.get("principal_id", "")],
             )
             if len(rule.steps) == 1:
                 # Single-step rule -- emit immediately.
-                self._emit(db, rule, correlate_key, evidence_id)
+                self._emit(db, rule, correlate_key, evidence_id, event_ctx,
+                           pm.steps_principal_ids)
                 return True
             self.state_store.update(pm)
             return False
@@ -303,13 +338,16 @@ class AttackChainEngine:
         # Advance.
         existing.current_step_idx += 1
         existing.steps_ts.append(now_ts)
+        existing.steps_principal_ids.append(
+            event_ctx.get("principal_id", ""))
         if evidence_id is not None:
             existing.steps_evidence_ids.append(evidence_id)
         self.state_store.update(existing)
 
         if existing.current_step_idx >= len(rule.steps):
             # Full match.
-            self._emit(db, rule, correlate_key, evidence_id)
+            self._emit(db, rule, correlate_key, evidence_id, event_ctx,
+                       existing.steps_principal_ids)
             self.state_store.delete(rule.id, correlate_key)
             return True
         return False
@@ -400,10 +438,13 @@ class AttackChainEngine:
                 steps_evidence_ids=(
                     [evidence_id] if evidence_id is not None else []),
                 completed_step_ids=(ready_step.id,),
+                steps_principal_ids=[event_ctx.get("principal_id", "")],
             )
         else:
             pm = existing
             pm.steps_ts.append(now_ts)
+            pm.steps_principal_ids.append(
+                event_ctx.get("principal_id", ""))
             if evidence_id is not None:
                 pm.steps_evidence_ids.append(evidence_id)
             pm.completed_step_ids = (
@@ -414,7 +455,8 @@ class AttackChainEngine:
         # Full match when every declared step is in the completed set.
         all_step_ids = {s.id for s in rule.steps}
         if all_step_ids.issubset(set(pm.completed_step_ids)):
-            self._emit(db, rule, correlate_key, evidence_id)
+            self._emit(db, rule, correlate_key, evidence_id, event_ctx,
+                       pm.steps_principal_ids)
             self.state_store.delete(rule.id, correlate_key)
             return True
 
@@ -434,6 +476,8 @@ class AttackChainEngine:
         rule: AttackChainRule,
         correlate_key: tuple[str, ...],
         trigger_evidence_id: int | None,
+        event_ctx: dict,
+        participants: list[str] | None = None,
     ) -> None:
         """Call the configured signal_emitter. The (tenant_id,
         principal_id) values come from the correlate_key positions
@@ -442,19 +486,61 @@ class AttackChainEngine:
         # canonical fields by name (defaulting to "" if missing).
         kv = dict(zip(rule.correlate_by, correlate_key))
         tenant_id = kv.get("tenant_id", "")
-        principal_id = kv.get("principal_id", "")
-        try:
-            self.signal_emitter(
-                db, tenant_id, principal_id,
-                rule.emits_signal, trigger_evidence_id, rule)
-            logger.info(
-                "[KYA-CHAINS] rule %r matched -- emitted %s for "
-                "tenant=%s principal=%s",
-                rule.id, rule.emits_signal, tenant_id, principal_id)
-        except Exception as exc:
+        # correlate_by need not contain principal_id (cross-agent rules
+        # correlate by correlation_id); fall back to the principal whose
+        # event completed the chain so the signal is attributable.
+        kind = event_ctx.get("principal_kind") or DEFAULT_PRINCIPAL_KIND
+        extra = ({"principal_kind": kind}
+                 if _emitter_accepts_kind(self.signal_emitter) else {})
+        attributable = self._attributable(rule, kv, event_ctx, participants)
+        if not attributable:
             logger.warning(
-                "[KYA-CHAINS] signal_emitter raised for rule %s: %s",
-                rule.id, exc)
+                "[KYA-CHAINS] rule %r matched but no principal could be "
+                "attributed; no signal emitted", rule.id)
+            return
+        for principal_id in attributable:
+            try:
+                self.signal_emitter(
+                    db, tenant_id, principal_id,
+                    rule.emits_signal, trigger_evidence_id, rule, **extra)
+                logger.info(
+                    "[KYA-CHAINS] rule %r matched -- emitted %s for "
+                    "tenant=%s principal=%s",
+                    rule.id, rule.emits_signal, tenant_id, principal_id)
+            except Exception as exc:
+                logger.warning(
+                    "[KYA-CHAINS] signal_emitter raised for rule %s: %s",
+                    rule.id, exc)
+
+    @staticmethod
+    def _attributable(
+        rule: AttackChainRule,
+        kv: dict,
+        event_ctx: dict,
+        participants: list[str] | None,
+    ) -> list[str]:
+        """Every principal that performed a step, de-duplicated and in
+        completion order.
+
+        Penalising only the principal that completed the chain lets an
+        orchestrating parent keep full authority and simply spawn a
+        fresh sub-agent to run the same attack again.
+        """
+        if "principal_id" in kv:
+            return [pid] if (pid := kv["principal_id"]) else []
+        current = event_ctx.get("principal_id", "")
+        # Widening across participants is only safe when the correlate
+        # key pins the tenant; without it a chain grouped purely by
+        # correlation_id can span tenants and would pull a principal
+        # from one into a signal driven by another's traffic.
+        ordered = list(participants or []) if "tenant_id" in kv else []
+        if current:
+            ordered.append(current)
+        seen: dict[str, None] = {}
+        for pid in ordered:
+            if pid:
+                seen.setdefault(pid, None)
+        return list(seen)
 
 
 # ── Default engine (lazy, env-driven) ──────────────────────────────
@@ -528,6 +614,14 @@ def resolve_state_store() -> StateStore:
     return InMemoryStateStore()
 
 
+BUNDLED_RULES_DIR_TOKEN = "bundled"
+
+
+def bundled_rules_dir() -> str:
+    """Filesystem path of the rules shipped inside the package."""
+    return str(pathlib.Path(__file__).resolve().parent / "rules")
+
+
 def get_default_engine() -> AttackChainEngine | None:
     """Return the process-wide default engine, building it lazily on
     first call from KYA_ATTACK_CHAIN_RULES_DIR env.
@@ -545,6 +639,16 @@ def get_default_engine() -> AttackChainEngine | None:
     rules_dir = os.environ.get("KYA_ATTACK_CHAIN_RULES_DIR", "").strip()
     if not rules_dir:
         return None
+    if rules_dir == BUNDLED_RULES_DIR_TOKEN:
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            logger.error(
+                "[KYA-CHAINS] KYA_ATTACK_CHAIN_RULES_DIR=%s needs PyYAML; "
+                "install veldt-kya[attack_chains]. No rules loaded.",
+                BUNDLED_RULES_DIR_TOKEN)
+            return None
+        rules_dir = bundled_rules_dir()
     try:
         rules = load_rules_from_dir(rules_dir)
     except Exception as exc:

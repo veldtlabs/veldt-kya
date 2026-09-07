@@ -25,7 +25,10 @@ steps:
     evidence_kind: tool_call
     match:
       payload.tool: file_read
-      payload.path: "glob:/etc/*"
+      # Credential material only. A broad /etc/* glob matches routine
+      # startup reads (hosts, resolv.conf, CA bundles), which would
+      # penalise every benign service that shares a request tree.
+      payload.path: "regex:^/etc/(shadow|gshadow|passwd|sudoers).*$"
   - id: exfil
     evidence_kind: tool_call
     match:

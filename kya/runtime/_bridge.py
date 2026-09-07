@@ -50,6 +50,10 @@ from ._resolvers import (
 
 logger = logging.getLogger(__name__)
 
+# Runtime events are attributed to agents; principal trust is read back
+# under this kind (see assessment.get_principal_trust call sites).
+RUNTIME_PRINCIPAL_KIND = "agent"
+
 
 # ── Result ────────────────────────────────────────────────────────
 
@@ -232,6 +236,7 @@ def _dispatch_attack_chains(
             db,
             tenant_id=tenant_id or "",
             principal_id=principal_id or "",
+            principal_kind=RUNTIME_PRINCIPAL_KIND,
             evidence_kind=_evidence_kind(ev),
             payload=_event_to_payload(ev),
             occurred_at_ts=ev.occurred_at_ts,

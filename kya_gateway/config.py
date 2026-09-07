@@ -8,6 +8,7 @@ Schema lives close to the requirements doc — see
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -15,6 +16,8 @@ from typing import Any
 import yaml
 
 from kya_gateway.errors import GatewayConfigError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,27 @@ class RBACConfig:
     rules: list[RBACRule] = field(default_factory=list)
 
 
+def _warn_if_min_trust_denies_new_agents(min_trust: int) -> None:
+    """A threshold above the starting score denies every agent that has
+    done nothing wrong yet, which reads as a broken gateway rather than
+    a policy choice."""
+    try:
+        from kya.users import MAX_TRUST, STARTING_TRUST
+    except ImportError:
+        return
+    if min_trust > MAX_TRUST:
+        logger.warning(
+            "[KYA-GATEWAY] policy.min_trust=%s exceeds the maximum "
+            "trust score (%s); no principal can ever satisfy it",
+            min_trust, MAX_TRUST)
+    elif min_trust > STARTING_TRUST:
+        logger.warning(
+            "[KYA-GATEWAY] policy.min_trust=%s exceeds the starting "
+            "trust score (%s); every newly-seen principal will be "
+            "denied until it earns trust",
+            min_trust, STARTING_TRUST)
+
+
 @dataclass(frozen=True)
 class PolicyConfig:
     min_trust: int = 0
@@ -304,8 +328,10 @@ class GatewayConfig:
                 ))
 
             pol = raw.get("policy") or {}
+            min_trust = int(pol.get("min_trust", 0))
+            _warn_if_min_trust_denies_new_agents(min_trust)
             policy = PolicyConfig(
-                min_trust=int(pol.get("min_trust", 0)),
+                min_trust=min_trust,
                 rate_limit=_parse_rate_limit(pol.get("rate_limit")),
                 payload_caps=PayloadCapsConfig(
                     max_bytes=int(pol["payload_caps"]["max_bytes"])
