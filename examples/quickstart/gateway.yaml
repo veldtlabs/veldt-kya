@@ -1,0 +1,25 @@
+gateway:
+  bind: 127.0.0.1:8099
+  tenant_id: acme
+
+identity:
+  methods: [did]
+  did:
+    # Local demo only. Accepts X-KYA-DID without proof-of-possession,
+    # so any caller could claim any identity. See the Identity section
+    # of the README for the real setup.
+    allow_header_trust: true
+    require_dpop_on_me: false
+
+backends:
+  - name: default
+    url: http://127.0.0.1:9099
+
+policy:
+  policy_evaluator_name: native
+  min_trust: 40
+
+audit: {}
+
+enforcement:
+  mode: enforce
