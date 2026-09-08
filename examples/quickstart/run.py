@@ -271,15 +271,13 @@ def main():
         for did in (AGENT_A, AGENT_B):
             status, _ = call(did, "transfer_funds", amount=10)
             print(f"   {did[:28]}...  ->  {status}")
-        from sqlalchemy import text as sql
         with kya.default_session() as db:
-            rows = db.execute(sql(
-                "SELECT DISTINCT agent_key, principal_id "
-                "FROM kya_invocations")).fetchall()
+            seen = kya.list_invocations(db, tenant_id="acme")
         print("")
         print("   agents now visible (neither was registered):")
-        for agent_key, principal_id in rows:
-            print(f"     {agent_key[:16]}...   {principal_id[:30]}...")
+        for row in {r["agent_key"]: r for r in seen}.values():
+            print(f"     {row['agent_key'][:16]}...   "
+                  f"{row['principal_id'][:30]}...")
 
         with kya.default_session() as db:
             for did in (AGENT_A, AGENT_B):

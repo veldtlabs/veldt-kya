@@ -11,11 +11,12 @@ KYA sits in front of tools as an MCP gateway. Every call is identified,
 evaluated and recorded before it reaches the tool.
 
 ```text
-Agent / agent framework
-        |
-       KYA          identity · authority · policy · evidence
-        |
-   MCP / tools / services
+  agent  →  KYA  →  tool
+             │
+             ├─ identify   who is calling, provably
+             ├─ evaluate   may they, with these arguments
+             ├─ record     hash-chained evidence
+             └─ deny       the call stops here
 ```
 
 ```bash
@@ -51,10 +52,20 @@ did:key:z6MkrJVnaZkeFzdQyMZu...  ->  403
 did:key:z6MkpTHR8VNsBxYAAWHu...  ->  403
 ```
 
+Ask KYA what has been calling your tools:
+
+```python
+import kya
+
+with kya.default_session() as db:
+    for row in kya.list_invocations(db, tenant_id="acme"):
+        print(row["agent_key"], row["principal_id"], row["outcome"])
+```
+
 ```
 agents now visible (neither was registered):
-  kya-d652dd109873...   did:key:z6MkrJVnaZkeFzdQyMZu1c...
   kya-b3560c981ed2...   did:key:z6MkpTHR8VNsBxYAAWHut2...
+  kya-d652dd109873...   did:key:z6MkrJVnaZkeFzdQyMZu1c...
 ```
 
 Discovery comes from traffic, not from an onboarding form. You see the agents
