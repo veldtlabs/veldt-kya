@@ -253,7 +253,7 @@ kya.verify_chain(db, tenant_id="acme", invocation_id=invocation_id)
 
 ```
 verified    : valid=True checked=2
-after tamper: valid=False broken_at=33
+after tamper: valid=False row identified: True
               payload_hash mismatch — payload was modified
 ```
 

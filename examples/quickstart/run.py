@@ -378,8 +378,10 @@ def main():
         with kya.default_session() as db:
             report = kya.verify_chain(db, tenant_id="acme",
                                       invocation_id=inv)
+        # broken_at is the evidence row id, which varies with how much
+        # ran before this; report that a row was identified, not which.
         print(f"   after tamper: valid={report['valid']} "
-              f"broken_at={report['broken_at']}")
+              f"row identified: {report['broken_at'] is not None}")
         print(f"                 {report.get('reason')}")
 
         banner(7, "Identity: proving who the agent is")
