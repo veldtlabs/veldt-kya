@@ -2,10 +2,10 @@
 
 **Stop the agent. Prove you stopped it.**
 
-Runtime control and security for AI agents. KYA decides what an agent may do
-at the moment it acts, can revoke that authority instantly, and keeps
-tamper-evident evidence of every decision — allowed, blocked, or held for a
-human.
+Runtime control, security, and governance for AI agents. KYA decides what an
+agent may do at the moment it acts, can revoke that authority instantly, and
+keeps tamper-evident evidence of every decision — allowed, blocked, or held
+for a human.
 
 KYA sits in front of tools as an MCP gateway. Every call is identified,
 evaluated and recorded before it reaches the tool.
