@@ -6,6 +6,32 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.11] — 2026-09-08
+
+### Fixed
+- A matched attack chain emitted its trust signal against a principal
+  derived from `correlate_by`. Cross-agent rules correlate by
+  `correlation_id` and name no principal, so the signal landed on an
+  empty id under a kind no reader queries — the detection fired and
+  nothing was enforceable.
+- `pip install veldt-kya[gateway]` produced a gateway that answered every
+  identity failure with 500 instead of 401: the extra did not install
+  `pyjwt`, and the guard caught only `ImportError` while `_dpop` raises
+  `RuntimeError`. `cryptography` was missing from the same extra.
+
+### Added
+- The bundled attack-chain rules now ship in the wheel; they were absent
+  entirely. `KYA_ATTACK_CHAIN_RULES_DIR=bundled` loads them.
+- Severity sets the trust cost for rules that name their own signal kind,
+  without overriding a calibrated canonical kind.
+- `examples/quickstart` — every example in the README, runnable.
+
+### Changed
+- Every participating agent in a chain loses trust, not only the one that
+  completed it.
+- The cross-agent recon step matches credential paths rather than all of
+  `/etc`, so routine config reads no longer implicate benign services.
+
 ## [0.5.7] — 2026-08-26
 
 ### Fixed

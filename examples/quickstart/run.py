@@ -8,9 +8,11 @@ then shuts both down. Nothing outside this directory is touched.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import pathlib
+import secrets
 import subprocess
 import sys
 import time
@@ -29,7 +31,12 @@ os.environ.setdefault("KYA_DB_URL", f"sqlite:///{DB.name}")
 os.environ.setdefault("KYA_DID_RESOLVERS", "key")
 os.environ.setdefault("KYA_RBAC_ENFORCEMENT", "block")
 os.environ.setdefault("KYA_ATTACK_CHAIN_RULES_DIR", "bundled")
-os.environ.setdefault("KYA_EVIDENCE_SIGNING_KEY", "quickstart-demo-key")
+# Must be base64: an invalid value is rejected and silently replaced by a
+# process-local key that cannot be verified elsewhere. Generated per run --
+# a key committed to a repository is a key someone will copy into production.
+os.environ.setdefault(
+    "KYA_EVIDENCE_SIGNING_KEY",
+    base64.b64encode(secrets.token_bytes(32)).decode())
 
 # kya's own messages contain non-ASCII; keep this readable on a
 # Windows console without forcing the user to set PYTHONIOENCODING.
@@ -102,8 +109,28 @@ def wait_for_gateway(timeout=60):
     return False
 
 
+def port_is_free(port):
+    """Bind-test, not a health probe: a gateway left over from a killed run
+    answers /healthz, and anything else squatting the port answers nothing.
+    Both make the run report results KYA did not actually enforce."""
+    import socket
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def start_gateway():
     global _gateway
+    if not port_is_free(8099):
+        raise SystemExit(
+            "port 8099 is in use. A gateway from an earlier run may still be "
+            "up. Stop it first -- otherwise these examples run against the "
+            "wrong config and report results KYA did not enforce.")
     _gateway = subprocess.Popen(
         [sys.executable, "serve.py"], cwd=HERE,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -157,9 +184,74 @@ def banner(n, title):
     print(line)
 
 
+def identity_demo(kya):
+    """A second gateway with proof-of-possession required and no trusted
+    headers, so the 401s below are the real identity path rejecting."""
+    import os
+    aud = "http://127.0.0.1:8098/mcp"
+    from agent_identity import new_agent_identity, proof
+
+    if not port_is_free(8098):
+        print("   port 8098 in use; skipping")
+        return
+    env = dict(os.environ, KYA_DID_RESOLVERS="jwk")
+    proc = subprocess.Popen([sys.executable, "serve_identity.py"], cwd=HERE,
+                            env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen("http://127.0.0.1:8098/healthz",
+                                       timeout=2)
+                break
+            except Exception:
+                time.sleep(1)
+        else:
+            print("   identity gateway did not start; skipping")
+            return
+
+        did, key = new_agent_identity()
+        _, other_key = new_agent_identity()
+        with kya.default_session() as db:
+            kya.grant_action(db, tenant_id="acme", principal_kind="agent",
+                             principal_id=did,
+                             action="mcp.default.transfer_funds")
+            db.commit()
+
+        def attempt(label, headers):
+            body = json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "transfer_funds",
+                           "arguments": {"amount": 10}}}).encode()
+            req = urllib.request.Request(
+                aud, data=body,
+                headers={"Content-Type": "application/json", **headers})
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    code = r.status
+            except urllib.error.HTTPError as exc:
+                code = exc.code
+            print(f"   {label:26} ->  {code}")
+
+        attempt("valid proof", {"X-KYA-DID": did,
+                                "X-KYA-DID-Proof": proof(did, key, aud)})
+        attempt("no proof", {"X-KYA-DID": did})
+        attempt("proof signed by other key",
+                {"X-KYA-DID": did,
+                 "X-KYA-DID-Proof": proof(did, other_key, aud)})
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=15)
+        except Exception:
+            proc.kill()
+
+
 def main():
     for stale in (DB, EXECUTED):
         stale.unlink(missing_ok=True)
+    original_config = (HERE / "gateway.yaml").read_text()
     set_evaluator("payment-controls")
 
     import kya
@@ -207,7 +299,7 @@ def main():
               + ", ".join(str(a) for a in moved))
         print(f"   asked for ${asked:,}, moved ${sum(moved):,}")
 
-        banner(3, "Policy on the argument")
+        banner(3, "Policy on the argument, in 10 lines")
         switch_evaluator("exfil-blocker")
         EXECUTED.unlink(missing_ok=True)
         for cmd in ("echo hello",
@@ -235,7 +327,7 @@ def main():
             status, reply = call(AGENT_A, "governed_bash", command="echo hello")
             print(f"   {label:12}  ->  {status}  {verdict(reply)}")
 
-        banner(5, "Multi-agent attacks: when agents go rogue together")
+        banner(5, "Catch attacks that span multiple agents")
         switch_evaluator("native")
         print("   BEFORE the chain:")
         for did, who in ((AGENT_A, "recon agent"), (AGENT_B, "exfil agent")):
@@ -290,14 +382,24 @@ def main():
               f"broken_at={report['broken_at']}")
         print(f"                 {report.get('reason')}")
 
+        banner(7, "Identity: proving who the agent is")
+        identity_demo(kya)
+
         print("")
         print("-" * 66)
-        print("All six ran. Nothing outside this directory was touched.")
+        print("All seven ran. Nothing outside this directory was touched.")
         return 0
     finally:
-        if _gateway is not None:
-            _gateway.terminate()
-        backend.terminate()
+        for proc in (_gateway, backend):
+            if proc is None:
+                continue
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except Exception:
+                proc.kill()
+        # gateway.yaml is tracked; a failed run must not leave it edited.
+        (HERE / "gateway.yaml").write_text(original_config)
 
 
 if __name__ == "__main__":

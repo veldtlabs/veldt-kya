@@ -1,0 +1,20 @@
+# Identity done properly: no trusted headers. Each agent must present a
+# proof-of-possession JWT signed by the key behind its own DID.
+gateway:
+  bind: 127.0.0.1:8098
+  tenant_id: acme
+
+identity:
+  methods: [did]
+  did:
+    pop_audience: "http://127.0.0.1:8098/mcp"
+    dpop_audience: "http://127.0.0.1:8098"
+
+backends:
+  - name: default
+    url: http://127.0.0.1:9099
+
+policy: {}
+audit: {}
+enforcement:
+  mode: enforce

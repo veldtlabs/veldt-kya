@@ -155,6 +155,9 @@ gateway  = [
     # any identity failure instead of returning 401 -- while the error
     # text told the operator to install the extra they already had.
     "pyjwt>=2.8",
+    # Minting and verifying a proof-of-possession needs the key
+    # primitives too; pyjwt alone cannot sign EdDSA.
+    "cryptography>=41",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "httpx>=0.27",

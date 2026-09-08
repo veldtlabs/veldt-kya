@@ -151,3 +151,7 @@ kya-demo/
 # in public tags; it recorded absolute local paths and per-command
 # permission entries that named internal projects. Never commit.
 .claude/
+
+# quickstart run artifacts
+examples/quickstart/quickstart.db
+examples/quickstart/executed.jsonl

