@@ -115,6 +115,9 @@ def port_is_free(port):
     Both make the run report results KYA did not actually enforce."""
     import socket
     probe = socket.socket()
+    # SO_REUSEADDR, or a gateway we just stopped leaves the socket in
+    # TIME_WAIT on Linux and this reports the port busy when it is ours.
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind(("127.0.0.1", port))
         return True
