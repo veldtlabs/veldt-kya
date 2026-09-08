@@ -2,12 +2,21 @@
 
 **Stop the agent. Prove you stopped it.**
 
-Runtime governance for AI agents: decide what an agent may do at the moment
-it acts, revoke that authority instantly, and keep tamper-evident proof of
-every decision — allowed, blocked, or held for a human.
+Runtime control and security for AI agents. KYA decides what an agent may do
+at the moment it acts, can revoke that authority instantly, and keeps
+tamper-evident evidence of every decision — allowed, blocked, or held for a
+human.
 
-KYA sits in front of your tools as an MCP gateway. Every call is identified,
+KYA sits in front of tools as an MCP gateway. Every call is identified,
 evaluated and recorded before it reaches the tool.
+
+```text
+Agent / agent framework
+        |
+       KYA          identity · authority · policy · evidence
+        |
+   MCP / tools / services
+```
 
 ```bash
 pip install "veldt-kya[gateway]"
@@ -27,14 +36,15 @@ all six on your machine.
 | **Contain** | Revoke an agent's authority mid-flight. The next call is denied. |
 | **Attribute** | Every agent has a cryptographic identity it must prove per request. |
 | **Correlate** | Catch multi-agent attacks — steps that are benign alone and malicious only in sequence. |
+| **Delegate** | Flag or block a sub-agent that exceeds the authority of the parent that spawned it. |
 | **Prove** | Hash-chained evidence that shows when a record was altered. |
 
 ---
 
 ## 1. Shadow agents you never registered
 
-Point an agent nobody signed off on at the gateway. It is denied — and it
-still shows up in your inventory, by identity.
+Send an unregistered agent through the gateway. It is denied — and it still
+appears in your inventory, by identity.
 
 ```
 did:key:z6MkrJVnaZkeFzdQ...  ->  403
@@ -54,9 +64,9 @@ you blocked, which are exactly the ones you didn't know about.
 
 ## 2. The payment agent that learned to split the transfer
 
-A payout agent may move money. One limit is never enough: cap the payment and
-it splits the payment. So cap the day as well — read from what KYA has
-already recorded this agent moving.
+A payout agent may move money. A per-payment limit is not enough: the agent
+can split one large transfer into several smaller ones. So cap the day as
+well, reading from what KYA has already recorded this agent moving.
 
 ```python
 import kya
@@ -162,7 +172,7 @@ Requires `KYA_RBAC_ENFORCEMENT=block`.
 
 ---
 
-## 5. Multi-agent attacks: when agents go rogue together
+## 5. Catch attacks that span multiple agents
 
 One agent reads a credential file. A *different* agent posts outbound.
 Neither step is a violation on its own. Correlated by request, the sequence
@@ -189,8 +199,9 @@ BEFORE   recon agent -> executed      exfil agent -> executed
 AFTER    recon agent -> deny          exfil agent -> deny
 ```
 
-Every agent that took part loses trust — not just the one that finished the
-chain — so an orchestrator cannot swap in a fresh sub-agent and retry.
+Every participating agent loses trust — not just the agent that completed the
+chain — so the orchestrator itself can be contained rather than simply
+retrying through another child.
 
 Rules ship with the package:
 
@@ -217,9 +228,9 @@ That is the whole configuration. The trust gate applies whatever
 
 ## 6. Evidence that shows tampering
 
-Every decision is hash-chained — **Git for agent actions**. Every call is
-committed, and anyone with the key can verify it independently. Editing a
-record breaks the chain and names the row that changed.
+Every decision is hash-chained — **Git-like integrity for agent actions**.
+Anyone holding the verification key can detect whether recorded evidence was
+altered. Editing a record breaks verification and identifies the row.
 
 ```bash
 export KYA_EVIDENCE_SIGNING_KEY=...   # without it the chain cannot be verified
@@ -246,7 +257,8 @@ names the row. An auditor does not have to trust your word, or ours.
 
 ## Identity
 
-Every agent proves who it is on every request. Generate an identity in code —
+Every agent proves the cryptographic identity attached to the request;
+authority is evaluated separately. Generate an identity in code —
 the private key never leaves the process and there is nothing to paste into a
 config file. See [`examples/quickstart/agent_identity.py`](examples/quickstart/agent_identity.py).
 
@@ -287,10 +299,10 @@ Everything above runs on the Apache-2.0 package. KYA Pro adds:
 
 | | |
 |---|---|
-| **More verdicts** | `throttle`, `redact` and `anonymize` alongside allow / deny / hold. |
-| **Policy without Python** | Attribute rules declared in config rather than a custom evaluator. |
-| **Containment that cascades** | Contain a parent and every agent it spawned is contained with it. |
-| **A console** | Fleet inventory, live verdicts, and evidence export for auditors. |
+| **Richer enforcement** | `throttle`, `redact` and `anonymize` alongside allow / deny / hold. |
+| **Declarative policy** | Attribute rules without writing a custom evaluator. |
+| **Lineage containment** | Contain a principal and propagate containment through the delegation branch. |
+| **Operational control plane** | Fleet inventory, live verdicts, policy operations, and evidence workflows for auditors. |
 
 [Plans and free trial](https://www.veldtlabs.ai/plans) - [sign in](https://app.veldtlabs.ai)
 
