@@ -36,6 +36,7 @@ import base64
 import binascii
 import logging
 import re
+from urllib.parse import unquote
 from dataclasses import dataclass, field
 from re import Pattern
 
@@ -129,20 +130,53 @@ def _category_encoded_payload(text: str) -> dict | None:
 # ── Category 2: exfiltration paths + credential filenames ─────────
 
 
+# Documentation and templates ABOUT a credential are not the credential,
+# and neither is the public half of a keypair. Checked first, because the
+# path rules below would otherwise match `.env.example` and `known_hosts`
+# and put ordinary work above the breach threshold.
+# The WHOLE token is cleared, not just its extension: scrubbing only the
+# suffix left `/srv/app/.env` behind, which the `.env` rule then matched.
+_PUBLIC_OR_DOC = re.compile(
+    r"[^\s]*\.(md|rst|txt|example|sample|template|dist|pub)\b"
+    r"|(?<![\w.])(readme|changelog|license|licence)(?![\w])"
+    r"|[^\s]*/\.ssh/(known_hosts|authorized_keys|config)\b",
+    re.IGNORECASE,
+)
+
+# A credential copied aside is still a credential, so the rules tolerate a
+# backup suffix: `/etc/shadow-` is the file glibc leaves behind.
+_BAK = r"([.\-~][\w-]*)?"
+
 _SECRET_PATHS: tuple[Pattern, ...] = tuple(
     re.compile(p, re.IGNORECASE) for p in (
         r"/etc/secrets?\b",
-        r"/etc/passwd\b",
-        r"/etc/shadow\b",
-        r"~?/\.ssh/(id_rsa|id_ed25519|authorized_keys|known_hosts)\b",
+        rf"/etc/(passwd|shadow|gshadow|sudoers|master\.passwd){_BAK}\b",
+        r"/etc/sudoers\.d/",
+        r"/etc/ssh/[^/\s]*_key\b",
+        r"/etc/ssl/private/",
+        r"/etc/kubernetes/",
+        r"/etc/rancher/",
+        r"/etc/krb5\.keytab\b",
+        r"~?/\.ssh/(id_[\w]+|[^/\s]*_key|identity)\b",
         r"~?/\.aws/(credentials|config)\b",
         r"~?/\.kube/config\b",
         r"~?/\.gnupg/(secring|private-keys)\b",
+        r"~?/\.docker/config\.json\b",
+        r"~?/\.git-credentials\b",
+        r"~?/\.netrc\b", r"~?/\.pgpass\b", r"~?/\.my\.cnf\b",
+        r"~?/\.vault-token\b",
         r"~?/\.npmrc\b", r"~?/\.pypirc\b",
+        r"~?/\.m2/settings\.xml\b",
+        r"~?/\.gradle/gradle\.properties\b",
+        r"\bterraform\.tfstate\b",
+        r"/proc/\d+/environ\b",
+        r"(/var)?/run/secrets/",
+        r"system32/config/(sam|security|system)\b",
         r"(?<!\w)\.env(\.local|\.production|\.staging)?\b",
         r"\bcredentials\.json\b",
         r"\bservice[_-]account\.json\b",
         r"\bid_rsa\b", r"\bsecring\.gpg\b",
+        r"[^\s]+\.(pem|keytab|p12|pfx)\b",
     )
 )
 
@@ -168,13 +202,31 @@ _EXFIL_VERBS = (
 )
 
 
+def _normalise_paths(text: str) -> str:
+    """Percent-decode and collapse repeated separators.
+
+    `//etc//shadow` and `/etc/%73hadow` both name /etc/shadow and matched
+    nothing. Applied to a COPY that is searched alongside the original, so
+    an offset into the original text is still meaningful.
+    """
+    try:
+        decoded = unquote(text)
+    except Exception:                                       # noqa: BLE001
+        decoded = text
+    return re.sub(r"/{2,}", "/", decoded.replace("\\", "/"))
+
+
 def _category_exfil_path(text: str) -> dict | None:
     lower = text.lower()
+    scrubbed = _PUBLIC_OR_DOC.sub(" ", text)
+    candidates = (scrubbed, _normalise_paths(scrubbed))
     path_hits = []
     for pat in _SECRET_PATHS:
-        m = pat.search(text)
-        if m:
-            path_hits.append(m.group(0))
+        for candidate in candidates:
+            m = pat.search(candidate)
+            if m:
+                path_hits.append(m.group(0))
+                break
     env_hits = [m.group(0) for m in _SECRET_ENV_VARS.finditer(text)]
     verb_hit = next((v for v in _EXFIL_VERBS if v in lower), None)
 
