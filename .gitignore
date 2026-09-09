@@ -155,3 +155,19 @@ kya-demo/
 # quickstart run artifacts
 examples/quickstart/quickstart.db
 examples/quickstart/executed.jsonl
+
+# fault-injection experiment artifacts
+examples/fault_injection/results.jsonl
+examples/fault_injection/propagation.jsonl
+examples/fault_injection/preview.jsonl
+examples/fault_injection/governor.jsonl
+examples/fault_injection/fault_experiment.db
+# Run artifacts, in both directories. The scripts write these beside
+# themselves; none of them belong in the repo.
+examples/fault_injection/llm_lab/*.jsonl
+examples/fault_injection/llm_lab/*.db
+examples/fault_injection/llm_lab/*_result.json
+examples/fault_injection/llm_lab/runs/
+# baseline.py moves a run's artifacts aside and puts them back; a hard
+# kill can leave one behind.
+examples/fault_injection/**/*.baseline-aside
