@@ -6,6 +6,32 @@ scheme follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.12] — 2026-09-09
+
+### Fixed
+- `agent_divergence_score` windowed on `started_at`, which
+  `record_invocation` leaves unset when a caller omits that optional
+  argument. Invocations recorded through the documented API were invisible
+  and the report said the window was empty. It now windows on
+  `COALESCE(started_at, occurred_at)`.
+- `input_attack_patterns.scan` flagged `.env.example` and
+  `.ssh/known_hosts` as exfiltration paths, and missed `/etc/gshadow`,
+  `.git-credentials`, `.docker/config.json`, `/proc/<pid>/environ`,
+  `/run/secrets/`, and percent-encoded or doubled-separator spellings of
+  paths it already recognised.
+- `kya_gateway.server` annotated two locals with `Any` without importing
+  it. Function-local annotations are not evaluated, so nothing raised, but
+  the name was undefined.
+
+### Changed
+- `fault_attribution`'s module header described a formula the code does not
+  implement. It now matches, and states the limits: the score is a rate of
+  governance intervention, reads no delegation lineage, and rises with
+  enforcement strength. The returned text describes what was measured
+  rather than naming a cause.
+- Ruff now runs over every package the wheel ships. `kya_gateway` and
+  `kya_mcp_tools_ref` were not covered.
+
 ## [0.5.11] — 2026-09-08
 
 ### Fixed
