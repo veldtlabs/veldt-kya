@@ -36,9 +36,9 @@ import base64
 import binascii
 import logging
 import re
-from urllib.parse import unquote
 from dataclasses import dataclass, field
 from re import Pattern
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
