@@ -22,35 +22,49 @@ Verifying the hash chain proves the record was not altered after the fact.
 It does NOT prove the decision was correct: a faulty governor produces a
 structurally perfect chain that faithfully records the wrong outcome.
 
-Four faults, four verifiers, three scopes
------------------------------------------
-The faults are distinct mechanisms, not four names for one:
+Six faults, five verifiers, four scopes
+---------------------------------------
+The faults are distinct mechanisms, not six names for one:
 
-    wrong_verdict   the control RUNS and returns the inverted answer -- it
-                    permits what the policy forbids AND forbids what the
-                    policy permits
-    inert_control   the control is never reached on the dispatch path, so
-                    everything is permitted; benign work is unaffected
-    mislabelled     the action is refused, and recorded as executed
-    omitted_record  the decision is never written down
+    wrong_verdict       the control RUNS and returns the inverted answer --
+                        it permits what the policy forbids AND forbids what
+                        the policy permits
+    inert_control       the control is never reached on the dispatch path,
+                        so everything is permitted; benign work is
+                        unaffected
+    mislabelled         the action is refused, and recorded as executed
+    unlogged_execution  the action runs and no record of it is written
+    omitted_record      the decision is never written down
+    stale_policy        the decision is correct under a SUPERSEDED policy.
+                        Not a wrong decision -- the right decision under the
+                        wrong rules, which is a different failure needing a
+                        different fix
 
-The verifiers are separate capabilities, each reported on its own:
+The verifiers are separate capabilities, each reported on its own, because
+"I cannot check this" is not "I checked this and it was fine":
 
-    integrity       was the record altered            (kya.verify_chain)
-    recomputation   re-derive the verdict from the recorded INPUTS
-    completeness    are all the decisions present
-    consistency     does the record contradict itself or its own invocation
+    integrity        was the record altered           (kya.verify_chain)
+    recomputation    re-derive the verdict from the recorded INPUTS
+    policy_identity  was it decided under the policy it claims
+    completeness     are all the decisions present
+    consistency      does the record contradict itself or its own
+                     invocation
 
 And `--scope` fixes exactly what the verifier is allowed to see, because a
 claim that something is undetectable is only meaningful against a stated
-scope:
+scope. The two additions are independent rather than a ladder -- made a
+chain, the invocation signal always fired first and the count was never
+exercised:
 
     evidence_only              the hash-chained rows, nothing else
+    evidence_and_count         plus an independently known decision count
     evidence_and_invocations   plus the per-call invocation record
-    full                       plus an independently known decision count
+    full                       both additions
 
 `--omit-inputs` additionally strips the arguments from the recorded rows,
-which is what most audit logs keep.
+which is what most audit logs keep. It is what turns `inert_control` from
+detectable into invisible: with no inputs there is nothing to recompute
+against.
 
 Why the tamper control matters
 ------------------------------
