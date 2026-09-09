@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-
 # Default bash allowlist: introspection-only, no arguments meaningful.
 # Deliberately tight: commands whose arg parsing / output could become a
 # broader surface (ls, cat, echo) are OUT of the default. Bash execution
@@ -45,7 +44,7 @@ class RefConfig:
     test_mode: bool
 
     @classmethod
-    def from_env(cls) -> "RefConfig":
+    def from_env(cls) -> RefConfig:
         """Read env vars once at boot. Never re-read at request time."""
         enable_bash = os.environ.get("KYA_MCP_ENABLE_BASH") == "1"
         raw_bash_allow = os.environ.get("KYA_MCP_BASH_ALLOWLIST", "")

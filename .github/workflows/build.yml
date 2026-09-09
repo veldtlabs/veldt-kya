@@ -88,7 +88,7 @@ jobs:
           pip install "setuptools>=77" build ruff
 
       - name: Ruff lint
-        run: ruff check kya/ kya_hooks/ kya_otlp_bridge/ kya_redteam/
+        run: ruff check kya/ kya_hooks/ kya_otlp_bridge/ kya_redteam/ kya_gateway/ kya_mcp_tools_ref/
 
       - name: Build wheel
         run: |

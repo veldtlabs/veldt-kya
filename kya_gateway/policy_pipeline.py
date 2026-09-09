@@ -71,9 +71,11 @@ logger = logging.getLogger(__name__)
 # below are backward-compat pass-throughs — existing callers
 # (tests, Pro's Presidio installer) keep working unchanged, and the
 # hook state is shared with the in-``record_evidence`` redaction call.
+# Re-exported for callers and tests that import it from here, not used in
+# this module. ruff --fix removes it as unused without the noqa.
 from kya._redaction_hooks import (  # noqa: E402
     RedactionHook,
-    _NoopRedactionHook,
+    _NoopRedactionHook,  # noqa: E402,F401
 )
 from kya._redaction_hooks import (  # noqa: E402
     get_redaction_hook as _get_redaction_hook_oss,
@@ -122,7 +124,7 @@ def get_redaction_hook() -> RedactionHook:
 # ``kya.policy_verdicts``. Re-exported here as module-level names so
 # existing test call sites and ``kya_gateway.server`` imports keep
 # working unchanged.
-from kya._verdict_aliases import (
+from kya._verdict_aliases import (  # noqa: E402  (re-export, see above)
     _CANONICAL_HUMAN_APPROVAL_VERDICT,
     _DEPRECATION_SUNSET,
     _LEGACY_VERDICT_ALIASES,
@@ -391,7 +393,9 @@ def _verdict_result_to_gateway_verdict(vr, *, fallback: Verdict) -> Verdict:
 # intentionally NOT listed here — an evaluator emitting it lands as
 # ``flag_for_review`` after ``_normalize_legacy_verdict`` fires. The
 # alias sunsets in ``_DEPRECATION_SUNSET``.
-from kya.canonicals import CANONICAL_VERDICTS as _CANONICAL_VERDICTS
+from kya.canonicals import (  # noqa: E402  (re-export, see above)
+    CANONICAL_VERDICTS as _CANONICAL_VERDICTS,
+)
 
 _VALID_VERDICTS: frozenset[str] = _CANONICAL_VERDICTS
 
