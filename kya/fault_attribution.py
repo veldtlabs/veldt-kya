@@ -24,20 +24,40 @@ work and lives behind a feature flag.
 Heuristic logic
 ---------------
 For each agent over the last N days:
-  signal_rate = total_rogue_signals / total_invocations
   refused_rate = refused_outcomes / total_invocations
   blocked_rate = blocked_outcomes / total_invocations
+  error_rate   = error_outcomes   / total_invocations
 
-  divergence_score (0..1) = clamp(
-      signal_rate * 2 + refused_rate * 1.5 + blocked_rate * 1.5
+  divergence_score (0..1) = min(1.0,
+      refused_rate * 1.5 + blocked_rate * 1.5 + error_rate * 0.5
   )
+
+Refusals and blocks weigh more than errors because they mean governance
+had to step in. A rogue-signal term is reserved (`signal_component`) and
+contributes zero today; mixing it in is future work.
 
 Interpretation
 --------------
-divergence_score < 0.1  → "looks intentional" — user-side blame is reasonable
-divergence_score 0.1..0.3 → "mixed signals" — investigate both
-divergence_score > 0.3  → "likely agent misbehavior" — bias attribution
-                          toward the agent regardless of which user invoked
+divergence_score < 0.1    → governance rarely intervened
+divergence_score 0.1..0.3 → mixed; some invocations were stopped
+divergence_score > 0.3    → governance intervened often; a reason to look
+                            at the agent, not a finding about cause
+
+Limitations
+-----------
+A rate of governance intervention, not an attribution:
+
+  * No delegation lineage. `parent_invocation_id` is on the same rows and
+    is not read, so a delegate acting on its own and one carrying out what
+    it was asked score the same — and the delegate, being the one refused,
+    carries the score wherever the fault began.
+  * Rises with enforcement strength. `refused` and `blocked` are outcomes
+    of your policy, so tightening it raises every agent's score.
+  * Saturates early: blocked on >20% of invocations reaches
+    `agent_misbehavior`; 1.0 at 67%.
+
+Separating cause from position in a chain needs a different method, not
+different weights.
 
 Public API
 ----------
@@ -110,19 +130,25 @@ def _classify(score: float, total: int) -> tuple[str, str]:
             f"Only {total} invocations in window — too few for confident "
             f"divergence classification (need {_MIN_SAMPLE_SIZE}+)."
         )
+    # Text describes what was measured, not a cause. See Limitations.
     if score < _T_LOW:
         return "intentional", (
-            "Agent's actions consistently align with invocations — "
-            "attribution can reasonably include the user."
+            "Governance rarely intervened against this agent; its "
+            "invocations mostly completed. Nothing here argues against "
+            "including the user in attribution."
         )
     if score < _T_MID:
         return "mixed", (
-            "Mixed signals — some invocations diverged, some didn't. "
-            "Investigate the specific incident before assigning blame."
+            "Governance intervened on some of this agent's invocations "
+            "and not others. Investigate the specific incident — this "
+            "rate does not identify a cause."
         )
     return "agent_misbehavior", (
-        "Agent diverges from user intent often. Bias attribution AWAY "
-        "from the invoking user — the agent is the likely root cause."
+        "Governance intervened on a large share of this agent's "
+        "invocations. That is a reason to examine the agent, not a "
+        "finding that it is the root cause: the rate is also raised by "
+        "strict policy, and it does not distinguish an agent acting on "
+        "its own from one doing what it was asked."
     )
 
 
@@ -142,6 +168,8 @@ def agent_divergence_score(
     )
     from ._portable import qual_for_raw_sql
     qual = qual_for_raw_sql(db)
+    # Windowed on COALESCE(started_at, occurred_at): `started_at` is
+    # optional, so filtering on it alone hid every row that omitted it.
     # Dialect-aware query: PG keeps the single-statement FILTER + now()
     # interval. Non-PG uses portable CASE + parameterized cutoff (since
     # FILTER and `now() - interval` syntax are PG-specific).
@@ -159,7 +187,8 @@ def agent_divergence_score(
                         COUNT(*) FILTER (WHERE outcome = 'error')
                     FROM {qual}kya_invocations
                     WHERE tenant_id = :tid AND agent_key = :agent
-                      AND started_at >= now() - (:days || ' days')::interval
+                      AND COALESCE(started_at, occurred_at)
+                          >= now() - (:days || ' days')::interval
                 """),
                 {"tid": tenant_id, "agent": agent_key,
                  "days": str(window_days)},
@@ -179,7 +208,7 @@ def agent_divergence_score(
                         SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END)
                     FROM {qual}kya_invocations
                     WHERE tenant_id = :tid AND agent_key = :agent
-                      AND started_at >= :cutoff
+                      AND COALESCE(started_at, occurred_at) >= :cutoff
                 """),
                 {"tid": tenant_id, "agent": agent_key,
                  "cutoff": cutoff},
