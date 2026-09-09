@@ -33,8 +33,8 @@ from typing import Any
 from aiohttp import web
 
 from kya_mcp_tools_ref import __version__
-from kya_mcp_tools_ref.config import RefConfig
 from kya_mcp_tools_ref import tools as tools_mod
+from kya_mcp_tools_ref.config import RefConfig
 
 logger = logging.getLogger(__name__)
 

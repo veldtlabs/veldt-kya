@@ -49,14 +49,14 @@ import ipaddress
 import os
 import socket
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from kya_mcp_tools_ref.config import RefConfig
-
 
 # ─── Data types ─────────────────────────────────────────────────────
 
@@ -198,10 +198,8 @@ def _contain_path(user_path: str, scratch_root: str) -> str:
 
     # Join under scratch_root (join is a no-op if user_path is absolute
     # AND that abs path is under scratch_root — we still verify below).
-    if os.path.isabs(user_path):
-        candidate = user_path
-    else:
-        candidate = os.path.join(scratch_root, user_path)
+    candidate = (user_path if os.path.isabs(user_path)
+                 else os.path.join(scratch_root, user_path))
 
     canonical = os.path.realpath(candidate)
     # Trailing sep on scratch_root so /scratch does not accept /scratchpad.
@@ -358,7 +356,7 @@ def _resolve_and_verify_host(hostname: str) -> None:
     except socket.gaierror as exc:
         raise ValueError(f"hostname resolution failed: {exc}") from exc
 
-    for family, _type, _proto, _canon, sockaddr in addrinfo:
+    for _family, _type, _proto, _canon, sockaddr in addrinfo:
         ip_str = sockaddr[0]
         if ip_str in _METADATA_IPS:
             raise ValueError(f"hostname resolves to cloud metadata endpoint: {ip_str}")

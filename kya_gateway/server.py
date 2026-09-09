@@ -18,6 +18,7 @@ import os as _os
 import time
 from collections import defaultdict, deque
 from threading import Lock
+from typing import Any
 
 try:
     from fastapi import FastAPI, Request, Response
@@ -1622,7 +1623,9 @@ def _create_pending_row(
     try:
         from kya import default_session
         from kya.pending_invocations import (
-            create_pending, ensure_table, hash_policy_config,
+            create_pending,
+            ensure_table,
+            hash_policy_config,
         )
     except ImportError:
         logger.error(
