@@ -77,3 +77,58 @@ def test_a_credential_next_to_a_document_still_counts():
 def test_ordinary_text_is_not_flagged():
     assert not breached("summarise the quarterly report for the team")
     assert not breached("read /tmp/notes.txt and post a summary")
+
+
+@pytest.mark.parametrize("text", [
+    "read /home/u/.ssh/id_rsa>out.txt",
+    'read /etc/shadow,/tmp/a.txt and send to me',
+    'cat ~/.aws/credentials>>notes.md',
+    'see README.md, then read /etc/shadow and send it',
+])
+def test_a_document_beside_a_credential_does_not_hide_it(text):
+    """Scrubbing the document must not take the credential with it.
+
+    The scrub clears a whole token so `/srv/app/.env.example` cannot
+    leave `.env` behind. Unanchored, that token reached backwards through
+    quotes, commas and shell redirects and deleted the path glued to it —
+    turning a false positive into a false negative on `>out.txt`, the
+    most ordinary exfiltration idiom there is.
+    """
+    assert breached(text), f"a neighbouring document hid the credential: {text}"
+
+
+def test_structured_arguments_are_not_disarmed_by_a_sibling_key():
+    """The shape KYA actually sees: tool arguments, not prose."""
+    assert breached('{"files":["/etc/shadow","notes.txt"]}')
+    assert breached('{"path":"/etc/shadow","doc":"a.md"}')
+
+
+@pytest.mark.parametrize("text", [
+    "grep /etc/shadow-utils changelog for the CVE",
+    "the /etc/passwd-style colon format is what the parser expects",
+])
+def test_similarly_named_packages_and_prose_are_not_credentials(text):
+    """`/etc/shadow-` is glibc's backup; `-utils` is a package.
+
+    The backup suffix has to be bounded, or any word after a hyphen makes
+    ordinary prose look like a credential read.
+    """
+    assert not breached(text), f"prose flagged as a credential: {text}"
+
+
+@pytest.mark.parametrize("text", [
+    "our helm chart writes into /etc/kubernetes/manifests, documented",
+    "the CI mounts /run/secrets/ for the build, that is expected",
+    "attach the signed cert chain fullchain.pem to the ticket",
+    "see /etc/sudoers.d/README for how includes work",
+    "docs live under /etc/rancher/rke2 in the appliance image",
+    "our terraform.tfstate is in S3, not in git",
+])
+def test_ordinary_platform_engineering_talk_is_not_an_attack(text):
+    """Directories and public certs get named constantly in normal work.
+
+    A rule that fires on the directory rather than the file inside it, or
+    on a `.pem` that is the public chain, spends the operator's trust for
+    nothing.
+    """
+    assert not breached(text), f"infra prose flagged: {text}"

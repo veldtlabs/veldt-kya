@@ -12,17 +12,30 @@ pytest.importorskip("sqlalchemy")
 
 @pytest.fixture()
 def db(monkeypatch):
-    # monkeypatch, not os.environ directly: a leaked KYA_DB_URL is
-    # inherited by subprocesses that later tests spawn, and they then
-    # open this empty scratch database instead of their own.
+    """A database of this test's own, and nobody else's.
+
+    Two separate leaks to close. `monkeypatch.setenv` rather than
+    `os.environ` keeps KYA_DB_URL out of subprocesses that later tests
+    spawn. And `reset_default_session()` is required either side: the
+    engine is cached in a module global, so without it the env var is a
+    no-op after the first test in the process — every test writes into
+    the first one's tempdir, and any later test in the session that opens
+    a default session silently binds to it too.
+    """
+    import kya
+    from kya.session import reset_default_session
+
     tmp = tempfile.mkdtemp()
     monkeypatch.setenv(
         "KYA_DB_URL",
         "sqlite:///" + pathlib.Path(tmp, "fa.db").as_posix())
-    import kya
-    with kya.default_session() as session:
-        kya.ensure_invocations_table(session)
-        yield session
+    reset_default_session()
+    try:
+        with kya.default_session() as session:
+            kya.ensure_invocations_table(session)
+            yield session
+    finally:
+        reset_default_session()
 
 
 def _seed(kya, session, agent_key, outcome, n=12, started_at=None,
@@ -123,17 +136,37 @@ def test_score_does_not_identify_where_a_fault_originated(db):
     import kya
     from kya.fault_attribution import agent_divergence_score
 
-    for scenario in ("user_originated", "orchestrator_originated",
-                     "delegate_originated"):
-        _seed(kya, db, f"{scenario}:user", "success")
-        _seed(kya, db, f"{scenario}:orchestrator", "success")
-        _seed(kya, db, f"{scenario}:delegate", "blocked")
+    # The lineage is REAL and differs per scenario — each level is
+    # threaded by parent_invocation_id, and the level that originated the
+    # fault carries a distinct correlation id. A lineage-aware
+    # implementation has everything it needs to tell them apart here, so
+    # this test fails when one arrives rather than passing regardless.
+    scenarios = ("user_originated", "orchestrator_originated",
+                 "delegate_originated")
+    for origin in scenarios:
+        for i in range(12):
+            corr = f"{origin}-{i}"
+            root = kya.record_invocation(
+                db, tenant_id="fa-test", agent_key=f"{origin}:user",
+                principal_kind="user", principal_id="analyst",
+                mode="enforce", outcome="success", duration_ms=5,
+                correlation_id=corr)
+            mid = kya.record_invocation(
+                db, tenant_id="fa-test", agent_key=f"{origin}:orchestrator",
+                principal_kind="agent", principal_id="orchestrator",
+                mode="enforce", outcome="success", duration_ms=5,
+                parent_invocation_id=root, correlation_id=corr)
+            kya.record_invocation(
+                db, tenant_id="fa-test", agent_key=f"{origin}:delegate",
+                principal_kind="agent", principal_id="delegate",
+                mode="enforce", outcome="blocked", duration_ms=5,
+                parent_invocation_id=mid, correlation_id=corr)
+    db.commit()
 
     scores = {
-        scenario: agent_divergence_score(
-            db, "fa-test", f"{scenario}:delegate").divergence_score
-        for scenario in ("user_originated", "orchestrator_originated",
-                         "delegate_originated")
+        origin: agent_divergence_score(
+            db, "fa-test", f"{origin}:delegate").divergence_score
+        for origin in scenarios
     }
     assert len(set(scores.values())) == 1, (
         "the score distinguished scenarios it has no lineage to "
