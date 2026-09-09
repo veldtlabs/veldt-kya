@@ -1,7 +1,6 @@
 """agent_divergence_score: what it counts, and what it cannot tell you."""
 from __future__ import annotations
 
-import os
 import pathlib
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -12,10 +11,14 @@ pytest.importorskip("sqlalchemy")
 
 
 @pytest.fixture()
-def db():
+def db(monkeypatch):
+    # monkeypatch, not os.environ directly: a leaked KYA_DB_URL is
+    # inherited by subprocesses that later tests spawn, and they then
+    # open this empty scratch database instead of their own.
     tmp = tempfile.mkdtemp()
-    os.environ["KYA_DB_URL"] = "sqlite:///" + pathlib.Path(
-        tmp, "fa.db").as_posix()
+    monkeypatch.setenv(
+        "KYA_DB_URL",
+        "sqlite:///" + pathlib.Path(tmp, "fa.db").as_posix())
     import kya
     with kya.default_session() as session:
         kya.ensure_invocations_table(session)
