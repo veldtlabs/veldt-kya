@@ -38,6 +38,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from re import Pattern
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -129,20 +130,79 @@ def _category_encoded_payload(text: str) -> dict | None:
 # ── Category 2: exfiltration paths + credential filenames ─────────
 
 
+# Documentation and templates ABOUT a credential are not the credential,
+# and neither is the public half of a keypair. Checked before the path
+# rules, which would otherwise match `.env.example` and `known_hosts`.
+#
+# The whole TOKEN is cleared, not just the extension — scrubbing the
+# suffix alone left `/srv/app/.env` behind for the `.env` rule to match.
+# But the token must not reach ACROSS a delimiter: an unanchored `[^\s]*`
+# ate backwards through quotes, commas and shell redirects, so
+# `read /etc/shadow>out.txt` and `{"f":["/etc/shadow","a.txt"]}` lost the
+# credential along with the document — a false negative on the two shapes
+# this scanner most often sees. `_DELIM` is what a path may not span, and
+# it is asserted on the left as well as consumed on the right.
+#
+# `authorized_keys` is deliberately NOT here. It is public key material,
+# but it is also the standard SSH persistence target, so scrubbing it
+# would remove an attack class rather than a false positive.
+_DELIM = r"""\s"'`\[\]{}(),;|=<>&"""
+_PUBLIC_OR_DOC = re.compile(
+    rf"(?<![^{_DELIM}])[^{_DELIM}]*"
+    r"\.(md|rst|txt|example|sample|template|dist|pub)\b"
+    r"|(?<![\w.])(readme|changelog|license|licence)(?![\w])"
+    rf"|(?<![^{_DELIM}])[^{_DELIM}]*/\.ssh/(known_hosts|config)\b",
+    re.IGNORECASE,
+)
+
+# A credential copied aside is still a credential, so the rules tolerate a
+# backup suffix: `/etc/shadow-` is the file glibc leaves behind. Bounded
+# on purpose — an open `[\w-]*` also swallowed `/etc/shadow-utils` and
+# `/etc/passwd-style`, an ordinary package and a sentence about a format.
+_BAK = r"(-|~|\.(bak|old|save|orig|[0-9]+))?(?![\w.-])"
+
 _SECRET_PATHS: tuple[Pattern, ...] = tuple(
     re.compile(p, re.IGNORECASE) for p in (
         r"/etc/secrets?\b",
-        r"/etc/passwd\b",
-        r"/etc/shadow\b",
-        r"~?/\.ssh/(id_rsa|id_ed25519|authorized_keys|known_hosts)\b",
+        rf"/etc/(passwd|shadow|gshadow|sudoers|master\.passwd){_BAK}",
+        r"/etc/sudoers\.d/[^/\s]+",
+        r"/etc/ssh/[^/\s]*_key\b",
+        r"/etc/ssl/private/",
+        # The credential is a file inside these, not the directory itself:
+        # "our chart writes into /etc/kubernetes/manifests" is prose.
+        r"/etc/kubernetes/(pki/|admin\.conf|[^/\s]*\.conf\b)",
+        r"/etc/rancher/[^/\s]*/[^/\s]+",
+        r"/etc/krb5\.keytab\b",
+        # `authorized_keys` is public key material but is also where SSH
+        # persistence is installed, so it stays in scope.
+        r"~?/\.ssh/(id_[\w]+|[^/\s]*_key|identity|authorized_keys)\b",
         r"~?/\.aws/(credentials|config)\b",
         r"~?/\.kube/config\b",
         r"~?/\.gnupg/(secring|private-keys)\b",
+        r"~?/\.docker/config\.json\b",
+        r"~?/\.git-credentials\b",
+        r"~?/\.netrc\b", r"~?/\.pgpass\b", r"~?/\.my\.cnf\b",
+        r"~?/\.vault-token\b",
         r"~?/\.npmrc\b", r"~?/\.pypirc\b",
+        r"~?/\.m2/settings\.xml\b",
+        r"~?/\.gradle/gradle\.properties\b",
+        # State files hold secrets, but naming one is ordinary infra talk.
+        # Require a path, so "our terraform.tfstate lives in S3" is prose
+        # and "read ./terraform.tfstate" is not.
+        r"[^\s]*/terraform\.tfstate\b",
+        r"/proc/\d+/environ\b",
+        r"(/var)?/run/secrets/[^/\s]+",
+        r"system32/config/(sam|security|system)\b",
         r"(?<!\w)\.env(\.local|\.production|\.staging)?\b",
         r"\bcredentials\.json\b",
         r"\bservice[_-]account\.json\b",
         r"\bid_rsa\b", r"\bsecring\.gpg\b",
+        # A .pem is more often the public chain than the private key, so
+        # the names that say so are excluded. The left lookbehind is what
+        # makes the exclusion stick — without it the engine simply starts
+        # one character later and matches `ullchain.pem`.
+        r"(?<![\w.\-])(?!(fullchain|chain|cert|ca|public|pub)[.\-_])"
+        r"[^\s/]*\.(pem|keytab|p12|pfx)\b",
     )
 )
 
@@ -168,13 +228,31 @@ _EXFIL_VERBS = (
 )
 
 
+def _normalise_paths(text: str) -> str:
+    """Percent-decode and collapse repeated separators.
+
+    `//etc//shadow` and `/etc/%73hadow` both name /etc/shadow and matched
+    nothing. Applied to a COPY that is searched alongside the original, so
+    an offset into the original text is still meaningful.
+    """
+    try:
+        decoded = unquote(text)
+    except Exception:                                       # noqa: BLE001
+        decoded = text
+    return re.sub(r"/{2,}", "/", decoded.replace("\\", "/"))
+
+
 def _category_exfil_path(text: str) -> dict | None:
     lower = text.lower()
+    scrubbed = _PUBLIC_OR_DOC.sub(" ", text)
+    candidates = (scrubbed, _normalise_paths(scrubbed))
     path_hits = []
     for pat in _SECRET_PATHS:
-        m = pat.search(text)
-        if m:
-            path_hits.append(m.group(0))
+        for candidate in candidates:
+            m = pat.search(candidate)
+            if m:
+                path_hits.append(m.group(0))
+                break
     env_hits = [m.group(0) for m in _SECRET_ENV_VARS.finditer(text)]
     verb_hit = next((v for v in _EXFIL_VERBS if v in lower), None)
 
