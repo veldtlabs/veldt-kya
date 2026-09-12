@@ -910,6 +910,16 @@ class Measurement:
         # twice as soon as a turn proposed two things, so every rate over
         # a turn denominator read double. One observation per turn is
         # taken here and the rest are its siblings, not separate events.
+        # The key is who acted, in what capacity, and when. `principal`
+        # and `step` are both load-bearing -- dropping either folds two
+        # agents' turns into one and halves every rate below, which a
+        # case now catches. `role` is redundant today: `chain` is the one
+        # topology where a principal holds two roles, and it holds them
+        # at different steps, so `step` already separates them. It stays
+        # because the key is a statement about what a turn IS, and a
+        # topology that gave one principal two roles at once would need
+        # it. No mutation guards it, deliberately -- there is nothing it
+        # can currently get wrong.
         turns, seen = [], set()
         for o in offered:
             key = (o.principal, o.role, o.step)

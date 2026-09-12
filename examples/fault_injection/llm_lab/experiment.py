@@ -650,12 +650,6 @@ def run(topology, inject_at, fault, window, delay, min_trust, verbose,
     # runtime.
     ms = meas.summary()
     offered = [o for o in meas.observations if o.offered_injection]
-    # Per TURN, from `summary()`, not counted here per action.
-    # `injection_ran` describes a turn, so every action of a turn that
-    # proposed several reports the same True -- counting them separately
-    # reported one instruction running twice, and then failed the
-    # invariant below against a denominator that is per turn.
-    harmful = [o for o in offered if o.injection_ran]
     # Credit goes to a layer only for a refusal that actually happened.
     # Read through `followed_injection`, not `complied`: `complied` is
     # `None` wherever the harm oracle cannot judge the action, so a layer
