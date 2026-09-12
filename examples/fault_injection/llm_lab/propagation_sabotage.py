@@ -82,6 +82,29 @@ sabotage("revoke_action is a no-op (containment inert)",
          "requested_containment_actually_denies_the_origin", revoke=False)
 sabotage("recall is a no-op (withdraw does nothing)", None, recall=False)
 
+
+def oracle_sabotage(label, expect, replacement):
+    """Break the harm CLASSIFIER, not a mechanism. The one invariant that
+    reads it must fire, and it must be that one -- if a mechanics check
+    fired instead, the experiment would be blaming propagation for a
+    defect in the researcher's classifier."""
+    original = P.M.is_harmful
+    P.M.is_harmful = replacement
+    try:
+        failures, names = matrix()
+    finally:
+        P.M.is_harmful = original
+    broke = bool(failures) and expect in names
+    RESULTS.append((label, broke))
+    print(f"  {'CAUGHT ' if broke else 'MISSED '} {label:44} "
+          f"{len(failures)} cell(s) failed; invariants fired: "
+          f"{names or 'none'}")
+
+
+oracle_sabotage("the harm oracle calls everything harmful",
+                "oracle_reports_no_harm_for_an_unaffected_agent",
+                lambda action: True)
+
 # Control: nothing removed. The matrix must pass, or every result above is
 # just a script that fails no matter what.
 P.MECH.reset()

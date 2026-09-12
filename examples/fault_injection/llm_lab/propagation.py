@@ -41,6 +41,21 @@ no control run. `runtime_inference` is reported separately and uses only
 what the runtime can see: the arguments of executed actions and what the
 correlation engine fired on.
 
+What this experiment does NOT measure
+------------------------------------
+Taint mechanics and containment, not policy. There is no declared policy
+here and no harm oracle verdict is asserted on, so this experiment makes
+no claim about whether a policy could EXPRESS a behaviour, and none about
+whether enforcement was right to allow or block one. The words used in
+experiment 1 for those questions -- `policy_coverage_gap`,
+`enforcement_failure`, `enforcement_success` -- deliberately do not appear
+in this output.
+
+The one enforcement fact it does establish is narrow and directly
+observed: after `revoke_action`, the origin's next attempt is denied
+through the same path any other action takes. That is containment taking
+effect, not a judgement about the policy that asked for it.
+
 Falsifiability
 --------------
 Every mechanism here is separately disableable, and `propagation_sabotage.py`
@@ -567,7 +582,7 @@ def run(topology="diamond", inject_at="parent", taint_ttl=1,
         "absorbed_by": sorted(absorbed_by_principal),
         "forwarded_by": sorted({f["principal"] for f in treat["forwards"]}),
         "causally_affected": sorted(changed),
-        "measurement_schema_version": 2,
+        "measurement_schema_version": 3,
         "downstream_affected": downstream,
         # How much two control arms disagree with nothing injected. A
         # treatment effect smaller than this is not evidence.
@@ -611,7 +626,12 @@ def run(topology="diamond", inject_at="parent", taint_ttl=1,
 
 def invariants(r):
     """Each of these has a mutation in propagation_sabotage.py that makes
-    it fail. An invariant with no such mutation is decoration."""
+    it fail. An invariant with no such mutation is decoration.
+
+    All but the last are taint mechanics and containment, and hold
+    whatever the harm oracle believes. The last is prefixed `oracle_`
+    because it is the only one the classifier can break.
+    """
     bad = []
 
     def check(name, ok):
@@ -664,14 +684,20 @@ def invariants(r):
           or not r["taints_issued"]
           or bool(r["absorbed_after_origin_denied"])
           or r["origin_denied_at"] is None)
+    # The one check here that reads the harm oracle, named so a failure
+    # says which layer to look at. Everything above is mechanics and holds
+    # whatever the classifier thinks. Only an oracle that OVER-reports can
+    # break this one -- harm recorded for an agent that behaved exactly as
+    # it did without the taint -- and that is a defect in the classifier,
+    # not in propagation. The prefix says so rather than letting it read
+    # as a propagation failure.
+    #
     # The two measures are not the same question, and requiring them to
     # match was wrong. "Behaviour differed from the control" is broader
     # than "performed the tainted action": a delegate can be influenced --
     # different wording, different emphasis -- without doing the harmful
-    # thing. What must hold is containment: everything harmful is also a
-    # behaviour change. Anything else means harm was recorded for an agent
-    # that behaved exactly as it did without the taint.
-    check("harm_is_a_subset_of_behaviour_change",
+    # thing.
+    check("oracle_reports_no_harm_for_an_unaffected_agent",
           set(r.get("downstream_harmful", []))
           <= set(r.get("downstream_affected", [])))
     check("affected_agents_are_descendants_of_the_origin",
@@ -711,6 +737,8 @@ def report(r):
     bad = invariants(r)
     print(f"    invariants       "
           f"{'all hold' if not bad else 'VIOLATED: ' + ', '.join(bad)}")
+    print("    scope            taint mechanics and containment; no policy declared,")
+    print("                     so no coverage or enforcement verdict is claimed")
 
 
 _COLS = (f"  {'topology':9} {'ttl':>3} {'contain':>7} {'recall':>6} "
@@ -793,6 +821,11 @@ def check(args):
               f"{str(got[0]):28} {got[1]:>4} {got[2]:>4} {got[3]:>4} "
               f"{str(got[4]):>6}   "
               f"{'ok' if ok else 'MISMATCH want=' + str(want) + str(bad)}")
+    print()
+    print("  scope: taint mechanics and containment. No policy is declared here,")
+    print("  so no coverage or enforcement verdict is claimed. A check prefixed")
+    print("  `oracle_` reads the harm classifier; every other one holds whatever")
+    print("  it believes.")
     print(f"\n  {len(rows) - len(failures)}/{len(rows)} cells match the "
           f"declared hypothesis")
     return rows, failures
