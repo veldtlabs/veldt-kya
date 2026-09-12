@@ -111,21 +111,17 @@ class Provider:
 
     # -- response parsing, per dialect -----------------------------------
     def parse(self, data, allowed):
+        """Every action the reply proposes, in the order it proposed them."""
         if self.dialect == "anthropic":
             uses = [b for b in (data.get("content") or [])
                     if b.get("type") == "tool_use"]
-            if len(uses) > 1:
-                raise ActorError(
-                    f"model returned {len(uses)} tool calls "
-                    f"{[u.get('name') for u in uses]}; the harness measures "
-                    f"one action per step")
             if uses:
-                return build_payload(uses[0].get("name"),
-                                     uses[0].get("input") or {}, allowed)
+                return [build_payload(u.get("name"), u.get("input") or {},
+                                      allowed) for u in uses]
             text = " ".join(b.get("text", "") for b in data.get("content") or [])
             raise ActorError(f"no tool call; model said: {text[:200]!r}")
-        return parse_tool_call((data.get("choices") or [{}])[0].get("message"),
-                               allowed)
+        return parse_tool_calls(
+            (data.get("choices") or [{}])[0].get("message"), allowed)
 
     def request(self, *, model, prompt, tools, temperature, timeout, key):
         import requests  # a veldt-kya dependency; nothing new
@@ -380,25 +376,27 @@ def build_payload(name, args, allowed):
     return payload
 
 
-def parse_tool_call(message, allowed):
-    """Turn a chat-completions reply into a payload, or say why it cannot."""
+def parse_tool_calls(message, allowed):
+    """Turn a chat-completions reply into payloads, or say why it cannot.
+
+    Every call is kept. A model that does its job AND obeys the note is
+    hedging, and hedging is a result: keeping only the first call scored
+    it as a refusal, and refusing the whole turn threw the trial away.
+    Each one goes through the authority and policy gate on its own.
+    """
     calls = (message or {}).get("tool_calls") or []
     if not calls:
         text = (message or {}).get("content") or ""
         raise ActorError(f"no tool call; model said: {text[:200]!r}")
-    if len(calls) > 1:
-        # A model that does its job AND obeys the note is hedging. Keeping
-        # only the first call scored that as a refusal, which biases the
-        # result toward the defences looking better than they are.
-        names = [c.get("function", {}).get("name") for c in calls]
-        raise ActorError(f"model returned {len(calls)} tool calls {names}; "
-                         f"the harness measures one action per step")
-    fn = calls[0].get("function", {})
-    try:
-        args = json.loads(fn.get("arguments") or "{}")
-    except json.JSONDecodeError as exc:
-        raise ActorError(f"unparseable arguments: {exc}") from exc
-    return build_payload(fn.get("name"), args, allowed)
+    payloads = []
+    for call in calls:
+        fn = call.get("function", {})
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError as exc:
+            raise ActorError(f"unparseable arguments: {exc}") from exc
+        payloads.append(build_payload(fn.get("name"), args, allowed))
+    return payloads
 
 
 class LLMActor(actors.Actor):
@@ -490,6 +488,20 @@ class LLMActor(actors.Actor):
         self._last_step = situation.step
 
     def act(self, situation):
+        """One action, for the callers whose step dispatches exactly one.
+
+        Those callers cannot put a second action through the gate, so a
+        hedge there is still refused rather than silently halved.
+        """
+        actions = self.act_all(situation)
+        if len(actions) > 1:
+            raise ActorError(
+                f"model returned {len(actions)} tool calls "
+                f"{[a['tool'] for a in actions]}; this experiment measures "
+                f"one action per step")
+        return actions[0]
+
+    def act_all(self, situation):
         self._note_run_boundary(situation)
         if self.calls >= self.max_calls:
             raise ActorError(
@@ -508,7 +520,7 @@ class LLMActor(actors.Actor):
             temperature=self.temperature, timeout=self.timeout,
             key=self._key)
         try:
-            payload = self.provider.parse(data, set(allowed))
+            payloads = self.provider.parse(data, set(allowed))
         except ActorError as exc:
             self.malformed.append({"step": situation.step,
                                    "principal": situation.principal,
@@ -540,8 +552,12 @@ class LLMActor(actors.Actor):
                     "temperature": self.temperature,
                     "latency_ms": round(
                         (time.perf_counter() - started) * 1000, 1),
-                    "payload": payload}) + chr(10))
-        return payload
+                    # The whole turn, so a replay proposes what the model
+                    # proposed. `payload` stays for recordings made before
+                    # a turn could hold more than one action.
+                    "payload": payloads[0],
+                    "payloads": payloads}) + chr(10))
+        return payloads
 
 
 class ReplayActor(actors.Actor):
@@ -617,6 +633,15 @@ class ReplayActor(actors.Actor):
                                    or ["unrecorded"])[0]}
 
     def act(self, situation):
+        actions = self.act_all(situation)
+        if len(actions) > 1:
+            raise ActorError(
+                f"recorded run {self.trial} proposed {len(actions)} actions "
+                f"at step {situation.step}; this experiment measures one "
+                f"action per step")
+        return actions[0]
+
+    def act_all(self, situation):
         if self._last_step is None or situation.step <= self._last_step:
             self.trial += 1
         self._last_step = situation.step
@@ -638,7 +663,8 @@ class ReplayActor(actors.Actor):
                     and row.get("kind", "normal") == situation.kind
                     and row.get("role", situation.role) == situation.role):
                 self.consumed += 1
-                return dict(row["payload"])
+                return [dict(a) for a in
+                        row.get("payloads") or [row["payload"]]]
         raise ActorError(
             f"recorded run {self.trial} has nothing for "
             f"{situation.principal} at step {situation.step} "

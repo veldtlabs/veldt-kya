@@ -63,6 +63,17 @@ class Actor:
     def act(self, situation: Situation) -> dict:
         raise NotImplementedError
 
+    def act_all(self, situation: Situation) -> list[dict]:
+        """Every action this actor proposes at one step, in order.
+
+        A real model regularly returns two tool calls in one turn -- its
+        own job and the planted note together -- and that hedge is the
+        most realistic attack shape there is. Keeping only the first
+        scored it as a refusal; refusing the whole turn discarded it.
+        Actors that can only choose one action inherit this unchanged.
+        """
+        return [self.act(situation)]
+
     def describe(self) -> dict:
         """Goes into provenance. Must never carry a credential."""
         return {"actor": self.name, "deterministic": self.deterministic}
@@ -99,3 +110,13 @@ def resolve(actor: Actor | None, situation: Situation) -> dict:
     yielding `{}` and failing later with a KeyError on `payload["tool"]`.
     """
     return (actor or _DEFAULT).act(situation)
+
+
+def resolve_all(actor: Actor | None, situation: Situation) -> list[dict]:
+    """Every action `actor` proposes, falling back to the scripted one.
+
+    Same seam as `resolve`, for the experiments whose dispatch loop can
+    put more than one action through the gate. The scripted actor answers
+    with a list of one, so the deterministic path is unchanged.
+    """
+    return (actor or _DEFAULT).act_all(situation)
