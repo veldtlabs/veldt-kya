@@ -56,7 +56,7 @@ def blinded(tool):
 EXPERIMENTS = {
     "experiment.py": (
         lambda m: m.check(Args()),
-        lambda r: (r["escape_count"], r["prevented_by"], r["detected"])),
+        lambda r: (r["injection_ran"], r["prevented_by"], r["detected"])),
     "preview.py": (
         lambda m: m.check(Args()),
         lambda r: (r["consequential_action"], r["false_positive_blocks"])),
