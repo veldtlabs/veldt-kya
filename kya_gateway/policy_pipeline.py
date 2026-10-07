@@ -669,15 +669,26 @@ def evaluate(
         )
 
     # ─── Rate limit ─────────────────────────────────────────────
-    # Fail-closed contract: ImportError → primitive not installed → skip
-    # with debug log. Any OTHER exception (DB/network/etc.) → deny with
-    # a "_ERROR" reason code so the audit chain captures the operational
-    # state and the caller doesn't silently slip through.
+    # Exception contract. Any exception from a primitive (DB/network/etc.)
+    # → deny with a "_ERROR" reason code, so the audit chain captures the
+    # operational state and the caller doesn't silently slip through.
+    #
+    # ImportError is reported at ERROR and the stage is skipped. It is NOT
+    # the "primitive not installed" case it was once written for: every
+    # module below ships in the core package and imports no optional
+    # dependency, so an ImportError can only mean the symbol is absent.
+    # That is a defect in this file, not a deployment variant, and it must
+    # not be logged at a level operators do not read.
     if cfg.rate_limit is not None:
         try:
             from kya.rate_limit import check_rate
-        except ImportError:
-            logger.debug("[KYA-GATEWAY] kya.rate_limit unavailable; skipping rate check")
+        except ImportError as exc:
+            logger.error(
+                "[KYA-GATEWAY] rate-limit stage SKIPPED — cannot import "
+                "kya.rate_limit.check_rate: %s. This stage ships in the "
+                "core package; treat this as a defect, not configuration.",
+                exc,
+            )
         else:
             try:
                 # Pass through whichever mode the operator set.
@@ -716,11 +727,23 @@ def evaluate(
     if invocation_id is not None:
         try:
             from kya.replay_protection import check_invocation_replay
-        except ImportError:
-            logger.debug("[KYA-GATEWAY] kya.replay_protection unavailable; skipping")
+        except ImportError as exc:
+            logger.error(
+                "[KYA-GATEWAY] replay-protection stage SKIPPED — cannot "
+                "import kya.replay_protection.check_invocation_replay: %s. "
+                "This stage ships in the core package; treat this as a "
+                "defect, not configuration.",
+                exc,
+            )
         else:
             try:
-                replay_ok = check_invocation_replay(db, invocation_id=invocation_id)
+                replay_ok = check_invocation_replay(
+                    db,
+                    invocation_id=invocation_id,
+                    tenant_id=tenant_id,
+                    principal_kind=principal.principal_kind,
+                    principal_id=principal.principal_id,
+                )
             except Exception as exc:
                 logger.warning("[KYA-GATEWAY] check_invocation_replay raised: %s", exc)
                 return _dispatch(
@@ -746,8 +769,14 @@ def evaluate(
     if cfg.tenant_budget and cfg.tenant_budget.daily_usd is not None:
         try:
             from kya.tenant_budget import should_refuse
-        except ImportError:
-            logger.debug("[KYA-GATEWAY] kya.tenant_budget unavailable; skipping")
+        except ImportError as exc:
+            logger.error(
+                "[KYA-GATEWAY] tenant-budget stage SKIPPED — cannot import "
+                "kya.tenant_budget.should_refuse: %s. This stage ships in "
+                "the core package; treat this as a defect, not "
+                "configuration.",
+                exc,
+            )
         else:
             try:
                 refuse = should_refuse(
@@ -786,8 +815,13 @@ def evaluate(
     # continues to match.
     try:
         from kya import AccessDeniedError, require_action
-    except ImportError:
-        logger.debug("[KYA-GATEWAY] kya.require_action unavailable; skipping")
+    except ImportError as exc:
+        logger.error(
+            "[KYA-GATEWAY] min-trust/grant stage SKIPPED — cannot import "
+            "kya.require_action: %s. This stage ships in the core package; "
+            "treat this as a defect, not configuration.",
+            exc,
+        )
         AccessDeniedError = None  # type: ignore[assignment]
         require_action = None     # type: ignore[assignment]
     if require_action is not None:

@@ -145,20 +145,34 @@ class IdentityResolver:
             # Header IS present but empty — invalid credential.
             raise IdentityCredentialInvalid("empty bearer token")
 
-        try:
-            from kya.auth import introspect_jwt  # type: ignore[attr-defined]
-        except ImportError:
-            raise IdentityCredentialInvalid(
-                "kya.auth.introspect_jwt unavailable — install KYA core auth"
-            )
+        # kya.auth.verify_jwt, not introspect_jwt: the latter has never
+        # existed, so this import raised ImportError on every bearer
+        # request and the handler below reported it as a missing
+        # install. The module was always installed; the name was wrong.
+        from kya.auth import verify_jwt
 
+        jwt_cfg = self.config.jwt
         try:
-            claims = introspect_jwt(token)
+            claims = verify_jwt(
+                token,
+                jwks_url=jwt_cfg.jwks_url if jwt_cfg else None,
+                issuer=jwt_cfg.issuer if jwt_cfg else None,
+            )
         except Exception as exc:
             # Header present + token invalid → HARD FAIL (no fallthrough).
             raise IdentityCredentialInvalid(
                 f"bearer JWT failed verification: {exc}"
             ) from exc
+
+        # verify_jwt is fail-soft: it returns None for an invalid
+        # signature, expiry, wrong audience or issuer, a missing JWKS,
+        # or a network failure. A None here must deny, and must deny
+        # before .get() is reached -- an AttributeError on the next line
+        # would surface as a 500 rather than a refused credential.
+        if claims is None:
+            raise IdentityCredentialInvalid(
+                "bearer JWT failed verification"
+            )
 
         subject = str(claims.get("sub") or "")
         if not subject:
@@ -277,19 +291,25 @@ class IdentityResolver:
         svid = h.get(HEADER_SPIFFE_SVID.lower())
         if not svid:
             raise IdentityBindingFailed(f"no {HEADER_SPIFFE_SVID} header")
-        try:
-            from kya.spiffe import verify_svid_jwt  # type: ignore[attr-defined]
-        except ImportError:
-            raise IdentityCredentialInvalid(
-                "kya.spiffe unavailable — install KYA core SPIFFE module"
-            )
+        # kya.spiffe.verify_jwt_svid, not verify_svid_jwt: the latter
+        # has never existed, so SPIFFE binding raised ImportError on
+        # every request and reported a missing module that was present.
+        from kya.spiffe import verify_jwt_svid
 
         try:
-            claims = verify_svid_jwt(svid)
+            claims = verify_jwt_svid(svid)
         except Exception as exc:
             raise IdentityCredentialInvalid(
                 f"SPIFFE SVID failed verification: {exc}"
             ) from exc
+
+        # Fail-soft, as with verify_jwt: None covers a bad signature, an
+        # untrusted trust domain, and a missing JWKS. It must deny here
+        # rather than raise AttributeError below.
+        if claims is None:
+            raise IdentityCredentialInvalid(
+                "SPIFFE SVID failed verification"
+            )
 
         subject = str(claims.get("sub") or "")
         if not subject.startswith("spiffe://"):

@@ -950,6 +950,14 @@ def main():
         return 0
 
     if args.check:
+        # Say what is being checked before checking it. A green --check
+        # against the published package and a green --check against this
+        # working copy are different claims.
+        if not args.json:
+            print()
+            print(f"  provenance: veldt-kya {PROVENANCE['veldt_kya']} "
+                  f"({PROVENANCE['kya_from']}), "
+                  f"python {PROVENANCE['python']}")
         rows, failures = check(args)
         print(f"\n  {len(rows)} runs appended to {save(rows, args.out)}")
         if failures:
@@ -975,7 +983,7 @@ def main():
     if not args.json:
         # --json must emit JSON and nothing else, or a caller
         # cannot parse it. The banner is for humans.
-        print(f"\n  provenance: veldt-kya {PROVENANCE['veldt_kya']}, "
+        print(f"\n  provenance: veldt-kya {PROVENANCE['veldt_kya']} ({PROVENANCE['kya_from']}), "
               f"python {PROVENANCE['python']}")
     r = run(args.topology, args.inject_at, args.fault, args.window,
             args.delay, args.min_trust, verbose=not args.json,
