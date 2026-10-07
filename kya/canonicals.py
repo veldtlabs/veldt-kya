@@ -44,6 +44,19 @@ OUTCOME_PARTIAL: str = "partial"
 OUTCOME_IN_PROGRESS: str = "in_progress"
 OUTCOME_PENDING: str = "pending"
 
+#: Outcomes that are NOT a final disposition. An invocation in one of
+#: these is still expected to transition — the vocabulary docs in
+#: ``kya.invocations`` say so explicitly: "Updated to a terminal
+#: outcome after the decision."
+#:
+#: Named here, derived nowhere else: the set was previously implicit,
+#: so "is this row finished?" had to be re-expressed at each call site
+#: and nothing could assert the transition actually happened.
+NON_TERMINAL_OUTCOMES: frozenset[str] = frozenset({
+    OUTCOME_PENDING,
+    OUTCOME_IN_PROGRESS,
+})
+
 CANONICAL_OUTCOMES: frozenset[str] = frozenset({
     OUTCOME_SUCCESS,
     OUTCOME_FAILURE,
@@ -56,6 +69,13 @@ CANONICAL_OUTCOMES: frozenset[str] = frozenset({
     OUTCOME_IN_PROGRESS,
     OUTCOME_PENDING,
 })
+
+#: Final dispositions — an invocation here will not transition again.
+#: Derived from the canonical set minus the non-terminal states, so the
+#: two can never drift apart as outcomes are added.
+TERMINAL_OUTCOMES: frozenset[str] = (
+    CANONICAL_OUTCOMES - NON_TERMINAL_OUTCOMES
+)
 
 
 # ── Evidence kinds ──────────────────────────────────────────────────
@@ -308,6 +328,8 @@ __all__ = [
     "OUTCOME_IN_PROGRESS",
     "OUTCOME_PENDING",
     "CANONICAL_OUTCOMES",
+    "NON_TERMINAL_OUTCOMES",
+    "TERMINAL_OUTCOMES",
     # Evidence kinds
     "EVIDENCE_KIND_CHAIN_GENESIS",
     "EVIDENCE_KIND_PROMPT",

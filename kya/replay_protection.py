@@ -170,7 +170,6 @@ def verify_request_nonce(
     max_age_s: int | None = None,
     mode: str = "soft",
     principal_kind: str = "user",
-    namespace: str = "caller",
     db: Any = None,
 ) -> bool:
     """Verify a request is not a replay. Returns True if accepted
@@ -247,13 +246,7 @@ def verify_request_nonce(
     # request. Principal ids carry colons in practice -- a SPIFFE ID
     # always does.
     #
-    # `namespace` is its own segment rather than a prefix glued onto the
-    # nonce, because a prefix is only string content in a flat keyspace:
-    # a caller passing nonce="invocation:55" would otherwise burn the
-    # slot for invocation 55.
-    ns = namespace or "caller"
-    key = (f"kya:nonce:{len(ns)}:{ns}"
-           f":{len(tenant_id)}:{tenant_id}"
+    key = (f"kya:nonce:{len(tenant_id)}:{tenant_id}"
            f":{len(principal_id)}:{principal_id}"
            f":{nonce}")
     try:
@@ -313,68 +306,6 @@ def verify_request_nonce(
 
 
 # ── Test helpers ───────────────────────────────────────────────────
-
-
-def check_invocation_replay(
-    db: Any = None,
-    *,
-    invocation_id: int | str,
-    tenant_id: str,
-    principal_id: str,
-    principal_kind: str = "agent",
-) -> bool:
-    """Has this invocation already been authorised once?
-
-    Returns True when the invocation has not been seen inside the
-    reservation window, and False when it has. The gateway denies on
-    False.
-
-    The window is ``KYA_REPLAY_MAX_AGE_SECONDS`` (default 300s), so this
-    detects replay within that window rather than uniqueness over all
-    time. An invocation id is a durable row id, so replaying one after
-    the window elapses is accepted; a stronger guarantee would need a
-    uniqueness constraint on the invocations table.
-
-    This is an invocation-scoped wrapper over
-    :func:`verify_request_nonce`, which already supplies nonce
-    uniqueness, freshness, and fail-soft behaviour when the store is
-    unreachable. It is deliberately thin: a second replay implementation
-    would be a second place for the rule to drift.
-
-    It inherits that function's opt-in. With ``KYA_REPLAY_PROTECTION``
-    unset this returns True without contacting anything, so wiring the
-    gateway stage changes nothing for a deployment that has not asked
-    for it.
-
-    ``tenant_id`` and ``principal_id`` are required because they scope
-    the reservation namespace. Defaulting them would make the namespace
-    global and let one tenant's invocation id mask another's.
-    """
-    # Reject anything that is not an integer id rather than letting it
-    # fall through. A nonce containing whitespace, or longer than the
-    # primitive accepts, is refused on its FIRST use -- which the
-    # gateway would report as REPLAY_DETECTED, telling an operator they
-    # are under attack when they have a malformed id.
-    try:
-        ident = int(invocation_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"invocation_id must be an integer, got {invocation_id!r}"
-        ) from exc
-
-    # >= 8 characters, which a bare integer does not guarantee. The
-    # separation from caller-supplied nonces is done by `namespace`, not
-    # by this prefix.
-    nonce = f"invocation:{ident}"
-    return verify_request_nonce(
-        tenant_id=tenant_id,
-        principal_id=principal_id,
-        principal_kind=principal_kind,
-        nonce=nonce,
-        namespace="invocation",
-        mode="soft",
-        db=db,
-    )
 
 
 def reset_replay_state() -> None:

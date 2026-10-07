@@ -225,26 +225,6 @@ def test_rate_limit_runtime_error_fails_closed(monkeypatch):
     assert "RATE_LIMIT_ERROR" in v.reason_codes
 
 
-def test_replay_runtime_error_fails_closed(monkeypatch):
-    """check_invocation_replay raising must produce deny, not propagate."""
-    def boom(*args, **kw):
-        raise RuntimeError("replay store unreachable")
-    _install_module(monkeypatch, "kya.replay_protection",
-                    check_invocation_replay=boom)
-
-    cfg = PolicyConfig(min_trust=0)
-    v = evaluate(
-        db=None,
-        tenant_id="tenant-alpha",
-        principal=_principal(),
-        action="mcp.x.read",
-        payload_bytes=100,
-        invocation_id=42,  # non-None so the replay branch runs
-        cfg=cfg,
-    )
-    assert v.verdict == "deny"
-    assert "REPLAY_ERROR" in v.reason_codes
-
 
 def test_budget_runtime_error_fails_closed(monkeypatch):
     """should_refuse raising must produce deny, not propagate."""
@@ -300,44 +280,6 @@ def test_min_trust_runtime_error_fails_closed(monkeypatch):
     assert v.verdict == "deny"
     assert "MIN_TRUST_ERROR" in v.reason_codes
 
-
-# ─── The pipeline turns a False from the replay check into a deny ───
-#
-# This section header used to read "replay protection actually works
-# when wired in", which the test below does not establish. It installs a
-# synthetic kya.replay_protection whose check returns False, so it
-# proves the pipeline translates that return value into deny +
-# REPLAY_DETECTED. It passes with the real primitive deleted, and did
-# pass throughout every release in which the stage never ran.
-#
-# Whether replay protection works is established by
-# test_replayed_invocation_is_denied_through_the_pipeline, which uses
-# the real primitive against a real store.
-
-
-def test_replay_detected_when_check_returns_false(monkeypatch):
-    """A False from the check must become deny + REPLAY_DETECTED.
-
-    Wiring only: the primitive here is synthetic. See the section note
-    above for what this does not prove.
-    """
-    def is_fresh(*args, **kw):
-        return False  # replay
-    _install_module(monkeypatch, "kya.replay_protection",
-                    check_invocation_replay=is_fresh)
-
-    cfg = PolicyConfig(min_trust=0)
-    v = evaluate(
-        db=None,
-        tenant_id="tenant-alpha",
-        principal=_principal(),
-        action="mcp.x.read",
-        payload_bytes=100,
-        invocation_id=99,
-        cfg=cfg,
-    )
-    assert v.verdict == "deny"
-    assert "REPLAY_DETECTED" in v.reason_codes
 
 
 def test_grant_check_runs_without_min_trust(monkeypatch):
@@ -406,35 +348,11 @@ def _module_without(monkeypatch, name: str):
     return _install_module(monkeypatch, name)
 
 
-def test_missing_replay_primitive_logs_at_error(monkeypatch, caplog):
-    """Skipping replay protection must be reported at ERROR, not DEBUG."""
-    import logging
-    _module_without(monkeypatch, "kya.replay_protection")
-
-    cfg = PolicyConfig(min_trust=0)
-    with caplog.at_level(logging.DEBUG, logger="kya_gateway.policy_pipeline"):
-        evaluate(
-            db=None,
-            tenant_id="tenant-alpha",
-            principal=_principal(),
-            action="mcp.x.read",
-            payload_bytes=100,
-            invocation_id=42,       # non-None so the replay branch runs
-            cfg=cfg,
-        )
-
-    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert errors, (
-        "replay protection was skipped and nothing was logged at ERROR — "
-        "an operator reading ERROR sees a healthy pipeline"
-    )
-    assert any("replay-protection stage SKIPPED" in r.getMessage()
-               for r in errors), [r.getMessage() for r in errors]
-
 
 def test_missing_budget_primitive_logs_at_error(monkeypatch, caplog):
     """Same contract on a second stage, so the first is not a one-off."""
     import logging
+
     from kya_gateway.config import BudgetConfig
     _module_without(monkeypatch, "kya.tenant_budget")
 
@@ -526,96 +444,4 @@ def test_no_import_guard_hides_a_missing_first_party_symbol():
         "these guarded imports name first-party symbols that do not "
         "exist, so the code behind each guard never runs: "
         + "; ".join(missing)
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Replay protection, through the real request path.
-#
-# The stage below shipped dead for every release of this package: the
-# pipeline imported a symbol that did not exist, the ImportError was
-# swallowed, and two tests passed because they synthesised the module.
-# These tests use the real primitive against a real store, because the
-# only question worth asking is whether a replayed invocation is denied.
-#
-# They skip when no store is configured. That is not a soft option: the
-# primitive is deliberately fail-open when the store is unreachable, so
-# without one these assertions would pass while proving nothing.
-
-def _replay_store_or_skip():
-    import os
-    url = os.environ.get("KYA_VALKEY_URL", "").strip()
-    if not url:
-        pytest.skip("KYA_VALKEY_URL unset — replay protection fails open "
-                    "without a store, so this cannot be asserted here")
-    try:
-        import redis
-        redis.Redis.from_url(url, socket_connect_timeout=2).ping()
-    except Exception as exc:
-        pytest.skip(f"replay store at KYA_VALKEY_URL unreachable: {exc}")
-    return url
-
-
-def test_replayed_invocation_is_denied_through_the_pipeline(monkeypatch):
-    """A second evaluate() on the same invocation_id must deny."""
-    import uuid
-    _replay_store_or_skip()
-    monkeypatch.setenv("KYA_REPLAY_PROTECTION", "on")
-
-    tenant = "tenant-" + uuid.uuid4().hex[:10]
-    invocation = 777001
-    cfg = PolicyConfig(min_trust=0)
-
-    def _call():
-        return evaluate(
-            db=None,
-            tenant_id=tenant,
-            principal=_principal(),
-            action="mcp.x.read",
-            payload_bytes=100,
-            invocation_id=invocation,
-            cfg=cfg,
-        )
-
-    first = _call()
-    assert first.verdict != "deny" or "REPLAY_DETECTED" not in first.reason_codes, (
-        f"first use of an invocation was treated as a replay: {first}")
-
-    second = _call()
-    assert second.verdict == "deny", (
-        f"a replayed invocation_id was not denied: {second}")
-    assert "REPLAY_DETECTED" in second.reason_codes, second.reason_codes
-
-
-def test_replay_reservation_is_scoped_to_the_tenant(monkeypatch):
-    """One tenant's invocation id must not mask another's.
-
-    The reservation namespace is why tenant_id and principal_id are
-    required arguments rather than defaulted.
-    """
-    import uuid
-    _replay_store_or_skip()
-    monkeypatch.setenv("KYA_REPLAY_PROTECTION", "on")
-
-    invocation = 777002
-    cfg = PolicyConfig(min_trust=0)
-
-    def _call(tenant):
-        return evaluate(
-            db=None,
-            tenant_id=tenant,
-            principal=_principal(),
-            action="mcp.x.read",
-            payload_bytes=100,
-            invocation_id=invocation,
-            cfg=cfg,
-        )
-
-    a = "tenant-" + uuid.uuid4().hex[:10]
-    b = "tenant-" + uuid.uuid4().hex[:10]
-    _call(a)                      # reserve under tenant a
-    other = _call(b)              # same id, different tenant
-    assert "REPLAY_DETECTED" not in other.reason_codes, (
-        "tenant b was denied for an invocation id reserved by tenant a — "
-        "the reservation namespace is not scoped"
     )

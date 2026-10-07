@@ -28,7 +28,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if sys.path[0] != _ROOT:
     sys.path.insert(0, _ROOT)
 
-from kya_gateway.config import PolicyConfig
+from kya_gateway.config import BudgetConfig, PolicyConfig
 from kya_gateway.identity import BoundPrincipal
 from kya_gateway import policy_pipeline as PP
 
@@ -65,14 +65,19 @@ def _absent_module(name: str) -> types.ModuleType:
 
 
 def run_once() -> list[logging.LogRecord]:
-    """Drive the replay stage with its primitive unimportable."""
+    """Drive the tenant-budget stage with its primitive unimportable.
+
+    Any of the pipeline's guarded stages would do. Budget is used
+    because it is still present: the replay stage this script originally
+    targeted was removed, since it could not fire on the real request
+    path, and a sabotage needs a live mechanism to break.
+    """
     cap = _Capture()
     logger = logging.getLogger("kya_gateway.policy_pipeline")
     logger.addHandler(cap)
     prior_level, logger.level = logger.level, logging.DEBUG
-    prior_mod = sys.modules.get("kya.replay_protection")
-    sys.modules["kya.replay_protection"] = _absent_module(
-        "kya.replay_protection")
+    prior_mod = sys.modules.get("kya.tenant_budget")
+    sys.modules["kya.tenant_budget"] = _absent_module("kya.tenant_budget")
     try:
         PP.evaluate(
             db=None,
@@ -80,14 +85,16 @@ def run_once() -> list[logging.LogRecord]:
             principal=_principal(),
             action="mcp.x.read",
             payload_bytes=100,
-            invocation_id=42,       # non-None so the replay branch runs
-            cfg=PolicyConfig(min_trust=0),
+            invocation_id=None,
+            # a configured budget is what makes the stage run at all
+            cfg=PolicyConfig(min_trust=0,
+                             tenant_budget=BudgetConfig(daily_usd=10.0)),
         )
     finally:
         if prior_mod is None:
-            sys.modules.pop("kya.replay_protection", None)
+            sys.modules.pop("kya.tenant_budget", None)
         else:
-            sys.modules["kya.replay_protection"] = prior_mod
+            sys.modules["kya.tenant_budget"] = prior_mod
         logger.removeHandler(cap)
         logger.level = prior_level
     return cap.records

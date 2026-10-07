@@ -42,6 +42,7 @@ def _expected() -> str:
 
 
 def pytest_report_header(config) -> list[str]:
+    extra = _backend_report()
     try:
         label, path = _origin()
     except Exception as exc:  # pragma: no cover - import failure is fatal below
@@ -55,10 +56,11 @@ def pytest_report_header(config) -> list[str]:
     # tail only -- enough to tell the two apart without publishing a
     # directory layout.
     tail = "/".join(path.split("/")[-3:])
-    return [f"kya under test: {label} (veldt-kya {ver}, .../{tail})"]
+    return [f"kya under test: {label} (veldt-kya {ver}, .../{tail})"] + extra
 
 
 def pytest_configure(config) -> None:
+    _install_connect_timeout()
     try:
         label, path = _origin()
     except Exception as exc:
@@ -76,3 +78,76 @@ def pytest_configure(config) -> None:
             "declare which copy you mean to exercise.",
             returncode=4,
         )
+
+# ── No test may block on an unreachable database ─────────────────────
+#
+# Over twenty call sites in this suite do create_engine(<network url>)
+# with no connect timeout. SQLAlchemy's default is the driver's, which
+# for psycopg is "wait forever", so a stale port in a local .env turns
+# the whole run into a hang: pytest-timeout's thread method then kills
+# the process, and a destroyed signal is not a pass.
+#
+# Patching create_engine once covers every existing call site and every
+# future one, which per-site edits would not. It runs in
+# pytest_configure because test modules do `from sqlalchemy import
+# create_engine` at collection time, which is after this and so binds
+# the wrapped version.
+
+_CONNECT_TIMEOUT_S = 5
+
+# psycopg, psycopg2 and pymysql all spell it connect_timeout. sqlite and
+# duckdb are local files and take no such argument.
+_NETWORK_PREFIXES = ("postgresql", "postgres", "mysql", "mariadb")
+
+
+def _install_connect_timeout() -> None:
+    import sqlalchemy
+
+    real = getattr(sqlalchemy, "_kya_real_create_engine", None)
+    if real is not None:
+        return                      # already wrapped this session
+    real = sqlalchemy.create_engine
+    sqlalchemy._kya_real_create_engine = real
+
+    def create_engine(url, *args, **kwargs):
+        try:
+            text = str(getattr(url, "render_as_string", lambda **_: url)(
+                hide_password=False)) if not isinstance(url, str) else url
+        except Exception:
+            text = str(url)
+        if text.split(":", 1)[0].split("+", 1)[0] in _NETWORK_PREFIXES:
+            ca = dict(kwargs.get("connect_args") or {})
+            ca.setdefault("connect_timeout", _CONNECT_TIMEOUT_S)
+            kwargs["connect_args"] = ca
+        return real(url, *args, **kwargs)
+
+    sqlalchemy.create_engine = create_engine
+
+
+def _backend_report() -> list[str]:
+    """One line per optional backend, reachable or not.
+
+    A test that silently skips and a test that silently hangs look the
+    same in a summary line. Say which backends this run can actually
+    reach before any of them is used.
+    """
+    import sqlalchemy
+    lines = []
+    for env in ("KYA_TEST_PG_URL", "KYA_TEST_MYSQL_URL"):
+        url = os.environ.get(env, "").strip()
+        if not url:
+            lines.append(f"{env}: unset (that backend is skipped)")
+            continue
+        try:
+            eng = sqlalchemy.create_engine(url)
+            with eng.connect():
+                pass
+            lines.append(f"{env}: reachable")
+        except Exception as exc:
+            lines.append(
+                f"{env}: UNREACHABLE ({type(exc).__name__}) — tests using "
+                f"it will fail fast, not hang")
+    url = os.environ.get("KYA_VALKEY_URL", "").strip()
+    lines.append(
+        f"KYA_VALKEY_URL: {'set' if url else 'unset (replay tests skip)'}")
+    return lines

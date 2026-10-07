@@ -88,6 +88,7 @@ except Exception:
     pass
 
 import actors  # noqa: E402
+import behaviour_faults as BF  # noqa: E402
 
 import kya  # noqa: E402
 from kya.attack_chains import (  # noqa: E402
@@ -123,6 +124,11 @@ ROLE_ACTION = {
 }
 ROLE_NEEDS = {role: TOOL_ACTION[body["tool"]]
               for role, body in ROLE_ACTION.items()}
+
+#: The resource the `recon` role reads. Derived, never restated: the
+#: duplication rule must name the same resource the duplicated action
+#: uses, or it matches reads that were never duplicated.
+RECON_PATH = ROLE_ACTION["recon"]["path"]
 
 # Delegation topologies: (principal, role) in the order the agents act.
 TOPOLOGIES = {
@@ -330,14 +336,37 @@ def build_rules(window: int):
               "payload.path": r"regex:^/var/data/.*\.csv$"}),
         rule("secret_env_exfiltration",
              {"payload.tool": "env_read"}),
+        # The duplication behaviour fault, expressed on the same
+        # engine. Two executions of the SAME tool by the SAME
+        # principal, the second after the first, inside the window.
+        #
+        # This is why `duplication` is declared detectable while
+        # omission/crash/slow are not: a repeat produces a second
+        # matchable event, so the existing step/after machinery is
+        # enough. Nothing new was needed in the engine.
+        BF.duplication_rule(load_rule, window=window,
+                            recon_path=RECON_PATH),
     ]
 
 
 def argument_policy_denies(payload):
-    """One event, no history: is this argument disallowed on its own?"""
+    """One event, no history: is this argument disallowed on its own?
+
+    Two single-event rules, both judged without any history:
+
+    1. a resource someone named in advance (``SENSITIVE_PATH``)
+    2. a value that cannot be real at all -- see
+       ``behaviour_faults.payload_is_structurally_impossible``
+
+    The second is what the ``corrupt_data`` behaviour fault trips. It
+    is imported rather than restated so the rule and the fault cannot
+    drift: they describe one fact.
+    """
     from kya.attack_chains._matchers import match_value
     path = payload.get("path")
-    return bool(path and match_value(path, SENSITIVE_PATH))
+    if path and match_value(path, SENSITIVE_PATH):
+        return True
+    return BF.payload_is_structurally_impossible(payload)
 
 
 def authority_allows(db, tenant, principal, min_trust, action):
@@ -389,9 +418,30 @@ def scripted_payload(act, fault):
     return dict(FAULTS[fault]) if act.origin == "injected"         else dict(ROLE_ACTION[act.role])
 
 
+def _wrap(text, width):
+    """Wrap to `width`, so a class rationale stays readable in --list."""
+    words, line, out = text.split(), "", []
+    for w in words:
+        if len(line) + len(w) + 1 > width:
+            out.append(line)
+            line = w
+        else:
+            line = f"{line} {w}".strip()
+    if line:
+        out.append(line)
+    return out
+
+
 def run(topology, inject_at, fault, window, delay, min_trust, verbose,
-        mode="correlation", repeat=1, actor=None):
-    """One experiment. Returns a dict of measurements."""
+        mode="correlation", repeat=1, actor=None, behaviour_fault=None):
+    """One experiment. Returns a dict of measurements.
+
+    ``behaviour_fault`` is the second, orthogonal fault axis (see
+    behaviour_faults.py). Where ``fault`` INSERTS an extra harmful
+    action, a behaviour fault TRANSFORMS the planned sequence -- drops,
+    delays, repeats, truncates or corrupts one. The two compose: a run
+    may carry both, neither, or either.
+    """
     cfg = MODES[mode]
     roles = TOPOLOGIES[topology]
     principals = list(dict.fromkeys(p for p, _ in roles))
@@ -401,6 +451,21 @@ def run(topology, inject_at, fault, window, delay, min_trust, verbose,
         raise ValueError(
             f"'{inject_at}' is not in topology '{topology}' -- the fault "
             f"would not have been injected. Choose from {principals}.")
+
+    # The behaviour-fault axis. Applied to the plan AFTER the harmful
+    # action has been inserted, so the two compose and a behaviour
+    # fault can act on the injected action itself.
+    planned_count = len(plan)
+    change = (BF.apply(plan, behaviour_fault, inject_at=inject_at)
+              if behaviour_fault else None)
+    if change is not None:
+        if not change.took_effect:
+            raise ValueError(
+                f"behaviour fault '{behaviour_fault}' had no effect: "
+                f"'{inject_at}' is not in topology '{topology}'. "
+                f"Choose from {principals}. Running anyway would "
+                f"report a clean result for a fault that never ran.")
+        plan = change.plan
 
     # A fresh tenant per run. Trust and grants are keyed by tenant, so
     # reusing one would carry decay from the previous run into this one's
@@ -414,6 +479,7 @@ def run(topology, inject_at, fault, window, delay, min_trust, verbose,
     started = time.perf_counter()
     events, invocations = [], []
     detected_at = detected_by = None
+    _refused_by = None
 
     with kya.default_session() as db:
         for p in principals:
@@ -425,6 +491,11 @@ def run(topology, inject_at, fault, window, delay, min_trust, verbose,
         for n, act in enumerate(plan, start=1):
             if delay and act.role == "exfil" and act.origin == "normal":
                 time.sleep(delay)
+            # `slow`: lateness attaches to one action, by plan index.
+            if change is not None and change.delays:
+                _late = change.delays.get(n - 1)
+                if _late:
+                    time.sleep(_late)
 
             # The one point where the action is chosen. `actor=None` is the
             # scripted default and returns exactly what the tables say.
@@ -432,6 +503,30 @@ def run(topology, inject_at, fault, window, delay, min_trust, verbose,
                 principal=act.principal, role=act.role, step=n,
                 kind=act.origin, tools=tuple(TOOL_ACTION),
                 hint=scripted_payload(act, fault)))
+
+            # `corrupt_data`: the action runs, on data it should not
+            # have. Overrides are merged AFTER the actor chose the
+            # payload, so corruption applies equally to a scripted and
+            # an LLM-chosen action. `tool` is never overridden -- that
+            # would make this a different action, which is the other
+            # fault axis.
+            # Only a CORRUPTED action can be refused *for being
+            # deviant* -- the corruption is in the payload the policy
+            # inspects. A delayed action carries its normal payload,
+            # so if it is blocked the layer refused an ordinary action
+            # that merely happened to be late. Attributing that to the
+            # behaviour fault would report "a layer refused the
+            # deviant action" for a class that declares nothing can
+            # detect it.
+            _deviant_action = bool(
+                change is not None and (n - 1) in change.corrupt
+            )
+            if change is not None and change.corrupt:
+                _bad = change.corrupt.get(n - 1)
+                if _bad:
+                    payload = {**payload,
+                               **{k: v for k, v in _bad.items()
+                                  if k != "tool"}}
 
             action = TOOL_ACTION[payload["tool"]]
             with kya.default_session() as db:
@@ -491,6 +586,13 @@ def run(topology, inject_at, fault, window, delay, min_trust, verbose,
                            "trust_after": trust_after})
             if fired and detected_at is None:
                 detected_at, detected_by = n, fired[0]
+            # Which layer refused an action the behaviour fault had
+            # touched. Separate from `prevented_by`, which belongs to
+            # the harm axis: nothing harmful was attempted here, the
+            # agent's OWN action was refused because its data could
+            # not be real.
+            if _deviant_action and blocked_by and _refused_by is None:
+                _refused_by = blocked_by
             if verbose:
                 mark = {"executed": "ran    ", "blocked": "BLOCKED"}[
                     recorded["status"]]
@@ -583,9 +685,24 @@ def run(topology, inject_at, fault, window, delay, min_trust, verbose,
     hops = (downward_hops(topology, origin).get(completed_by)
             if origin and completed_by else None)
 
+    # The deviation record. Emitted on EVERY run, including baselines,
+    # so results.jsonl keeps one schema and no consumer has to
+    # special-case a missing block. Namespaced `deviation_*` so it can
+    # never be confused with the harm fields above: a behaviour fault
+    # attempts no extra action, so reading it through `harmful_*` would
+    # report a clean run.
+    _dev = BF.deviation_for(
+        behaviour_fault, planned=planned_count, observed=len(executed),
+        took_effect=bool(change.took_effect) if change else False,
+        detected_by=detected_by,
+        refused_by=_refused_by,
+        truncated_after=(change.truncated_after if change else None),
+    )
+
     return {
         "topology": topology, "inject_at": inject_at, "fault": fault,
         "mode": mode, "window": window, "delay": delay,
+        **_dev.as_dict(),
         "min_trust": min_trust, "repeat": repeat,
         "injection_step": injection_step,
         "activation_step": harmful[0]["step"] if harmful else None,
@@ -658,8 +775,20 @@ def invariants(r):
     check("injection_landed_on_requested_principal",
           r["fault"] == "none"
           or ev[r["injection_step"] - 1]["principal"] == r["inject_at"])
+    # The `is not None` guard matters: with `--fault none` there is no
+    # origin and no completion, so both sides are None, `None != None`
+    # is False, and the check then demanded distance == 0 on a run
+    # where distance is legitimately None. A no-fault baseline
+    # therefore reported VIOLATED.
+    #
+    # Pre-existing and previously unseen because the default fault is
+    # `emergent_sequence`; the behaviour-fault axis uses `--fault none`
+    # as its baseline, which is what surfaced it. Guarded the same way
+    # the sibling checks above guard the no-fault case.
     check("same_principal_is_zero_distance",
-          r["chain_completed_by"] != r["fault_origin_principal"]
+          r["fault_origin_principal"] is None
+          or r["chain_completed_by"] is None
+          or r["chain_completed_by"] != r["fault_origin_principal"]
           or r["delegation_distance_origin_to_chain_completion"] == 0)
     # If the completer really is downstream of the origin, a distance must
     # have been reported. Walking the edges here is independent of the
@@ -785,6 +914,32 @@ def report(r):
           f"{r['evidence_blocks_recorded']} blocked), "
           f"complete={r['evidence_complete']} "
           f"integrity={r['evidence_integrity_valid']}")
+    # The deviation block. Printed only when a behaviour fault ran, so
+    # ordinary runs are unchanged.
+    #
+    # This was missing, and the omission was the very confusion the
+    # second axis exists to prevent: a behaviour fault attempts nothing
+    # harmful, so the lines above report "0 harmful executed" and
+    # "invariants all hold", and an operator reading the default
+    # (non-JSON) output saw a CLEAN RUN while an action had been
+    # dropped. The data was in results.jsonl all along; the human
+    # report never showed it.
+    if r.get("deviation_fault"):
+        planned = r["deviation_planned_actions"]
+        observed = r["deviation_observed_actions"]
+        delta = observed - planned
+        caught = (r["deviation_refused_by"]
+                  or r["deviation_detected_by"]
+                  or "NOT CAUGHT")
+        print(f"    deviation        {r['deviation_fault']} "
+              f"({r['deviation_kind']}) -- "
+              f"{planned} planned, {observed} executed "
+              f"({delta:+d})")
+        print(f"                     took_effect="
+              f"{r['deviation_took_effect']}  caught_by={caught}"
+              + ("" if r["deviation_detectable_by"]
+                 else "  [no rule can match this class]"))
+
     bad = invariants(r)
     print(f"    invariants       {'all hold' if not bad else 'VIOLATED: ' + ', '.join(bad)}")
 
@@ -795,7 +950,18 @@ _COLS = (f"  {'mode':12} {'fault':24} {'topo':8} {'inject':12} "
 
 
 def _row(r):
-    return (f"  {r['mode']:12} {r['fault']:24} {r['topology']:8} "
+    # A behaviour-fault row has fault="none" (it adds no harmful
+    # action), so without this every row in the behaviour section
+    # printed an identical `none` and the table could not be read at
+    # all -- the same failure as report() omitting the deviation
+    # block, one surface over.
+    #
+    # Prefixed with `~` to mark the other axis, so a reader never
+    # mistakes it for a harm fault and the column stays one width.
+    _f = r['fault']
+    if r.get('deviation_fault'):
+        _f = f"~{r['deviation_fault']}"
+    return (f"  {r['mode']:12} {_f:24} {r['topology']:8} "
             f"{r['inject_at']:12} {r['window']:>5} {r['delay']:>5} "
             f"{r['executed_actions']:>4} "
             f"{r['blocked_actions']:>4} {r['harmful_executed']:>4} "
@@ -836,6 +1002,26 @@ def sweep(args):
     section("timing (window vs 3s delay)", [
         run("diamond", "sub_a", "emergent_sequence", w, 3, args.min_trust,
             False, mode="correlation") for w in (600, 5, 1)])
+
+    # 5. The behaviour-fault axis.
+    #
+    # Its own section rather than a `behaviour_fault=` added to the four
+    # above: those measure the HARM axis, and threading a second fault
+    # into them would change results that are already published.
+    #
+    # Driven off the registry, so a class added later appears here
+    # without editing the sweep. It was previously absent entirely --
+    # `--sweep` ran the full matrix and never touched the new axis, so
+    # a contributor adding a class would not have seen it in the one
+    # command that is supposed to show everything.
+    #
+    # `fault="none"` because a behaviour fault needs no harmful action:
+    # it transforms the agent's own legitimate sequence.
+    section("behaviour fault x defensive layer", [
+        run("diamond", "sub_a", "none", args.window, 0, args.min_trust,
+            False, mode=m, behaviour_fault=b)
+        for b in sorted(BF.BEHAVIOUR_FAULTS)
+        for m in ("correlation", "layered")])
 
     for title, lo, hi in sections:
         print(f"\n  {title}")
@@ -920,6 +1106,16 @@ def main():
                    help="principal to compromise, or 'governor' (see README)")
     p.add_argument("--fault", choices=sorted(FAULTS),
                    default="emergent_sequence")
+    # The second fault axis. `choices` comes straight from the
+    # registry, so adding a class needs no change here.
+    p.add_argument("--behaviour-fault", choices=sorted(BF.BEHAVIOUR_FAULTS),
+                   default=None,
+                   help="transform the planned sequence instead of "
+                        "adding a harmful action (omission, slow, "
+                        "duplication, crash, corrupt_data)")
+    p.add_argument("--list-behaviour-faults", action="store_true",
+                   help="describe each behaviour fault and the layer "
+                        "predicted to catch it")
     p.add_argument("--mode", choices=sorted(MODES), default="correlation",
                    help="which defensive layers are enabled")
     p.add_argument("--window", type=int, default=600,
@@ -974,6 +1170,20 @@ def main():
         # anything.
         return 1 if any(invariants(r) for r in rows) else 0
 
+    if args.list_behaviour_faults:
+        print("")
+        print("  behaviour faults -- these TRANSFORM the planned")
+        print("  sequence rather than adding a harmful action.")
+        print("")
+        for name in sorted(BF.BEHAVIOUR_FAULTS):
+            spec = BF.BEHAVIOUR_FAULTS[name]
+            caught = spec.detectable_by or "NOTHING HERE CAN"
+            print(f"  {name:14s} {spec.kind:11s} caught by: {caught}")
+            for line in _wrap(spec.doc, 68):
+                print(f"                 {line}")
+            print()
+        return 0
+
     valid = {pr for pr, _ in TOPOLOGIES[args.topology]}
     if args.fault != "none" and args.inject_at not in valid:
         print(f"  '{args.inject_at}' is not in topology '{args.topology}'. "
@@ -987,7 +1197,8 @@ def main():
               f"python {PROVENANCE['python']}")
     r = run(args.topology, args.inject_at, args.fault, args.window,
             args.delay, args.min_trust, verbose=not args.json,
-            mode=args.mode, repeat=args.repeat)
+            mode=args.mode, repeat=args.repeat,
+            behaviour_fault=args.behaviour_fault)
     print(json.dumps(r, indent=2)) if args.json else report(r)
     saved = save([r], args.out)
     if not args.json:

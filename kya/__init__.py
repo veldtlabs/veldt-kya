@@ -481,7 +481,6 @@ from .realtime import (
 )
 from .replay_protection import (
     ReplayDetectedError,
-    check_invocation_replay,
     generate_nonce,
     is_valid_nonce,
     reset_replay_state,
@@ -882,7 +881,6 @@ __all__ = [
     # combination is uniquely reserved for KYA_REPLAY_MAX_AGE_SECONDS
     # (default 300). Two-axis check: nonce uniqueness AND timestamp
     # freshness — both required to defeat replay attacks.
-    "check_invocation_replay",
     "verify_request_nonce",
     "generate_nonce",
     "is_valid_nonce",

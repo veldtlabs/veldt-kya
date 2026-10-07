@@ -44,8 +44,10 @@ from .canonicals import (
     CANONICAL_OUTCOMES as _CANONICAL_OUTCOMES,
 )
 from .canonicals import (
+    NON_TERMINAL_OUTCOMES,
     OUTCOME_IN_PROGRESS,  # noqa: F401 — re-exported by kya/__init__.py
     OUTCOME_PENDING,  # noqa: F401 — re-exported by kya/__init__.py
+    TERMINAL_OUTCOMES,
 )
 
 #: Width of every ``agent_key``-shaped column.
@@ -1189,6 +1191,72 @@ def mode_distribution(db, tenant_id: str, agent_key: str, window_days: int = 7) 
         "by_mode": {r[0]: int(r[1]) for r in rows},
         "percentages": {r[0]: round(int(r[1]) / total, 3) if total else 0 for r in rows},
     }
+
+
+def finalize_invocation_outcome(
+    db,
+    *,
+    invocation_id: int,
+    outcome: str,
+    tenant_id: str | None = None,
+) -> bool:
+    """Transition a non-terminal invocation to a terminal ``outcome``.
+
+    The vocabulary above promises that ``pending`` and ``in_progress``
+    are "updated to a terminal outcome after the decision". Nothing
+    implemented that promise, so every caller that reserved an id —
+    notably ``kya_gateway.server._record_invocation_pre_policy``, which
+    runs on EVERY gateway request — left a row that stayed
+    non-terminal forever. The audit surface then reports every request
+    as unfinished, and no consumer can distinguish "still running"
+    from "nobody ever closed it".
+
+    Only transitions FROM a non-terminal state. A terminal row is
+    never rewritten, so a duplicate or late finalise cannot overwrite
+    a recorded disposition — the UPDATE is the concurrency guard, not
+    a read-then-write in Python.
+
+    Parameters
+    ----------
+    invocation_id:
+        The id returned when the row was reserved.
+    outcome:
+        Must be in :data:`kya.canonicals.TERMINAL_OUTCOMES`. Passing a
+        non-terminal value is a programming error and raises, because
+        "finalising" to ``pending`` would silently do nothing.
+    tenant_id:
+        Optional but recommended. When given it is added to the WHERE
+        clause, so a wrong id cannot close another tenant's row.
+
+    Returns
+    -------
+    bool
+        True when a row transitioned. False means there was nothing to
+        do: unknown id, wrong tenant, or already terminal. Callers that
+        treat False as an error will be wrong — a retried request
+        legitimately finds the row already closed.
+    """
+    _require_sqlalchemy()
+    if outcome not in TERMINAL_OUTCOMES:
+        raise ValueError(
+            f"outcome must be terminal, got {outcome!r}; valid: "
+            f"{sorted(TERMINAL_OUTCOMES)}"
+        )
+    if invocation_id is None:
+        return False
+    from sqlalchemy import update as _sa_update
+
+    stmt = (
+        _sa_update(Invocation)
+        .where(Invocation.id == invocation_id)
+        # The transition guard: only non-terminal rows move.
+        .where(Invocation.outcome.in_(tuple(NON_TERMINAL_OUTCOMES)))
+        .values(outcome=outcome)
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(Invocation.tenant_id == tenant_id)
+    result = db.execute(stmt)
+    return bool(getattr(result, "rowcount", 0))
 
 
 def active_parallel_invocations(db, tenant_id: str) -> list[dict]:

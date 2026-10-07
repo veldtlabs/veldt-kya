@@ -997,8 +997,8 @@ def build_app(gw: Gateway) -> FastAPI:
             # missing/malformed params.
             #
             # Fail-closed: mirror /v1/policy/decide (server.py:1341-1360).
-            # If the policy pipeline raises (Pro-side ABAC NoneType,
-            # OPA/Cedar/CEL evaluator crash, DB blip mid-eval, ...) we
+            # If the policy pipeline raises (a third-party evaluator
+            # plugin crashing, a DB blip mid-eval, ...) we
             # MUST NOT leak a bare 500 with a Python traceback. Return
             # a typed JSON-RPC deny envelope carrying POLICY_ENGINE_ERROR
             # so the SDK / hook consumer treats it identically to any
@@ -1016,6 +1016,17 @@ def build_app(gw: Gateway) -> FastAPI:
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "[KYA-GATEWAY] /mcp pipeline crash: %s", exc,
+                )
+                # The request WAS decided — fail-closed deny — so the
+                # reserved row must not be left pending. These crash
+                # returns sit before the normal finalise, so without
+                # this every evaluator crash (a third-party evaluator
+                # plugin raising, a DB blip mid-eval) leaks a
+                # permanently non-terminal row. Those are precisely the
+                # incidents where an auditor needs the row closed.
+                _finalise_invocation(
+                    gw=gw, invocation_id=invocation_id,
+                    verdict_value=None, outcome_override="error",
                 )
                 if req.is_notification:
                     # Per JSON-RPC 2.0 §4.1: MUST NOT reply to
@@ -1071,6 +1082,16 @@ def build_app(gw: Gateway) -> FastAPI:
                 invocation_id=invocation_id,
                 tool_arguments=req.tool_arguments,
             )
+
+        # OUTSIDE the skip_evidence guard on purpose: that guard is an
+        # anti-write-amplification throttle for unauthenticated
+        # traffic, but _record_invocation_pre_policy already reserved
+        # a row for those requests too. Skipping the finalise here
+        # would leave exactly that subset permanently pending.
+        _finalise_invocation(
+            gw=gw, invocation_id=invocation_id,
+            verdict_value=verdict.verdict,
+        )
 
         if req.is_notification:
             return Response(status_code=204)
@@ -1392,6 +1413,9 @@ def build_app(gw: Gateway) -> FastAPI:
             _params["context"] = context
         pseudo_request_payload = {"params": _params}
 
+        # Hoisted so the crash handler below can finalise the row it
+        # reserved; bound inside the try it would be unbound there.
+        invocation_id: int | None = None
         try:
             invocation_id = _record_invocation_pre_policy(
                 gw=gw, principal=principal, action=action,
@@ -1415,6 +1439,10 @@ def build_app(gw: Gateway) -> FastAPI:
             # checks HTTP status still refuses. Never leak the traceback.
             logger.exception(
                 "[KYA-GATEWAY] /v1/policy/decide pipeline crash: %s", exc,
+            )
+            _finalise_invocation(
+                gw=gw, invocation_id=invocation_id,
+                verdict_value=None, outcome_override="error",
             )
             return JSONResponse(
                 {
@@ -1481,6 +1509,11 @@ def build_app(gw: Gateway) -> FastAPI:
             logger.warning(
                 "[KYA-GATEWAY] decide evidence write failed: %s", exc,
             )
+
+        _finalise_invocation(
+            gw=gw, invocation_id=invocation_id,
+            verdict_value=verdict.verdict,
+        )
 
         # Normalise verdict string to the canonical form (matches /mcp).
         display_verdict = verdict.verdict
@@ -1813,11 +1846,18 @@ def _short_agent_key(principal_id: str) -> str:
 
 
 def _record_invocation_pre_policy(*, gw: Gateway, principal, action: str) -> int | None:
-    """Record the invocation row BEFORE policy runs so replay protection
-    has a real id to check. Returns None if the KYA core / record_invocation
-    is unavailable — replay protection then silently no-ops downstream.
+    """Record the invocation row BEFORE policy runs, so the audit and
+    evidence records written later can reference a real id. Returns None
+    if the KYA core / record_invocation is unavailable.
 
-    NOTE: a return of None means replay protection is OFF for this request.
+    This originally existed to give an invocation-replay stage an id to
+    check. That stage has been removed: a server-minted autoincrement id
+    is fresh on every request, so it could never detect a replay. The id
+    is still load-bearing for audit and evidence, which is why this
+    function stays.
+
+    NOTE: a return of None means the request is not attributable in the
+    audit chain.
     We log at ERROR level (not warning) so operators have a clear "we
     expected this to be recorded and it wasn't" signal in the audit chain.
     A counter is incremented so dashboards / alerts can fire on a sustained
@@ -1828,7 +1868,7 @@ def _record_invocation_pre_policy(*, gw: Gateway, principal, action: str) -> int
     except ImportError:
         logger.error(
             "[KYA-GATEWAY] kya.record_invocation unavailable — "
-            "REPLAY PROTECTION IS OFF for this request"
+            "this request is NOT attributable in the audit chain"
         )
         _METRICS["invocation_record_failures"] += 1
         return None
@@ -1857,14 +1897,14 @@ def _record_invocation_pre_policy(*, gw: Gateway, principal, action: str) -> int
             if inv is None:
                 logger.error(
                     "[KYA-GATEWAY] record_invocation returned None — "
-                    "REPLAY PROTECTION IS OFF for this request"
+                    "this request is NOT attributable in the audit chain"
                 )
                 _METRICS["invocation_record_failures"] += 1
             return inv
     except Exception as exc:
         logger.error(
             "[KYA-GATEWAY] pre-policy record_invocation FAILED (%s): %s — "
-            "REPLAY PROTECTION IS OFF for this request",
+            "this request is NOT attributable in the audit chain",
             type(exc).__name__, exc,
         )
         _METRICS["invocation_record_failures"] += 1
@@ -1927,6 +1967,106 @@ def _verify_me_dpop(gw, request, principal) -> None:
         # dispatch security events without re-reading the message text.
         raise _IdentityCredInvalidLike(
             str(exc), code=getattr(exc, "code", None),
+        )
+
+
+#: Gateway verdict -> terminal invocation outcome.
+#:
+#: ``flag_for_review`` / ``require_human`` are DELIBERATELY ABSENT.
+#: Those rows are genuinely still pending a human decision, and the
+#: outcome vocabulary says ``pending`` is "also used by external
+#: approval queue writers that reserve an id before the human /
+#: external system decides". Closing them here would destroy the HITL
+#: queue's own semantics — the absence is the feature, so do not
+#: "complete" this mapping.
+_VERDICT_TO_TERMINAL_OUTCOME: dict[str, str] = {
+    "allow": "success",
+    "deny": "denied",
+    "block": "blocked",
+    "throttle": "throttled",
+    # redact / anonymize are allow-with-transform: the call proceeded
+    # but the caller did NOT receive the full result. ``partial`` is
+    # the vocabulary's own term for "completed with degraded /
+    # incomplete result", which is the honest record. ``success``
+    # would overstate what was returned.
+    "redact": "partial",
+    "anonymize": "partial",
+}
+
+#: Verdicts for which a row SHOULD stay non-terminal. A human (or an
+#: external approver) has not decided yet, and the outcome vocabulary
+#: says ``pending`` is also used by approval-queue writers "that
+#: reserve an id before the human / external system decides".
+#:
+#: Separate from "unmapped" on purpose: previously both took the same
+#: silent early return, so four decided-and-refused verdicts
+#: (block / throttle / redact / anonymize) leaked permanently pending
+#: and were indistinguishable in the logs from a deliberate wait.
+_DELIBERATELY_PENDING_VERDICTS: frozenset[str] = frozenset({
+    "flag_for_review",
+    "require_human",
+})
+
+
+def _finalise_invocation(*, gw: Gateway, invocation_id: int | None,
+                         verdict_value: str | None,
+                         outcome_override: str | None = None) -> None:
+    """Close the pre-policy invocation row once the decision is known.
+
+    ``_record_invocation_pre_policy`` reserves a row with
+    ``OUTCOME_PENDING`` on EVERY gateway request, and the outcome
+    vocabulary promises it is "updated to a terminal outcome after the
+    decision". Nothing did that, so every request left a permanently
+    non-terminal row and the audit surface reported every call as
+    unfinished — indistinguishable from "still running".
+
+    Fail-soft, matching ``_record_verdict_evidence``: the request has
+    already been decided and served, so a bookkeeping failure must not
+    turn into a caller-visible error. It is logged at WARNING rather
+    than swallowed, because a silent failure here is how the defect
+    stayed invisible in the first place.
+    """
+    if invocation_id is None:
+        return
+    # ``outcome_override`` is for paths that have no verdict to map —
+    # a pipeline crash is a decided, fail-closed deny with no Verdict
+    # object to read.
+    outcome = outcome_override or _VERDICT_TO_TERMINAL_OUTCOME.get(
+        verdict_value or "",
+    )
+    if outcome is None:
+        if verdict_value not in _DELIBERATELY_PENDING_VERDICTS:
+            # An UNMAPPED verdict. The request was decided, so the row
+            # must not be left pending — but guessing an outcome would
+            # be worse than saying so. Loud, because a silent return
+            # here is exactly how four verdicts leaked unnoticed.
+            logger.warning(
+                "[KYA-GATEWAY] verdict %r has no terminal-outcome "
+                "mapping; invocation %s stays non-terminal. Add it to "
+                "_VERDICT_TO_TERMINAL_OUTCOME.",
+                verdict_value, invocation_id,
+            )
+        return
+    try:
+        from kya import default_session
+        from kya.invocations import finalize_invocation_outcome
+    except Exception:  # noqa: BLE001 - core unavailable, nothing to do
+        return
+    try:
+        with default_session() as db:
+            finalize_invocation_outcome(
+                db,
+                invocation_id=invocation_id,
+                outcome=outcome,
+                tenant_id=gw.cfg.gateway.tenant_id,
+            )
+            db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[KYA-GATEWAY] could not finalise invocation %s to %s: %s "
+            "— the row stays non-terminal and the audit surface will "
+            "report this request as unfinished",
+            invocation_id, outcome, exc,
         )
 
 

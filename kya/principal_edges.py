@@ -309,6 +309,7 @@ def add_principal_edge(
     edge_kind: str = DEFAULT_EDGE_KIND,
     attributes: dict | None = None,
     expires_at: datetime | None = None,
+    commit: bool = True,
 ) -> PrincipalEdge:
     """Insert an edge (idempotent on the composite uniqueness).
 
@@ -385,7 +386,24 @@ def add_principal_edge(
                     row.expires_at = expires_at
 
             try:
-                db.commit()
+                if commit:
+                    db.commit()
+                else:
+                    # The caller owns the transaction. Flush so the
+                    # INSERT is sent and a constraint violation still
+                    # surfaces HERE (inside the caller's SAVEPOINT)
+                    # rather than at their commit, where it would be
+                    # unattributable and would abort their whole
+                    # transaction.
+                    #
+                    # Committing here when the caller did not ask is
+                    # not merely rude, it is a correctness bug:
+                    # measured, an internal commit DEASSOCIATES a
+                    # caller's ``begin_nested()`` SAVEPOINT, so the
+                    # block raises on SUCCESS. A caller that wants the
+                    # edge atomic with its own writes cannot get that
+                    # while this function commits.
+                    db.flush()
                 return _row_to_edge(row)
             except (IntegrityError, OperationalError) as exc:
                 # Lost the race -- another writer inserted the same
