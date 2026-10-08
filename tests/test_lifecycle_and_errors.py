@@ -290,3 +290,85 @@ def test_inbound_disable_without_enable_is_idempotent():
     kya.disable_inbound()
     kya.disable_inbound()
     assert kya.inbound_status()["enabled"] is False
+
+
+def test_dualwrite_shutdown_does_not_wait_out_the_flush_interval():
+    """``shutdown`` must wake the worker, not wait for its poll.
+
+    The worker parks in ``_q.get(timeout=flush_interval_s)`` and
+    cannot observe ``_stop`` until that expires, so shutdown used to
+    cost a full flush interval every time — measured 2003ms of a
+    2021ms shutdown, which made the 100-cycle test above need ~202s
+    and read as a hang against the suite timeout.
+
+    Asserted as a DURATION rather than left to the suite timeout: a
+    timeout kill produces no summary line, which is a destroyed
+    signal, not a failure.
+    """
+    import time
+
+    import kya
+    from kya.dualwrite import DualWriteConfig
+
+    interval = DualWriteConfig(
+        collector_url="http://127.0.0.1:1/never-listens",
+        api_key="x", allowlist=["agent_versions"],
+    ).flush_interval_s
+    assert interval > 0.2, (
+        f"flush_interval_s is {interval}s; this test cannot distinguish "
+        f"waking the worker from waiting out its poll"
+    )
+
+    kya.disable_dual_write()
+    kya.enable_dual_write(
+        collector_url="http://127.0.0.1:1/never-listens",
+        api_key="x", allowlist=["agent_versions"],
+    )
+    t0 = time.monotonic()
+    kya.disable_dual_write()
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < interval * 0.5, (
+        f"shutdown took {elapsed*1000:.0f}ms against a {interval}s "
+        f"flush interval — the worker is not being woken, so every "
+        f"enable/disable cycle pays the full poll"
+    )
+
+
+def test_shutdown_sentinel_never_reaches_the_collector():
+    """The wake sentinel is control-flow, not data.
+
+    Found by sabotage: disabling the worker's sentinel check left the
+    duration test GREEN, because the worker still woke up — it just
+    appended the sentinel to its batch and tried to SEND it. The
+    timing assertion structurally cannot see that, so payload purity
+    needs its own test.
+    """
+    import kya
+    import kya.dualwrite as D
+
+    kya.disable_dual_write()
+    kya.enable_dual_write(
+        collector_url="http://127.0.0.1:1/never-listens",
+        api_key="x", allowlist=["agent_versions"],
+    )
+    worker = D._ACTIVE
+    assert worker is not None
+
+    sent: list = []
+    original = worker._send_with_retry
+    worker._send_with_retry = lambda items: sent.extend(items)
+    try:
+        worker.emit("agent_versions", {"id": 1})
+        kya.disable_dual_write()
+    finally:
+        worker._send_with_retry = original
+
+    assert D.DualWriteSink._WAKE not in sent, (
+        "the wake sentinel was passed to _send_with_retry — it would "
+        "be serialised and POSTed to the collector as if it were a row"
+    )
+    for item in sent:
+        assert isinstance(item, tuple) and len(item) == 2, (
+            f"non-row item reached the collector: {item!r}"
+        )

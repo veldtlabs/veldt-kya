@@ -416,13 +416,28 @@ def test_malformed_jwt_does_not_fall_through_to_did(monkeypatch, did_keypair):
     the resolver must HARD FAIL — not fall through to a DID header the
     attacker also controls.
     """
-    # Mock kya.auth.introspect_jwt to raise (simulating bad signature).
+    # Stub the function the resolver actually calls.
+    #
+    # This stubbed `introspect_jwt`, a name that NEVER existed in
+    # kya.auth (see the comment at kya_gateway/identity.py:148). The
+    # resolver imports `verify_jwt`, so the bare ModuleType below did
+    # not carry it and the import raised
+    # `ImportError: cannot import name 'verify_jwt' ... (unknown
+    # location)` -- "unknown location" because a ModuleType has no
+    # __file__. The test failed on its own fixture before reaching
+    # anything it meant to assert.
+    #
+    # The signature matters too: the resolver calls
+    # verify_jwt(token, jwks_url=..., issuer=...), so a one-positional
+    # stub would TypeError even with the name corrected.
     import sys
     import types
     fake_auth = types.ModuleType("kya.auth")
-    def boom(_token):
+
+    def boom(_token, **_kwargs):
         raise ValueError("bad signature")
-    fake_auth.introspect_jwt = boom
+
+    fake_auth.verify_jwt = boom
     monkeypatch.setitem(sys.modules, "kya.auth", fake_auth)
 
     # Set up DID resolution so the fallthrough WOULD succeed if it occurred.
@@ -506,7 +521,9 @@ def test_jwt_principal_kind_ignored_when_issuer_not_trusted(monkeypatch):
     import sys
     import types
     fake_auth = types.ModuleType("kya.auth")
-    fake_auth.introspect_jwt = lambda _token: {
+    # verify_jwt, not introspect_jwt -- the latter never existed. The
+    # resolver passes jwks_url/issuer as keywords.
+    fake_auth.verify_jwt = lambda _token, **_kwargs: {
         "sub": "alice",
         "iss": "https://random-idp.example",
         "principal_kind": "service_account",  # attacker self-elevation
@@ -530,7 +547,8 @@ def test_jwt_principal_kind_honored_when_issuer_trusted(monkeypatch):
     import sys
     import types
     fake_auth = types.ModuleType("kya.auth")
-    fake_auth.introspect_jwt = lambda _token: {
+    # verify_jwt, not introspect_jwt -- see the sibling test above.
+    fake_auth.verify_jwt = lambda _token, **_kwargs: {
         "sub": "alice",
         "iss": "https://trusted-idp.example",
         "principal_kind": "service_account",

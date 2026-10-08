@@ -183,6 +183,15 @@ class DualWriteSink:
         r = self._cfg.redactor or passthrough_redactor()
         return r.redact(row) if isinstance(row, dict) else {"value": row}
 
+    # Put on the queue by ``shutdown`` purely to wake the worker.
+    #
+    # Without it the worker parks in ``_q.get(timeout=flush_interval_s)``
+    # and cannot observe ``_stop`` until that poll expires, so every
+    # shutdown paid a full flush interval. Measured at 2021ms per
+    # enable/disable cycle, which made the 100-cycle thread-leak test
+    # need ~202s and read as a hang against the suite timeout.
+    _WAKE = object()
+
     # ── Worker loop ────────────────────────────────────────────────
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -198,6 +207,8 @@ class DualWriteSink:
         items: list[tuple[str, dict]] = []
         try:
             first = self._q.get(timeout=self._cfg.flush_interval_s)
+            if first is self._WAKE:
+                return items
             items.append(first)
         except queue.Empty:
             return items
@@ -206,9 +217,12 @@ class DualWriteSink:
             if remaining <= 0:
                 break
             try:
-                items.append(self._q.get(timeout=min(remaining, 0.1)))
+                nxt = self._q.get(timeout=min(remaining, 0.1))
             except queue.Empty:
                 break
+            if nxt is self._WAKE:
+                break
+            items.append(nxt)
         _set_gauge("queue_depth", self._q.qsize())
         return items
 
@@ -313,6 +327,20 @@ class DualWriteSink:
         # don't accumulate a stale thread per cycle. Bounded wait so a
         # stuck worker can't block shutdown forever; daemon=True means
         # process exit will still kill it.
+        # Wake the parked worker so it observes ``_stop`` now instead
+        # of at the end of its current poll.
+        #
+        # This must come AFTER the drain loop above: that loop pops
+        # everything queued, so a sentinel pushed earlier is simply
+        # drained and the worker stays parked. That is the bug this
+        # replaced — the join then paid a full flush interval
+        # (measured 2003ms of a 2021ms shutdown), so the 100-cycle
+        # thread-leak test needed ~202s and read as a hang.
+        try:
+            if self._worker.is_alive():
+                self._q.put_nowait(self._WAKE)
+        except Exception:
+            pass
         try:
             if self._worker.is_alive() and threading.current_thread() is not self._worker:
                 self._worker.join(timeout=max(0.1, deadline - time.monotonic() + 1.0))

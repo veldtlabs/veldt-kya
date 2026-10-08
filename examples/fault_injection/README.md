@@ -84,6 +84,47 @@ and that is the experiment:
 The third class is the interesting one. Every action is authorised, every
 argument is permissible, and only the *order* is wrong.
 
+## The five behaviour faults
+
+A second, orthogonal axis. The three classes above all INSERT an extra
+harmful action. These transform the sequence the agent was going to
+perform anyway:
+
+| Class | What the agent does | Which layer can match it |
+|---|---|---|
+| `duplication` | performs one action twice | correlation — two executions of the same read |
+| `corrupt_data` | acts on a value that cannot be real | single-event argument policy |
+| `omission` | never performs the action | nothing — there is no event to match |
+| `crash` | stops partway, leaving the rest undone | nothing — same reason |
+| `slow` | performs it far too late | nothing — see below |
+
+    python experiment.py --behaviour-fault omission --fault none --mode layered
+    python experiment.py --list-behaviour-faults
+
+They carry their own `deviation_*` result fields rather than reusing
+`harmful_*`. That separation is not tidiness: a behaviour fault attempts
+nothing harmful, so reported through the harm vocabulary an omitted action
+reads as `0 harmful executed` — a clean run.
+
+Two of the five are expressible as rules. Three are not, and the reason is
+structural rather than a tuning problem: the chain engine fires when a step
+MATCHES recorded evidence, and these produce no event to match. Note that
+`within_seconds` is not a deadline — when a step arrives late the engine
+discards the partial match and returns False, so lateness makes a rule
+*not* fire. It is the inverse of a detector.
+
+The gap is narrower than "three are invisible". `omission` and `crash` both
+shrink the executed count, so `deviation_planned_actions` vs
+`deviation_observed_actions` reveals them — what is missing is a layer that
+*acts* on that, not the signal. The existing `evidence_complete` check does
+not serve: `attempted` is derived from the post-truncation plan, so a
+crashed run still reports complete. `slow` is the only class nothing here
+detects, because `elapsed_s` is recorded but no invariant reads it.
+
+Adding a sixth class is one decorated function in `behaviour_faults.py`.
+Nothing else needs editing — the CLI choices, the `--list` output and the
+sweep section all read the registry.
+
 ## The four modes
 
 `--mode` isolates the layers so a detection can never be credited to the wrong

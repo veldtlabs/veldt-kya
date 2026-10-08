@@ -54,6 +54,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -988,6 +989,49 @@ def _bind_schema(bind) -> None:
         table.schema = target
 
 
+# Engines whose principal-trust schema has already been ensured in this
+# process, keyed on the engine URL.
+#
+# ``ensure_principal_table`` is called from ``get_principal_trust``,
+# which sits on the ingest REQUEST path — so without this the DDL ran
+# on every single invocation. Measured at ~4ms per call, which is not
+# the real cost: ``create_all`` + the additive migrations take table
+# locks, and a concurrent session sitting ``idle in transaction``
+# makes them wait with no ``lock_timeout``, i.e. forever. That is the
+# same shape as the multi-worker ALTER TABLE contention that blocked
+# catalog inspection for 60s+ per retry.
+#
+# Observed as an indefinite stall under postgres: tests hung inside
+# ``get_principal_trust -> ensure_principal_table -> apply_migrations``
+# while passing in isolation, because only a full concurrent run
+# produced a simultaneously-open transaction.
+#
+# Self-healing is preserved: the DDL still runs once per process per
+# engine, which is what boot-time ensure already did. Only the
+# per-request repeat is removed. ``reset_principal_table_cache()``
+# exists for tests that drop the table.
+# Keyed on ENGINE IDENTITY, not the URL string. A URL key is wrong:
+# every ``sqlite:///:memory:`` engine is a brand-new empty database
+# behind an identical URL, so the second one gets marked "already
+# ensured" and its table is never created. That turned 11 trust tests
+# red when this was first written. Same trap for any DB recreated at
+# the same path or address.
+#
+# A WeakSet also bounds growth: an engine that goes out of scope drops
+# out. Per-engine granularity still removes the per-REQUEST repeat,
+# which is the actual defect — the request path reuses one engine.
+_PRINCIPAL_TABLE_ENSURED: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def reset_principal_table_cache() -> None:
+    """Forget which engines have been ensured.
+
+    Call after dropping ``kya_principal_trust`` so the next
+    ``ensure_principal_table`` re-creates it.
+    """
+    _PRINCIPAL_TABLE_ENSURED.clear()
+
+
 def ensure_principal_table(db) -> None:
     """Create kya_principal_trust + index if absent. Idempotent.
 
@@ -1003,9 +1047,20 @@ def ensure_principal_table(db) -> None:
         return
     _require_sqlalchemy()
     conn = db.connection()
+    _engine = conn.engine
+    try:
+        if _engine in _PRINCIPAL_TABLE_ENSURED:
+            return
+    except TypeError:  # not weak-referenceable - always run the DDL
+        _engine = None
     _bind_schema(conn.engine)
     _Base.metadata.create_all(bind=conn, tables=[_PrincipalRow.__table__])
     _apply_idp_binding_migrations(db)
+    if _engine is not None:
+        try:
+            _PRINCIPAL_TABLE_ENSURED.add(_engine)
+        except TypeError:
+            pass
 
 
 def _apply_idp_binding_migrations(db) -> None:

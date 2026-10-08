@@ -665,16 +665,29 @@ class TestFingerprintBatch:
             event.remove(engine, "before_cursor_execute", _count2)
 
         # The batch path MUST issue fewer queries than per-call.
-        # Hard ceiling at half so a future small regression
-        # surfaces. 11 principals * 3+ queries per call = 33+;
-        # batch is 2 bulk + 11 walks = 13 -> ~2.5x speedup.
         assert batch_n < per_call_n, (
             f"batch query count ({batch_n}) must be < per-call "
             f"({per_call_n}) -- otherwise A1 is not actually fixed")
-        assert batch_n * 2 <= per_call_n, (
-            f"batch query count ({batch_n}) should be roughly "
-            f"<=half per-call ({per_call_n}); got ratio "
-            f"{per_call_n / batch_n:.1f}x")
+        # Regression ceiling. This was ``batch_n * 2 <= per_call_n``,
+        # calibrated when the per-call path re-ran
+        # ``ensure_principal_table`` (create_all + the additive IdP
+        # migrations) on EVERY call. That DDL is now memoized per
+        # engine, because on Postgres it took table locks and a
+        # concurrent ``idle in transaction`` session made it wait with
+        # no lock_timeout -- an indefinite stall.
+        #
+        # So the per-call path got genuinely cheaper and the gap
+        # narrowed for a good reason: the ceiling was partly measuring
+        # waste that no longer exists. Batching still removes a clear
+        # majority of the queries, and this guard still fails on a
+        # real regression -- it just no longer encodes the old
+        # overhead. Observed after memoization: 55 vs 86 (~1.6x).
+        _MIN_BATCH_SPEEDUP = 1.4
+        assert per_call_n >= batch_n * _MIN_BATCH_SPEEDUP, (
+            f"batch query count ({batch_n}) vs per-call ({per_call_n}) "
+            f"-- ratio {per_call_n / batch_n:.2f}x is below the "
+            f"{_MIN_BATCH_SPEEDUP}x floor, so batching has stopped "
+            f"materially reducing queries")
 
 
 class TestStrictKindMode:

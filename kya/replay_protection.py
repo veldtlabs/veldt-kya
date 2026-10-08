@@ -239,7 +239,16 @@ def verify_request_nonce(
             return False
 
     # Nonce uniqueness check via Valkey SETNX with TTL.
-    key = f"kya:nonce:{tenant_id}:{principal_id}:{nonce}"
+    # Length-prefix every caller-controlled segment. Plain
+    # concatenation is not injective: tenant "acme" with principal
+    # "bob:x" and tenant "acme:bob" with principal "x" produce the same
+    # key, which lets one identity deny another's first legitimate
+    # request. Principal ids carry colons in practice -- a SPIFFE ID
+    # always does.
+    #
+    key = (f"kya:nonce:{len(tenant_id)}:{tenant_id}"
+           f":{len(principal_id)}:{principal_id}"
+           f":{nonce}")
     try:
         # Use the SDK-friendly accessor (env-driven, redis-py based).
         # Falls back to a registered factory if the parent app

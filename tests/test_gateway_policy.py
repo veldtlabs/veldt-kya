@@ -7,6 +7,8 @@ imported lazily and gracefully skipped when unavailable.
 """
 from __future__ import annotations
 
+import pytest
+
 from kya_gateway.config import (
     PayloadCapsConfig,
     PolicyConfig,
@@ -223,26 +225,6 @@ def test_rate_limit_runtime_error_fails_closed(monkeypatch):
     assert "RATE_LIMIT_ERROR" in v.reason_codes
 
 
-def test_replay_runtime_error_fails_closed(monkeypatch):
-    """check_invocation_replay raising must produce deny, not propagate."""
-    def boom(*args, **kw):
-        raise RuntimeError("replay store unreachable")
-    _install_module(monkeypatch, "kya.replay_protection",
-                    check_invocation_replay=boom)
-
-    cfg = PolicyConfig(min_trust=0)
-    v = evaluate(
-        db=None,
-        tenant_id="tenant-alpha",
-        principal=_principal(),
-        action="mcp.x.read",
-        payload_bytes=100,
-        invocation_id=42,  # non-None so the replay branch runs
-        cfg=cfg,
-    )
-    assert v.verdict == "deny"
-    assert "REPLAY_ERROR" in v.reason_codes
-
 
 def test_budget_runtime_error_fails_closed(monkeypatch):
     """should_refuse raising must produce deny, not propagate."""
@@ -299,29 +281,6 @@ def test_min_trust_runtime_error_fails_closed(monkeypatch):
     assert "MIN_TRUST_ERROR" in v.reason_codes
 
 
-# ─── Replay protection actually works when wired in ────────────────
-
-
-def test_replay_detected_when_check_returns_false(monkeypatch):
-    """check_invocation_replay returning False → REPLAY_DETECTED."""
-    def is_fresh(*args, **kw):
-        return False  # replay
-    _install_module(monkeypatch, "kya.replay_protection",
-                    check_invocation_replay=is_fresh)
-
-    cfg = PolicyConfig(min_trust=0)
-    v = evaluate(
-        db=None,
-        tenant_id="tenant-alpha",
-        principal=_principal(),
-        action="mcp.x.read",
-        payload_bytes=100,
-        invocation_id=99,
-        cfg=cfg,
-    )
-    assert v.verdict == "deny"
-    assert "REPLAY_DETECTED" in v.reason_codes
-
 
 def test_grant_check_runs_without_min_trust(monkeypatch):
     """The grant check must not depend on an unrelated trust threshold.
@@ -367,3 +326,122 @@ def test_grant_check_runs_without_min_trust(monkeypatch):
     # the pre-existing code is preserved so operator alerting keyed on
     # it keeps matching
     assert "MIN_TRUST_NOT_MET" in v.reason_codes
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A stage that cannot import its primitive must say so where an operator
+# will see it. Every primitive the pipeline gates on ships in the core
+# package and imports no optional dependency, so an ImportError is a
+# missing symbol — a defect — and not a deployment variant.
+#
+# _install_module is used below to FORCE the error path. It is never used
+# to supply the symbol under test: a test that manufactures the thing it
+# is checking proves the test, not the system.
+
+
+def _module_without(monkeypatch, name: str):
+    """Put a real-looking module at ``name`` that has no attributes.
+
+    ``from <name> import <symbol>`` then raises ImportError, which is the
+    condition under test.
+    """
+    return _install_module(monkeypatch, name)
+
+
+
+def test_missing_budget_primitive_logs_at_error(monkeypatch, caplog):
+    """Same contract on a second stage, so the first is not a one-off."""
+    import logging
+
+    from kya_gateway.config import BudgetConfig
+    _module_without(monkeypatch, "kya.tenant_budget")
+
+    cfg = PolicyConfig(min_trust=0,
+                       tenant_budget=BudgetConfig(daily_usd=10.0))
+    with caplog.at_level(logging.DEBUG, logger="kya_gateway.policy_pipeline"):
+        evaluate(
+            db=None,
+            tenant_id="tenant-alpha",
+            principal=_principal(),
+            action="mcp.x.read",
+            payload_bytes=100,
+            invocation_id=None,
+            cfg=cfg,
+        )
+
+    assert any(
+        r.levelno >= logging.ERROR
+        and "tenant-budget stage SKIPPED" in r.getMessage()
+        for r in caplog.records
+    ), [(r.levelname, r.getMessage()) for r in caplog.records]
+
+
+def test_no_import_guard_hides_a_missing_first_party_symbol():
+    """Every ``except ImportError`` guard must name a symbol that exists.
+
+    This is the check whose absence let two stages ship dead. An import
+    behind ``except ImportError`` makes a symbol that was never written
+    indistinguishable at runtime from one that is merely absent, so the
+    handler reports a missing install for a module that is installed.
+
+    It swept by hand once and missed two guards in
+    ``kya_gateway/identity.py``, so it sweeps the AST now. Third-party
+    guards (presidio, redis, pyjwt) are excluded: those are genuine
+    optional dependencies and their absence is a real deployment
+    variant. First-party ones are not.
+    """
+    import ast
+    import importlib
+    import pathlib
+
+    roots = [pathlib.Path(p) for p in ("kya", "kya_gateway")]
+    if not all(r.is_dir() for r in roots):
+        pytest.skip("source tree not present (installed-wheel run)")
+
+    def _handles_import_error(try_node):
+        for h in try_node.handlers:
+            ty = h.type
+            if isinstance(ty, ast.Name) and ty.id == "ImportError":
+                return True
+            if isinstance(ty, ast.Tuple) and any(
+                    getattr(e, "id", "") == "ImportError" for e in ty.elts):
+                return True
+        return False
+
+    missing = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:                       # pragma: no cover
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Try):
+                    continue
+                if not _handles_import_error(node):
+                    continue
+                for sub in ast.walk(node):
+                    if not isinstance(sub, ast.ImportFrom):
+                        continue
+                    mod_name = sub.module or ""
+                    if not (mod_name in ("kya", "kya_gateway")
+                            or mod_name.startswith(("kya.", "kya_gateway."))):
+                        continue
+                    try:
+                        mod = importlib.import_module(mod_name)
+                    except ImportError as exc:
+                        missing.append(
+                            f"{path}:{sub.lineno} module {mod_name} "
+                            f"unimportable ({exc})")
+                        continue
+                    for alias in sub.names:
+                        if not hasattr(mod, alias.name):
+                            missing.append(
+                                f"{path}:{sub.lineno} "
+                                f"{mod_name}.{alias.name}")
+
+    assert not missing, (
+        "these guarded imports name first-party symbols that do not "
+        "exist, so the code behind each guard never runs: "
+        + "; ".join(missing)
+    )

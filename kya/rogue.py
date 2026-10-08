@@ -31,6 +31,7 @@ anything. The two `record_*` helpers are used by call-sites that detect
 misbehavior in-line; this module only owns the counters/labels.
 """
 
+import contextlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -160,8 +161,19 @@ def record_data_leak(
             **({"evidence": evidence} if evidence else {}),
         },
     )
-    _emit_user_signal(tenant_id, user_id, "data_leak")
-    _emit_actor_agent_signal(tenant_id, actor_agent_key, "data_leak")
+    # The SUBJECT agent -- the principal get_rogue_signals()
+    # actually queries. Previously omitted, so the report for
+    # the offending agent always read 0.
+    # One session for all three mirrors (see _mirror_session):
+    # these used to open one apiece, so a single event cost
+    # three round trips.
+    with _mirror_session() as _db:
+        _emit_agent_signal(tenant_id, agent_key, "data_leak", db=_db)
+        _emit_user_signal(tenant_id, user_id, "data_leak", db=_db)
+        _emit_actor_agent_signal(
+            tenant_id, actor_agent_key, "data_leak",
+            subject_agent_key=agent_key, db=_db,
+        )
     if _LEAK_COUNTER is None:
         return
     try:
@@ -234,7 +246,116 @@ def _emit_realtime(
         pass
 
 
-def _emit_user_signal(tenant_id: str, user_id: str | None, signal_kind: str) -> None:
+@contextlib.contextmanager
+def _mirror_session():
+    """One session for ALL of an event's trust mirrors.
+
+    Each mirror used to open, commit and close its own session, so a
+    single rogue event cost one round trip per attribution — three
+    after the subject-agent mirror was added, where there had been
+    two. Measured at p50 36.78ms and 3.00 sessions per event on
+    sqlite, a 20-52% regression across the four recorders.
+
+    Sharing one session makes it one, which is fewer than before the
+    subject mirror existed. Yields None when no factory is
+    configured; the mirrors then no-op, which is the documented
+    posture.
+    """
+    db = None
+    try:
+        from ._session_factory import get_session
+
+        db = get_session()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[KYP] mirror session unavailable: %s", exc)
+        db = None
+    try:
+        yield db
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _persist_principal_signal(
+    tenant_id: str,
+    principal_kind: str,
+    principal_id: str | None,
+    signal_kind: str,
+    *,
+    label: str,
+    db=None,
+) -> None:
+    """Mirror a rogue signal onto ``kya_principal_trust``.
+
+    Single writer for all three attributions — subject agent, calling
+    agent, invoking user. The user and actor helpers were near-
+    identical copies of this body; a third copy for the subject agent
+    would have been the moment the duplication started drifting.
+
+    Fail-soft by design: a trust mirror must never break the
+    guardrail that detected the event. Note the session factory
+    requirement — without ``kya.set_session_factory(...)`` every
+    mirror write is a no-op, which is logged once at import.
+    """
+    if not principal_id:
+        return
+    try:
+        from ._session_factory import get_session
+        from .principals import record_principal_signal
+
+        # A caller-supplied session is shared across this event's
+        # mirrors, so it is NOT closed here — ``_mirror_session``
+        # owns its lifetime.
+        _owned = db is None
+        if _owned:
+            db = get_session()
+        if db is None:
+            return
+        try:
+            # allow_create=True is safe: the id comes from the
+            # caller's invocation context, not an external header.
+            record_principal_signal(
+                db, tenant_id, principal_kind, principal_id, signal_kind,
+            )
+        finally:
+            if _owned:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.debug("[KYP] %s-signal mirror skipped: %s", label, exc)
+
+
+def _emit_agent_signal(
+    tenant_id: str, agent_key: str | None, signal_kind: str, *, db=None,
+) -> None:
+    """Attribute a rogue event to the SUBJECT agent — the one that did it.
+
+    This was missing entirely. ``_emit_user_signal`` and
+    ``_emit_actor_agent_signal`` existed, so signals were persisted for
+    the invoking user and for a calling agent, but never for
+    ``agent_key`` itself. Meanwhile ``get_rogue_signals(agent_key)``
+    reads ``kya_principal_trust.signal_counts`` for exactly that
+    principal — so the read path was inert for every signal type, not
+    just leaks.
+
+    Reproduced before fixing: three ``record_data_leak`` calls logged
+    three leaks, and ``get_rogue_signals(agent).data_leaks`` returned
+    0 with no row written for the agent at all.
+    """
+    _persist_principal_signal(
+        tenant_id, "agent", agent_key, signal_kind, label="subject-agent",
+        db=db,
+    )
+
+
+def _emit_user_signal(
+    tenant_id: str, user_id: str | None, signal_kind: str, *, db=None,
+) -> None:
     """KYU + KYP mirror — attribute to the invoking human user.
     Writes to BOTH the legacy kya_user_trust table (backwards compat)
     AND the new kya_principal_trust table (Round 13.2 unified view).
@@ -249,7 +370,9 @@ def _emit_user_signal(tenant_id: str, user_id: str | None, signal_kind: str) -> 
         from .principals import record_principal_signal
         from .users import record_user_signal
 
-        db = get_session()
+        _owned = db is None
+        if _owned:
+            db = get_session()
         if db is None:
             return
         try:
@@ -263,42 +386,49 @@ def _emit_user_signal(tenant_id: str, user_id: str | None, signal_kind: str) -> 
             # caller's invocation row, not an external HTTP header.
             record_principal_signal(db, tenant_id, "user", user_id, signal_kind)
         finally:
-            try:
-                db.close()
-            except Exception:
-                pass
+            if _owned:
+                try:
+                    db.close()
+                except Exception:
+                    pass
     except Exception as exc:
         logger.debug("[KYP] user-signal mirror skipped: %s", exc)
 
 
-def _emit_actor_agent_signal(tenant_id: str, actor_agent_key: str | None, signal_kind: str) -> None:
+def _emit_actor_agent_signal(
+    tenant_id: str,
+    actor_agent_key: str | None,
+    signal_kind: str,
+    *,
+    subject_agent_key: str | None = None,
+    db=None,
+) -> None:
     """Round 13.2: attribute rogue events to the CALLING agent (when one
     agent drives another's misbehavior in a delegation chain). Writes to
     the kya_principal_trust table with principal_kind="agent".
 
     Uses the pluggable session factory (`_session_factory.get_session`).
     """
-    if not actor_agent_key:
+    # The subject and the actor are the SAME principal whenever an
+    # agent drives its own misbehaviour (the single-agent and
+    # self-driving cases). Both emitters write to kya_principal_trust
+    # under ("agent", key), so emitting both counted ONE event TWICE
+    # and applied the trust penalty twice: a single data leak read
+    # back as {"data_leak": 2} with trust 30 instead of 40.
+    #
+    # Deduped here, in the one place that can see both identities,
+    # rather than at each of the four call sites.
+    if (
+        subject_agent_key is not None
+        and actor_agent_key is not None
+        and str(actor_agent_key).strip() == str(subject_agent_key).strip()
+    ):
         return
-    try:
-        from ._session_factory import get_session
-        from .principals import record_principal_signal
-
-        db = get_session()
-        if db is None:
-            return
-        try:
-            # allow_create=True is safe -- actor_agent_key comes from
-            # the OOS-attempt caller's invocation context, not an
-            # external HTTP header.
-            record_principal_signal(db, tenant_id, "agent", actor_agent_key, signal_kind)
-        finally:
-            try:
-                db.close()
-            except Exception:
-                pass
-    except Exception as exc:
-        logger.debug("[KYP] actor-agent-signal mirror skipped: %s", exc)
+    _persist_principal_signal(
+        tenant_id, "agent", actor_agent_key, signal_kind,
+        label="actor-agent",
+        db=db,
+    )
 
 
 def record_oos_tool_attempt(
@@ -329,8 +459,19 @@ def record_oos_tool_attempt(
         },
     )
     _emit_realtime(tenant_id, agent_key, "oos_tool", severity="warning", detail={"tool": tool})
-    _emit_user_signal(tenant_id, user_id, "oos_tool")
-    _emit_actor_agent_signal(tenant_id, actor_agent_key, "oos_tool")
+    # The SUBJECT agent -- the principal get_rogue_signals()
+    # actually queries. Previously omitted, so the report for
+    # the offending agent always read 0.
+    # One session for all three mirrors (see _mirror_session):
+    # these used to open one apiece, so a single event cost
+    # three round trips.
+    with _mirror_session() as _db:
+        _emit_agent_signal(tenant_id, agent_key, "oos_tool", db=_db)
+        _emit_user_signal(tenant_id, user_id, "oos_tool", db=_db)
+        _emit_actor_agent_signal(
+            tenant_id, actor_agent_key, "oos_tool",
+            subject_agent_key=agent_key, db=_db,
+        )
     if _OOS_COUNTER is None:
         return
     try:
@@ -378,8 +519,19 @@ def record_cross_tenant_attempt(
         severity="critical",
         detail={"expected_tid": expected_tid, "actual_tid": actual_tid},
     )
-    _emit_user_signal(expected_tid, user_id, "cross_tenant")
-    _emit_actor_agent_signal(expected_tid, actor_agent_key, "cross_tenant")
+    # The SUBJECT agent -- the principal get_rogue_signals()
+    # actually queries. Previously omitted, so the report for
+    # the offending agent always read 0.
+    # One session for all three mirrors (see _mirror_session):
+    # these used to open one apiece, so a single event cost
+    # three round trips.
+    with _mirror_session() as _db:
+        _emit_agent_signal(expected_tid, agent_key, "cross_tenant", db=_db)
+        _emit_user_signal(expected_tid, user_id, "cross_tenant", db=_db)
+        _emit_actor_agent_signal(
+            expected_tid, actor_agent_key, "cross_tenant",
+            subject_agent_key=agent_key, db=_db,
+        )
     if _XTENANT_COUNTER is None:
         return
     try:
@@ -453,8 +605,19 @@ def record_policy_violation(
             **({"evidence": evidence} if evidence else {}),
         },
     )
-    _emit_user_signal(tenant_id, user_id, "policy_violation")
-    _emit_actor_agent_signal(tenant_id, actor_agent_key, "policy_violation")
+    # The SUBJECT agent -- the principal get_rogue_signals()
+    # actually queries. Previously omitted, so the report for
+    # the offending agent always read 0.
+    # One session for all three mirrors (see _mirror_session):
+    # these used to open one apiece, so a single event cost
+    # three round trips.
+    with _mirror_session() as _db:
+        _emit_agent_signal(tenant_id, agent_key, "policy_violation", db=_db)
+        _emit_user_signal(tenant_id, user_id, "policy_violation", db=_db)
+        _emit_actor_agent_signal(
+            tenant_id, actor_agent_key, "policy_violation",
+            subject_agent_key=agent_key, db=_db,
+        )
     if _PV_COUNTER is None:
         return
     try:

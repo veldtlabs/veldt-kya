@@ -5,9 +5,8 @@ For each MCP ``tools/call`` the gateway intercepts, this pipeline:
     1. RBAC check (allow / deny / require_human)
     2. payload-cap check
     3. rate-limit + burst-anomaly check
-    4. replay-protection check
-    5. tenant-budget check
-    6. min_trust gate (via require_action)
+    4. tenant-budget check
+    5. min_trust gate (via require_action)
 
 Every step delegates to the existing primitive in :mod:`kya` — there is
 zero policy logic in this module. If a check fails, the pipeline returns
@@ -187,8 +186,14 @@ class Verdict:
     so downstream consumers (attack chain rules, dashboards) can match
     on them. Examples:
         ``RBAC_DENY``, ``MIN_TRUST_NOT_MET``, ``BUDGET_EXCEEDED``,
-        ``REPLAY_DETECTED``, ``RATE_LIMIT``, ``PAYLOAD_TOO_LARGE``,
-        ``REQUIRES_HUMAN``.
+        ``RATE_LIMIT``, ``PAYLOAD_TOO_LARGE``, ``REQUIRES_HUMAN``.
+
+    ``REPLAY_DETECTED`` was listed here and is deliberately gone: the
+    gateway replay stage that produced it has been removed, so nothing
+    on this path can emit it. Leaving it documented as a stable code
+    is worse than omitting it -- a dashboard or chain rule written
+    against it matches nothing, silently, and a panel reading zero
+    forever is indistinguishable from "no replay attacks".
 
     ``signal_kind`` is the trust signal the gateway will record on the
     principal's trust ledger.
@@ -593,7 +598,8 @@ def evaluate(
         action: A canonical action string like ``mcp.filesystem.read``.
         payload_bytes: Size of the request payload.
         invocation_id: The KYA invocation row the gateway has already
-            recorded for this request (used by replay protection).
+            recorded for this request. Threaded into the audit and
+            evidence records; no stage in this pipeline gates on it.
         cfg: The policy block from the gateway config.
 
     Returns:
@@ -669,15 +675,26 @@ def evaluate(
         )
 
     # ─── Rate limit ─────────────────────────────────────────────
-    # Fail-closed contract: ImportError → primitive not installed → skip
-    # with debug log. Any OTHER exception (DB/network/etc.) → deny with
-    # a "_ERROR" reason code so the audit chain captures the operational
-    # state and the caller doesn't silently slip through.
+    # Exception contract. Any exception from a primitive (DB/network/etc.)
+    # → deny with a "_ERROR" reason code, so the audit chain captures the
+    # operational state and the caller doesn't silently slip through.
+    #
+    # ImportError is reported at ERROR and the stage is skipped. It is NOT
+    # the "primitive not installed" case it was once written for: every
+    # module below ships in the core package and imports no optional
+    # dependency, so an ImportError can only mean the symbol is absent.
+    # That is a defect in this file, not a deployment variant, and it must
+    # not be logged at a level operators do not read.
     if cfg.rate_limit is not None:
         try:
             from kya.rate_limit import check_rate
-        except ImportError:
-            logger.debug("[KYA-GATEWAY] kya.rate_limit unavailable; skipping rate check")
+        except ImportError as exc:
+            logger.error(
+                "[KYA-GATEWAY] rate-limit stage SKIPPED — cannot import "
+                "kya.rate_limit.check_rate: %s. This stage ships in the "
+                "core package; treat this as a defect, not configuration.",
+                exc,
+            )
         else:
             try:
                 # Pass through whichever mode the operator set.
@@ -712,42 +729,44 @@ def evaluate(
                     ),
                 )
 
-    # ─── Replay protection ─────────────────────────────────────
-    if invocation_id is not None:
-        try:
-            from kya.replay_protection import check_invocation_replay
-        except ImportError:
-            logger.debug("[KYA-GATEWAY] kya.replay_protection unavailable; skipping")
-        else:
-            try:
-                replay_ok = check_invocation_replay(db, invocation_id=invocation_id)
-            except Exception as exc:
-                logger.warning("[KYA-GATEWAY] check_invocation_replay raised: %s", exc)
-                return _dispatch(
-                    "replay_error",
-                    Verdict(
-                        verdict="deny",
-                        reason_codes=["REPLAY_ERROR"],
-                        signal_kind="replay_detected",
-                    ),
-                    primitive_error=str(exc),
-                )
-            if not replay_ok:
-                return _dispatch(
-                    "replay",
-                    Verdict(
-                        verdict="deny",
-                        reason_codes=["REPLAY_DETECTED"],
-                        signal_kind="replay_detected",
-                    ),
-                )
+    # ─── Replay protection: REMOVED, not disabled ──────────────
+    #
+    # A stage lived here that keyed a replay reservation on
+    # ``invocation_id``. It could not work. The gateway calls
+    # ``_record_invocation_pre_policy`` on every request, which INSERTs a
+    # row and returns a fresh autoincrement id, so two byte-identical
+    # replayed requests arrive with different ids and the reservation
+    # never collides. Three identical requests produce ids 1, 2, 3 and
+    # all three are allowed.
+    #
+    # It had also shipped dead in every release for a different reason:
+    # the symbol it imported did not exist and the ImportError was
+    # swallowed at debug level.
+    #
+    # Removed rather than left in place, because a stage that cannot
+    # fire should not be advertised, and because leaving it would log an
+    # error on every request forever. The pipeline docstring no longer
+    # claims it.
+    #
+    # A working implementation has to key on something the CLIENT
+    # controls and repeats across a replay -- a request nonce from a
+    # header, or a digest of (principal, action, body). It must not key
+    # on a server-minted row id. ``kya.replay_protection
+    # .verify_request_nonce`` is the right primitive for that and takes
+    # a caller-supplied nonce directly.
 
     # ─── Tenant budget ─────────────────────────────────────────
     if cfg.tenant_budget and cfg.tenant_budget.daily_usd is not None:
         try:
             from kya.tenant_budget import should_refuse
-        except ImportError:
-            logger.debug("[KYA-GATEWAY] kya.tenant_budget unavailable; skipping")
+        except ImportError as exc:
+            logger.error(
+                "[KYA-GATEWAY] tenant-budget stage SKIPPED — cannot import "
+                "kya.tenant_budget.should_refuse: %s. This stage ships in "
+                "the core package; treat this as a defect, not "
+                "configuration.",
+                exc,
+            )
         else:
             try:
                 refuse = should_refuse(
@@ -786,8 +805,13 @@ def evaluate(
     # continues to match.
     try:
         from kya import AccessDeniedError, require_action
-    except ImportError:
-        logger.debug("[KYA-GATEWAY] kya.require_action unavailable; skipping")
+    except ImportError as exc:
+        logger.error(
+            "[KYA-GATEWAY] min-trust/grant stage SKIPPED — cannot import "
+            "kya.require_action: %s. This stage ships in the core package; "
+            "treat this as a defect, not configuration.",
+            exc,
+        )
         AccessDeniedError = None  # type: ignore[assignment]
         require_action = None     # type: ignore[assignment]
     if require_action is not None:
