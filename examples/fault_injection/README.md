@@ -113,14 +113,13 @@ MATCHES recorded evidence, and these produce no event to match. Note that
 discards the partial match and returns False, so lateness makes a rule
 *not* fire. It is the inverse of a detector.
 
-The gap is narrower than "three are invisible", and the README should be
-precise about it. `omission` and `crash` both shrink the executed count, so
-`deviation_planned_actions` vs `deviation_observed_actions` reveals them —
-what is missing is a layer that *acts* on that, not the signal.
-Note the existing `evidence_complete` check does not serve: `attempted` is
-derived from the post-truncation plan, so a crashed run still reports
-complete. `slow` is the only class nothing here detects, because
-`elapsed_s` is recorded but no invariant reads it.
+The gap is narrower than "three are invisible". `omission` and `crash` both
+shrink the executed count, so `deviation_planned_actions` vs
+`deviation_observed_actions` reveals them — what is missing is a layer that
+*acts* on that, not the signal. The existing `evidence_complete` check does
+not serve: `attempted` is derived from the post-truncation plan, so a
+crashed run still reports complete. `slow` is the only class nothing here
+detects, because `elapsed_s` is recorded but no invariant reads it.
 
 Adding a sixth class is one decorated function in `behaviour_faults.py`.
 Nothing else needs editing — the CLI choices, the `--list` output and the
